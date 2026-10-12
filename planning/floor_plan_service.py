@@ -83,6 +83,74 @@ def compute_layout_bounds(
     }
 
 
+def floor_layout_payload() -> dict[str, Any]:
+    """Shop positions and colours for the OEE floor view. No capacity data."""
+    machines: list[dict[str, Any]] = []
+    for layout in FLOOR_LAYOUT_MACHINES:
+        machines.append(
+            {
+                "machine_no": layout["machine_no"],
+                "label": layout["label"],
+                "subtitle": compact_text(layout.get("subtitle")),
+                "x": layout["x"],
+                "y": layout["y"],
+                "w": layout["w"],
+                "h": layout["h"],
+                "color": layout["color"],
+                "cnc_number": int(str(layout["label"])),
+            }
+        )
+
+    def _numbers(predicate) -> list[int]:
+        return [int(str(item["label"])) for item in FLOOR_LAYOUT_MACHINES if predicate(item)]
+
+    groups = (
+        {
+            "key": "mpp",
+            "label": "MPP",
+            "color": "mpp",
+            "cnc_numbers": _numbers(lambda item: item["color"] == "mpp" and item["machine_no"] != "CNC 41"),
+        },
+        {
+            "key": "multiaxis",
+            "label": "Multi-Axis",
+            "color": "turnmill",
+            "cnc_numbers": _numbers(lambda item: item["color"] == "turnmill"),
+        },
+        {
+            "key": "turning",
+            "label": "CNC TN",
+            "color": "turning",
+            "cnc_numbers": _numbers(lambda item: item["color"] == "turning"),
+        },
+        {
+            "key": "milling",
+            "label": "CNC ML",
+            "color": "milling",
+            "cnc_numbers": _numbers(lambda item: item["color"] == "milling"),
+        },
+        {
+            "key": "cnc41",
+            "label": "CNC 41",
+            "subtitle": "I-800",
+            "color": "mpp",
+            "cnc_numbers": [41],
+        },
+    )
+    return {
+        "layout_bounds": compute_layout_bounds(FLOOR_LAYOUT_MACHINES),
+        "layout_colors": dict(FLOOR_LAYOUT_COLORS),
+        "legend": (
+            {"key": "turnmill", "label": "Turnmill"},
+            {"key": "mpp", "label": "MPP (35/36/41)"},
+            {"key": "turning", "label": "Turning"},
+            {"key": "milling", "label": "Milling"},
+        ),
+        "groups": groups,
+        "machines": machines,
+    }
+
+
 def ensure_floor_plan_tables(con) -> None:
     con.execute(
         """

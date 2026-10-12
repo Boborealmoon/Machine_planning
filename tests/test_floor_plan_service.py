@@ -13,6 +13,7 @@ from planning.floor_plan_service import (
     delete_machine_capacity_booking,
     fetch_bookings,
     fetch_floor_plan,
+    floor_layout_payload,
     normalize_planning_month,
     normalize_reserved_hours,
     reserved_pct,
@@ -33,6 +34,25 @@ def test_floor_layout_has_all_fleet_machines():
     }
     codes = {m["machine_no"] for m in FLOOR_LAYOUT_MACHINES}
     assert codes == expected
+
+
+def test_floor_layout_payload_for_oee_view():
+    payload = floor_layout_payload()
+    numbers = {machine["cnc_number"] for machine in payload["machines"]}
+    assert numbers == {
+        10, 15, 20, 21, 22, 24, 25, 26, 27, 29, 30, 31, 32, 35, 36, 38, 39, 40, 41,
+    }
+    assert [group["label"] for group in payload["groups"]] == [
+        "MPP",
+        "Multi-Axis",
+        "CNC TN",
+        "CNC ML",
+        "CNC 41",
+    ]
+    assert payload["groups"][0]["cnc_numbers"] == [35, 36]
+    assert payload["groups"][-1]["subtitle"] == "I-800"
+    assert payload["layout_bounds"]["width"] > 0
+    assert set(payload["layout_colors"]) == {"turnmill", "mpp", "turning", "milling"}
 
 
 def test_reserved_pct_calculation():

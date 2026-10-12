@@ -28,6 +28,11 @@
   const alertMinutesEl = document.getElementById('auk-oee-alert-minutes');
   const lowEl = document.getElementById('auk-oee-low');
   const paletteEl = document.getElementById('auk-oee-palette');
+  const floorEl = document.getElementById('auk-oee-floor');
+  const calendarEl = document.getElementById('auk-oee-calendar');
+  const subtitleEl = document.getElementById('auk-oee-subtitle');
+  const viewButtons = Array.from(document.querySelectorAll('[data-view]'));
+  let viewMode = 'cards';
 
   const PRESET_LABELS = {
     day: '1 day',
@@ -510,17 +515,34 @@
       const label = refreshToastEl.querySelector('.auk-oee-refresh-toast__text');
       if (label) label.textContent = text;
     }
-    if (!gridEl) return;
+    if (viewMode === 'calendar') {
+      if (gridEl) gridEl.hidden = true;
+      if (floorEl) floorEl.hidden = true;
+      if (calendarEl) calendarEl.hidden = false;
+      return;
+    }
+    const surface = viewMode === 'floor' ? floorEl : gridEl;
+    if (!surface) return;
     if (!hasLoadedOnce) {
-      gridEl.hidden = isLoading;
-      gridEl.classList.toggle('auk-oee-grid--initial', isLoading);
-      if (isLoading && !gridEl.innerHTML.trim()) {
-        gridEl.innerHTML = '<span>Loading OEE cards…</span>';
-        gridEl.hidden = false;
+      if (viewMode === 'floor') {
+        if (gridEl) gridEl.hidden = true;
+        if (calendarEl) calendarEl.hidden = true;
+        surface.hidden = false;
+        surface.classList.toggle('auk-oee-floor--initial', isLoading);
+      } else {
+        if (floorEl) floorEl.hidden = true;
+        if (calendarEl) calendarEl.hidden = true;
+        surface.hidden = isLoading;
+        surface.classList.toggle('auk-oee-grid--initial', isLoading);
+        if (isLoading && !surface.innerHTML.trim()) {
+          surface.innerHTML = '<span>Loading OEE cards…</span>';
+          surface.hidden = false;
+        }
       }
       return;
     }
-    gridEl.classList.toggle('auk-oee-grid--refreshing', isLoading);
+    if (gridEl) gridEl.classList.toggle('auk-oee-grid--refreshing', isLoading && viewMode === 'cards');
+    if (floorEl) floorEl.classList.toggle('auk-oee-floor--refreshing', isLoading && viewMode === 'floor');
   }
 
   function parseApiError(raw, status) {
@@ -626,40 +648,38 @@
   }
 
   const GRID_COLS = 12;
-  const GRID_ROW = 112;
-  const GRID_GAP = 8;
   const CARD_COLORS = ['red', 'amber', 'green', 'blue', 'violet', 'slate'];
+  let suppressClick = false;
 
-  function tightenLayout(source) {
-    if (!source || !Array.isArray(source.items)) return source;
+  function packCanvas(source) {
+    if (!source || !Array.isArray(source.items)) return false;
     const cards = source.items.filter((item) => item.type === 'card');
-    if (!cards.some((item) => item.h >= 3)) return source;
+    if (!cards.length || !cards.some((card) => card.h < 2)) return false;
     cards.forEach((card, index) => {
       card.w = 2;
-      card.h = 1;
+      card.h = 2;
       card.x = (index % 6) * 2;
-      card.y = Math.floor(index / 6);
+      card.y = Math.floor(index / 6) * 2;
     });
-    const base = Math.ceil(cards.length / 6);
-    source.items.filter((item) => item.type !== 'card').forEach((item, index) => {
-      item.y = base + index * 2;
+    const base = Math.ceil(cards.length / 6) * 2;
+    source.items.filter((item) => item.type !== 'card').forEach((item) => {
       item.h = 2;
       item.w = item.type === 'today' ? 6 : 3;
       item.x = item.type === 'today' ? 0 : item.type === 'lowest' ? 6 : 9;
+      item.y = base;
     });
-    return source;
+    return true;
   }
 
   function ensureLayout() {
-    if (layout && Array.isArray(layout.items) && layout.items.length) {
-      tightenLayout(layout);
-      return;
+    if (!(layout && Array.isArray(layout.items) && layout.items.length)) {
+      const fallback = (dashboardData && dashboardData.default_layout) || { columns: 12, alert_minutes: 10, items: [] };
+      layout = cloneLayout(fallback);
+      if (alertMinutesEl && layout.alert_minutes) {
+        alertMinutesEl.value = String(layout.alert_minutes);
+      }
     }
-    const fallback = (dashboardData && dashboardData.default_layout) || { columns: 12, alert_minutes: 10, items: [] };
-    layout = tightenLayout(cloneLayout(fallback));
-    if (alertMinutesEl && layout.alert_minutes) {
-      alertMinutesEl.value = String(layout.alert_minutes);
-    }
+    if (packCanvas(layout)) saveLayout().catch(() => {});
   }
 
   function placeStyle(item) {
@@ -686,16 +706,14 @@
   function renderCanvasCard(card) {
     const title = card.title || card.label || 'Machine';
     return `
-      <div class="auk-oee-tile auk-oee-tile--${cardTone(card)}">
-        <div class="auk-oee-tile__top">
-          <div class="auk-oee-tile__title">${escapeHtml(title)}</div>
-          <strong class="auk-oee-tile__oee">${fmtPctShort(card.oee_pct)}</strong>
-        </div>
-        <div class="auk-oee-tile__metrics">
-          ${renderCompactMetric('LOA', card.loading_pct)}
-          ${renderCompactMetric('AVA', card.availability_pct)}
-          ${renderCompactMetric('PER', card.performance_pct)}
-          ${renderCompactMetric('QUA', card.quality_pct)}
+      <div class="auk-oee-tile auk-oee-tile--canvas auk-oee-tile--${cardTone(card)}">
+        <div class="auk-oee-tile__title">${escapeHtml(title)}</div>
+        <div class="auk-oee-tile__oee">${fmtPctShort(card.oee_pct)}</div>
+        <div class="auk-oee-tile__facts">
+          <span>LOA ${fmtPctShort(card.loading_pct)}</span>
+          <span>AVA ${fmtPctShort(card.availability_pct)}</span>
+          <span>PER ${fmtPctShort(card.performance_pct)}</span>
+          <span>QUA ${fmtPctShort(card.quality_pct)}</span>
         </div>
       </div>
     `;
@@ -809,12 +827,470 @@
     gridEl.classList.add('auk-oee-canvas');
     gridEl.classList.toggle('is-arranging', arranging);
     gridEl.classList.remove('auk-oee-grid--initial');
-    gridEl.innerHTML = renderGuides() + (layout.items || []).map(renderWidget).join('');
+    gridEl.innerHTML = renderGuides() + (layout.items || []).map(renderWidget).join('') + renderDropGhosts();
     gridEl.hidden = false;
     bindCanvas();
     bindCardDetails();
     renderLowBanner();
     renderPalette();
+  }
+
+  const FLOOR_TILE_INSET = 0.025;
+  const FLOOR_MAX_HEIGHT = 760;
+  const CARDS_SUBTITLE = 'Live factory dashboard · refreshes every minute · drag the board to match the floor';
+  const FLOOR_SUBTITLE = 'Shop layout with live OEE on each machine. Click a tile for the timeline.';
+  const CALENDAR_SUBTITLE = 'Daily OEE by machine. Click a name for that range’s timeline.';
+
+  function readSavedView() {
+    try {
+      const saved = localStorage.getItem('auk-oee-view');
+      return saved === 'floor' || saved === 'calendar' ? saved : 'cards';
+    } catch (_err) {
+      return 'cards';
+    }
+  }
+
+  function activeFloorLayout() {
+    return (dashboardData && dashboardData.floor_layout) || config.floorLayout || null;
+  }
+
+  function fmtFloorPct(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    return `${n.toFixed(1)}%`;
+  }
+
+  function cardsByCnc() {
+    const map = new Map();
+    ((dashboardData && dashboardData.cards) || []).forEach((card) => {
+      if (!card.is_machine || card.cnc_number == null) return;
+      map.set(Number(card.cnc_number), card);
+    });
+    return map;
+  }
+
+  function floorBounds(layoutSource) {
+    const bounds = layoutSource && layoutSource.layout_bounds;
+    if (bounds && Number(bounds.width) > 0 && Number(bounds.height) > 0) {
+      return {
+        minX: Number(bounds.min_x),
+        maxY: Number(bounds.max_y),
+        width: Number(bounds.width),
+        height: Number(bounds.height),
+      };
+    }
+    return { minX: 0, maxY: 12, width: 10, height: 12 };
+  }
+
+  function floorTileStyle(machine, bounds) {
+    const relX = Number(machine.x) - bounds.minX;
+    const relTop = bounds.maxY - (Number(machine.y) + Number(machine.h));
+    const scale = 1 - (2 * FLOOR_TILE_INSET);
+    const insetPct = FLOOR_TILE_INSET * 100;
+    return [
+      `left:calc(${insetPct}% + ${((relX / bounds.width) * 100 * scale).toFixed(4)}%)`,
+      `top:calc(${insetPct}% + ${((relTop / bounds.height) * 100 * scale).toFixed(4)}%)`,
+      `width:${((Number(machine.w) / bounds.width) * 100 * scale).toFixed(4)}%`,
+      `height:${((Number(machine.h) / bounds.height) * 100 * scale).toFixed(4)}%`,
+    ].join(';');
+  }
+
+  function floorTileSizeClass(machine) {
+    const classes = [];
+    if (Number(machine.w) < Number(machine.h) * 0.85) classes.push('auk-floor-tile--narrow');
+    if (Math.min(Number(machine.w), Number(machine.h)) <= 0.85) classes.push('auk-floor-tile--small');
+    return classes.join(' ');
+  }
+
+  function sizeFloorCanvas() {
+    const canvas = floorEl && floorEl.querySelector('.auk-floor-canvas');
+    const layoutSource = activeFloorLayout();
+    if (!canvas || !layoutSource) return;
+    const bounds = floorBounds(layoutSource);
+    const stage = canvas.parentElement;
+    if (!stage) return;
+    const ratio = bounds.width / bounds.height;
+    const maxH = Math.min(window.innerHeight * 0.72, FLOOR_MAX_HEIGHT);
+    let canvasW = stage.clientWidth || 640;
+    let canvasH = canvasW / ratio;
+    if (canvasH > maxH) {
+      canvasH = maxH;
+      canvasW = canvasH * ratio;
+    }
+    canvas.style.width = `${Math.floor(canvasW)}px`;
+    canvas.style.height = `${Math.floor(canvasH)}px`;
+  }
+
+  function renderFloorGroups(layoutSource, byCnc) {
+    const groups = layoutSource.groups || [];
+    return groups.map((group) => {
+      const numbers = (group.cnc_numbers || []).map((value) => Number(value));
+      const values = numbers
+        .map((number) => byCnc.get(number))
+        .filter(Boolean)
+        .map((card) => Number(card.oee_pct))
+        .filter((value) => Number.isFinite(value));
+      const avg = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+      const tone = avg == null ? 'idle' : toneForPct(avg);
+      const width = avg == null ? 0 : Math.max(0, Math.min(100, avg));
+      const subtitle = group.subtitle || `${numbers.length}X`;
+      return `
+        <article class="auk-floor-group">
+          <span class="auk-floor-group__label">${escapeHtml(group.label)} <em>${escapeHtml(subtitle)}</em></span>
+          <strong class="auk-floor-group__value">${fmtFloorPct(avg)}</strong>
+          <div class="auk-floor-group__track" aria-hidden="true">
+            <span class="auk-floor-group__fill auk-floor-group__fill--${tone}" style="width:${width}%"></span>
+          </div>
+        </article>
+      `;
+    }).join('');
+  }
+
+  function renderFloorLegend(layoutSource) {
+    const colors = layoutSource.layout_colors || {};
+    const items = layoutSource.legend || [];
+    return items.map((item) => `
+      <span class="auk-floor-legend__item">
+        <span class="auk-floor-legend__swatch" style="background:${escapeHtml(colors[item.key] || '#ccc')}"></span>
+        ${escapeHtml(item.label)}
+      </span>
+    `).join('');
+  }
+
+  function renderFloorTiles(layoutSource, byCnc) {
+    const colors = layoutSource.layout_colors || {};
+    const bounds = floorBounds(layoutSource);
+    const lowIds = new Set(liveNotices().filter((notice) => notice.triggered).map((notice) => Number(notice.equipment_id)));
+    return (layoutSource.machines || []).map((machine) => {
+      const card = byCnc.get(Number(machine.cnc_number)) || null;
+      const oee = card ? card.oee_pct : null;
+      const fill = colors[machine.color] || '#ccc';
+      const equipmentId = card && card.equipment_id != null ? Number(card.equipment_id) : null;
+      const tag = equipmentId != null ? 'button' : 'div';
+      const selected = equipmentId != null && equipmentId === Number(detailEquipmentId) ? ' is-selected' : '';
+      const low = equipmentId != null && lowIds.has(equipmentId) ? ' is-low' : '';
+      const missing = card ? '' : ' is-missing';
+      const subtitle = machine.subtitle ? `<span class="auk-floor-tile__sub">${escapeHtml(machine.subtitle)}</span>` : '';
+      const title = [
+        machine.machine_no,
+        card && card.machine_type ? card.machine_type : '',
+        `OEE ${fmtFloorPct(oee)}`,
+        card ? `loading ${fmtFloorPct(card.loading_pct)}` : 'no live OEE',
+      ].filter(Boolean).join(' · ');
+      const idAttr = equipmentId != null ? ` data-equipment-id="${equipmentId}"` : '';
+      const bar = Number.isFinite(Number(oee))
+        ? `<span class="auk-floor-tile__bar" style="width:${Math.max(0, Math.min(100, Number(oee)))}%"></span>`
+        : '';
+      return `
+        <${tag}${tag === 'button' ? ' type="button"' : ''}
+          class="auk-floor-tile ${floorTileSizeClass(machine)}${selected}${low}${missing}"
+          style="${floorTileStyle(machine, bounds)};background:${escapeHtml(fill)}"
+          title="${escapeHtml(title)}"
+          aria-label="${escapeHtml(title)}"${idAttr}
+        >
+          <span class="auk-floor-tile__no">${escapeHtml(machine.label)}</span>
+          ${subtitle}
+          <span class="auk-floor-tile__util">${fmtFloorPct(oee)}</span>
+          ${bar}
+        </${tag}>
+      `;
+    }).join('');
+  }
+
+  function renderFloorExtras(layoutSource, byCnc) {
+    const placed = new Set((layoutSource.machines || []).map((machine) => Number(machine.cnc_number)));
+    const extras = ((dashboardData && dashboardData.cards) || []).filter((card) => {
+      if (!card.is_machine) return false;
+      return card.cnc_number == null || !placed.has(Number(card.cnc_number));
+    });
+    if (!extras.length) return '';
+    const chips = extras.map((card) => {
+      const equipmentId = card.equipment_id != null ? Number(card.equipment_id) : null;
+      const idAttr = equipmentId != null ? ` data-equipment-id="${equipmentId}"` : '';
+      return `
+        <button type="button" class="auk-floor-chip"${idAttr}>
+          <span>${escapeHtml(card.title || card.label || 'Machine')}</span>
+          <strong>${fmtFloorPct(card.oee_pct)}</strong>
+        </button>
+      `;
+    }).join('');
+    return `
+      <div class="auk-floor-extra">
+        <span class="auk-floor-extra__label">Reporting, not on this floor plan</span>
+        <div class="auk-floor-extra__list">${chips}</div>
+      </div>
+    `;
+  }
+
+  function renderFloor() {
+    if (!floorEl) return;
+    const layoutSource = activeFloorLayout();
+    floorEl.classList.remove('auk-oee-floor--initial');
+    if (!layoutSource || !(layoutSource.machines || []).length) {
+      floorEl.innerHTML = '<div class="auk-floor-empty">Floor layout is not available.</div>';
+      floorEl.hidden = viewMode !== 'floor';
+      return;
+    }
+    const byCnc = cardsByCnc();
+    floorEl.innerHTML = `
+      <div class="auk-floor-groups">${renderFloorGroups(layoutSource, byCnc)}</div>
+      <section class="auk-floor-panel">
+        <div class="auk-floor-legend">${renderFloorLegend(layoutSource)}</div>
+        <div class="auk-floor-stage">
+          <div class="auk-floor-canvas" aria-label="Factory floor plan with live OEE">${renderFloorTiles(layoutSource, byCnc)}</div>
+        </div>
+        <p class="auk-floor-hint">Colours are the shop layout. The number on each machine is live OEE for the selected range.</p>
+      </section>
+      ${renderFloorExtras(layoutSource, byCnc)}
+    `;
+    floorEl.hidden = viewMode !== 'floor';
+    sizeFloorCanvas();
+    renderLowBanner();
+  }
+
+  function renderActive() {
+    if (viewMode === 'calendar') {
+      if (gridEl) gridEl.hidden = true;
+      if (floorEl) floorEl.hidden = true;
+      renderCalendar();
+      return;
+    }
+    if (calendarEl) calendarEl.hidden = true;
+    if (viewMode === 'floor') {
+      if (gridEl) gridEl.hidden = true;
+      renderFloor();
+      return;
+    }
+    if (floorEl) floorEl.hidden = true;
+    if (!dashboardData && !layout) return;
+    renderCanvas();
+  }
+
+  function syncViewChrome() {
+    const cards = viewMode === 'cards';
+    viewButtons.forEach((button) => {
+      button.classList.toggle('is-active', button.dataset.view === viewMode);
+      button.disabled = arranging;
+    });
+    if (arrangeBtn) arrangeBtn.hidden = !cards || arranging;
+    if (subtitleEl) {
+      const subtitles = { floor: FLOOR_SUBTITLE, calendar: CALENDAR_SUBTITLE };
+      subtitleEl.textContent = subtitles[viewMode] || CARDS_SUBTITLE;
+    }
+  }
+
+  function setView(mode) {
+    if (arranging) return;
+    viewMode = mode === 'floor' || mode === 'calendar' ? mode : 'cards';
+    try {
+      localStorage.setItem('auk-oee-view', viewMode);
+    } catch (_err) {
+      // private browsing
+    }
+    syncViewChrome();
+    if (viewMode === 'calendar') loadCalendar(false);
+    else renderActive();
+  }
+
+  let calendarData = null;
+  let calendarKey = '';
+  let calendarRequest = 0;
+  const calendarCollapsed = new Set();
+
+  function heatStyle(value) {
+    const pct = Number(value);
+    if (!Number.isFinite(pct)) return '';
+    const t = Math.max(0, Math.min(100, pct)) / 100;
+    const stops = [
+      [0, [196, 50, 42]],
+      [0.35, [227, 106, 34]],
+      [0.62, [242, 193, 75]],
+      [0.82, [125, 190, 69]],
+      [1, [47, 158, 74]],
+    ];
+    let left = stops[0];
+    let right = stops[stops.length - 1];
+    for (let i = 0; i < stops.length - 1; i += 1) {
+      if (t >= stops[i][0] && t <= stops[i + 1][0]) {
+        left = stops[i];
+        right = stops[i + 1];
+        break;
+      }
+    }
+    const span = right[0] - left[0] || 1;
+    const mix = (t - left[0]) / span;
+    const rgb = left[1].map((channel, index) => Math.round(channel + (right[1][index] - channel) * mix));
+    const text = (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) > 150 ? '#101828' : '#fff';
+    return `background:rgb(${rgb.join(',')});color:${text}`;
+  }
+
+  function calendarMonthGroups(days) {
+    const groups = [];
+    (days || []).forEach((day) => {
+      const label = new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { month: 'short' });
+      const last = groups[groups.length - 1];
+      if (last && last.label === label) last.span += 1;
+      else groups.push({ label, span: 1 });
+    });
+    return groups;
+  }
+
+  function calendarRowVisible(row, byId) {
+    let parentId = row.parent_id;
+    while (parentId) {
+      if (calendarCollapsed.has(parentId)) return false;
+      const parent = byId.get(parentId);
+      parentId = parent ? parent.parent_id : null;
+    }
+    return true;
+  }
+
+  function renderCalendar() {
+    if (!calendarEl) return;
+    if (viewMode === 'calendar') {
+      if (gridEl) gridEl.hidden = true;
+      if (floorEl) floorEl.hidden = true;
+      calendarEl.hidden = false;
+    } else {
+      calendarEl.hidden = true;
+      return;
+    }
+    if (!calendarData) {
+      calendarEl.innerHTML = '<p class="auk-cal-status">Loading daily OEE…</p>';
+      return;
+    }
+    if (calendarData.error) {
+      calendarEl.innerHTML = `<p class="auk-cal-status">${escapeHtml(calendarData.error)}</p>`;
+      return;
+    }
+    const days = calendarData.days || [];
+    const rows = calendarData.rows || [];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const months = calendarMonthGroups(days).map((group) => (
+      `<th class="auk-cal-month" colspan="${group.span}">${escapeHtml(group.label)}</th>`
+    )).join('');
+    const dayHeads = days.map((day) => {
+      const num = day.slice(8);
+      return `<th class="auk-cal-day">${escapeHtml(num)}</th>`;
+    }).join('');
+    const body = rows.filter((row) => calendarRowVisible(row, byId)).map((row) => {
+      const twist = row.expandable
+        ? `<button type="button" class="auk-cal-twist" data-cal-toggle="${escapeHtml(row.id)}" aria-label="${calendarCollapsed.has(row.id) ? 'Expand' : 'Collapse'}">${calendarCollapsed.has(row.id) ? '▸' : '▾'}</button>`
+        : '<span class="auk-cal-twist auk-cal-twist--spacer"></span>';
+      const nameTag = row.equipment_id != null ? 'button' : 'span';
+      const nameAttrs = row.equipment_id != null
+        ? ` type="button" class="auk-cal-name is-link" data-cal-open="${Number(row.equipment_id)}" data-cal-label="${escapeHtml(row.label)}"`
+        : ' class="auk-cal-name"';
+      const cells = (row.values || []).map((value, index) => {
+        if (value == null) return '<td class="auk-cal-cell is-empty"></td>';
+        const day = days[index] || '';
+        return `<td class="auk-cal-cell" style="${heatStyle(value)}" title="${escapeHtml(row.label)} · ${escapeHtml(day)} · ${value}%">${value}</td>`;
+      }).join('');
+      return `
+        <tr class="auk-cal-row${row.is_machine ? '' : ' is-group'}">
+          <th class="auk-cal-label" style="padding-left:${8 + row.depth * 16}px">
+            ${twist}<${nameTag}${nameAttrs}>${escapeHtml(row.label)}</${nameTag}>
+          </th>
+          ${cells}
+        </tr>
+      `;
+    }).join('');
+    calendarEl.innerHTML = `
+      <div class="auk-cal-tools">
+        <button type="button" class="auk-cal-nav" data-cal-month="-1" aria-label="Previous month">‹</button>
+        <input type="date" class="auk-cal-date" id="auk-oee-cal-from" value="${escapeHtml(calendarData.from || '')}" aria-label="From date">
+        <span aria-hidden="true">–</span>
+        <input type="date" class="auk-cal-date" id="auk-oee-cal-to" value="${escapeHtml(calendarData.to || '')}" aria-label="To date">
+        <button type="button" class="auk-cal-nav" data-cal-month="1" aria-label="Next month">›</button>
+        <span class="auk-cal-res">Daily</span>
+        <div class="auk-cal-legend">
+          <span>0</span>
+          <span class="auk-cal-legend__bar" aria-hidden="true"></span>
+          <span>100</span>
+          <span>OEE</span>
+        </div>
+      </div>
+      <div class="auk-cal-scroll">
+        <table class="auk-cal-table">
+          <thead>
+            <tr>
+              <th class="auk-cal-corner" rowspan="2"></th>
+              ${months}
+            </tr>
+            <tr>${dayHeads}</tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function calendarRangeParams() {
+    const fromInput = document.getElementById('auk-oee-cal-from');
+    const toInput = document.getElementById('auk-oee-cal-to');
+    const params = new URLSearchParams();
+    if (fromInput && fromInput.value && toInput && toInput.value) {
+      params.set('from', fromInput.value);
+      params.set('to', toInput.value);
+    }
+    return params;
+  }
+
+  async function loadCalendar(force) {
+    if (!calendarEl || viewMode !== 'calendar') return;
+    const params = calendarRangeParams();
+    const key = params.toString() || 'default';
+    if (!force && calendarData && calendarKey === key && !calendarData.error) {
+      renderCalendar();
+      return;
+    }
+    const requestId = ++calendarRequest;
+    if (gridEl) gridEl.hidden = true;
+    if (floorEl) floorEl.hidden = true;
+    calendarEl.hidden = false;
+    if (!calendarData || calendarKey !== key) {
+      calendarEl.innerHTML = '<p class="auk-cal-status">Loading daily OEE…</p>';
+    }
+    try {
+      const res = await fetch(`/api/auk-oee/calendar?${params}`);
+      const data = await res.json();
+      if (requestId !== calendarRequest) return;
+      if (!res.ok) throw new Error(data.error || 'Could not load daily OEE');
+      calendarData = data;
+      calendarKey = new URLSearchParams({ from: data.from || '', to: data.to || '' }).toString();
+      renderCalendar();
+    } catch (err) {
+      if (requestId !== calendarRequest) return;
+      if (calendarData && calendarData.rows) {
+        showAlert(err.message || 'Could not load daily OEE');
+        renderCalendar();
+        return;
+      }
+      calendarData = { error: err.message || 'Could not load daily OEE' };
+      renderCalendar();
+    }
+  }
+
+  function shiftCalendarMonth(delta) {
+    const fromInput = document.getElementById('auk-oee-cal-from');
+    const toInput = document.getElementById('auk-oee-cal-to');
+    const source = (fromInput && fromInput.value) || (calendarData && calendarData.from);
+    if (!source || !fromInput || !toInput) return;
+    const [year, month] = source.split('-').map(Number);
+    const start = new Date(year, month - 1 + delta, 1);
+    const end = new Date(year, month + delta, 0);
+    const iso = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    fromInput.value = iso(start);
+    toInput.value = iso(end);
+    loadCalendar(true);
+  }
+
+  function markFloorSelection() {
+    if (!floorEl || viewMode !== 'floor') return;
+    floorEl.querySelectorAll('.auk-floor-tile').forEach((node) => {
+      const id = Number(node.getAttribute('data-equipment-id'));
+      node.classList.toggle('is-selected', id && id === Number(detailEquipmentId));
+    });
   }
 
   const modalEl = document.getElementById('auk-oee-modal');
@@ -840,16 +1316,130 @@
     return dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   }
 
-  function renderSliceDetail(source, title) {
+  function detailNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function slotMinutes() {
+    return detailRes === '15' ? 15 : 60;
+  }
+
+  function formatSlotWindow(iso) {
+    const start = new Date(iso);
+    if (Number.isNaN(start.getTime())) return 'This block';
+    const end = new Date(start.getTime() + slotMinutes() * 60 * 1000);
+    const timeOf = (dt) => dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    return `${timeOf(start)}–${timeOf(end)}`;
+  }
+
+  function explainHour(source) {
+    const oee = detailNumber(source && source.oee_pct);
+    const losses = (source && source.losses) || {};
+    const unscheduled = detailNumber(losses.us);
+    const planned = detailNumber(losses.pd);
+    const idle = detailNumber(losses.uu);
+    const broken = detailNumber(losses.bd);
+    const setup = detailNumber(losses.st);
+    const stops = detailNumber(losses.ms);
+    const slow = detailNumber(losses.sl);
+    const rejects = detailNumber(losses.rj);
+    const rework = detailNumber(losses.rw);
+
+    if (oee < 1 && unscheduled >= 80) {
+      return 'This block was off the plan. Nothing was expected to run, so OEE is 0.';
+    }
+
+    const drags = [
+      [idle, `It was on the plan, but sat idle for ${fmtPctShort(idle)} of the time.`],
+      [unscheduled, `${fmtPctShort(unscheduled)} of the time was not scheduled.`],
+      [planned, `${fmtPctShort(planned)} was a planned stop.`],
+      [broken, `${fmtPctShort(broken)} was a breakdown.`],
+      [setup, `${fmtPctShort(setup)} was setup, not cutting.`],
+      [stops, `${fmtPctShort(stops)} was lost to short stops.`],
+      [slow, `${fmtPctShort(slow)} was lost because it ran slow.`],
+      [rejects, `${fmtPctShort(rejects)} went to rejected parts.`],
+      [rework, `${fmtPctShort(rework)} went to rework.`],
+    ].filter(([amount]) => amount >= 8).sort((a, b) => b[0] - a[0]);
+
+    let text = drags.length
+      ? drags[0][1]
+      : `OEE was ${fmtPctShort(oee)}.`;
+    if (drags[1] && drags[1][0] >= 15) text += ` ${drags[1][1]}`;
+    if (oee >= 85 && !drags.length) text += ' This was a solid block.';
+    return text;
+  }
+
+  function explainRange(payload) {
+    const oee = detailNumber(payload && payload.oee_pct);
+    const loa = detailNumber(payload && payload.loading_pct);
+    const ava = detailNumber(payload && payload.availability_pct);
+    const bits = [`Across the whole range, OEE was ${fmtPctShort(oee)}.`];
+    if (loa < 75) bits.push(`Only ${fmtPctShort(loa)} of the time was on the plan.`);
+    else bits.push(`${fmtPctShort(loa)} of the time was scheduled.`);
+    if (ava < 85) bits.push(`The machine was up for ${fmtPctShort(ava)} of that scheduled time.`);
+    return bits.join(' ');
+  }
+
+  function renderFactors(source) {
+    const ava = detailNumber(source && source.availability_pct);
+    const factors = [
+      {
+        name: 'Scheduled',
+        hint: 'Share of this time that was on the plan',
+        text: fmtPctShort(source && source.loading_pct),
+        bar: detailNumber(source && source.loading_pct),
+        tone: segmentTone(source && source.loading_pct),
+      },
+      {
+        name: 'Up time',
+        hint: 'Of the scheduled time, how much the machine was up',
+        text: fmtPctShort(ava),
+        bar: ava,
+        tone: segmentTone(ava),
+      },
+    ];
     return `
-      <div class="auk-oee-modal__detail">
-        <h3>${escapeHtml(title)}</h3>
-        <div class="auk-oee-tile__oee">${fmtPctShort(source && source.oee_pct)}</div>
-        ${renderCompactMetric('LOA', source && source.loading_pct)}
-        ${renderCompactMetric('AVA', source && source.availability_pct)}
-        ${renderCompactMetric('PER', source && source.performance_pct)}
-        ${renderCompactMetric('QUA', source && source.quality_pct)}
-        ${source && source.losses ? renderLossGrid(source.losses) : ''}
+      <div class="auk-factor">
+        ${factors.map((factor) => `
+          <div class="auk-factor__item">
+            <span class="auk-factor__name">${factor.name}</span>
+            <strong class="auk-factor__value">${factor.text}</strong>
+            <span class="auk-factor__hint">${factor.hint}</span>
+            <span class="auk-factor__track"><span class="auk-factor__fill auk-factor__fill--${factor.tone}" style="width:${Math.max(0, Math.min(100, factor.bar))}%"></span></span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderTimeSplit(losses) {
+    const story = [
+      ['us', 'Not scheduled', 'idle'],
+      ['pd', 'Planned stop', 'idle'],
+      ['uu', 'Sitting idle', 'warn'],
+      ['bd', 'Breakdown', 'bad'],
+      ['st', 'Setup', 'warn'],
+      ['ms', 'Short stops', 'warn'],
+      ['sl', 'Running slow', 'warn'],
+      ['rj', 'Rejects', 'bad'],
+      ['rw', 'Rework', 'bad'],
+      ['na', 'No data', 'idle'],
+      ['ef', 'Producing', 'good'],
+    ];
+    const parts = story
+      .map(([key, name, tone]) => ({ name, tone, value: detailNumber(losses && losses[key]) }))
+      .filter((part) => part.value >= 0.5);
+    if (!parts.length) return '';
+    return `
+      <div class="auk-split">
+        <p class="auk-split__label">Where the time went</p>
+        <div class="auk-split__bar">
+          ${parts.map((part) => `<span class="auk-split__seg auk-split__seg--${part.tone}" style="flex:${part.value.toFixed(2)}" title="${escapeHtml(part.name)} ${fmtPctShort(part.value)}"></span>`).join('')}
+        </div>
+        <ul class="auk-split__list">
+          ${parts.map((part) => `<li><i class="auk-split__dot auk-split__seg--${part.tone}"></i><span>${escapeHtml(part.name)}</span><strong>${fmtPctShort(part.value)}</strong></li>`).join('')}
+        </ul>
       </div>
     `;
   }
@@ -857,25 +1447,40 @@
   function renderTimeline(payload) {
     const segments = (payload && payload.segments) || [];
     if (!segments.length) {
-      modalBodyEl.innerHTML = '<p class="auk-oee-widget__empty">No time slices came back for this range.</p>';
+      modalBodyEl.innerHTML = '<p class="auk-oee-widget__empty">No time blocks came back for this range.</p>';
       return;
     }
     if (detailSelected == null || detailSelected >= segments.length) detailSelected = segments.length - 1;
-    const bars = segments.map((segment, index) => `
-      <button type="button" class="auk-oee-seg auk-oee-seg--${segmentTone(segment.oee_pct)}${index === detailSelected ? ' is-selected' : ''}" data-segment-index="${index}">
-        <span class="auk-oee-seg__bar">${fmtPctShort(segment.oee_pct)}</span>
-        <span class="auk-oee-seg__time">${escapeHtml(formatSlotTime(segment.start))}</span>
-      </button>
-    `).join('');
     const selected = segments[detailSelected];
+    const blockWord = slotMinutes() === 15 ? '15-minute block' : 'hour';
+    const bars = segments.map((segment, index) => {
+      const pct = Math.max(0, Math.min(100, detailNumber(segment.oee_pct)));
+      const tone = segmentTone(segment.oee_pct);
+      return `
+        <button type="button" class="auk-tl__bar${index === detailSelected ? ' is-selected' : ''}" data-segment-index="${index}" title="${escapeHtml(formatSlotWindow(segment.start))} · OEE ${fmtPctShort(segment.oee_pct)}">
+          <span class="auk-tl__plot"><span class="auk-tl__fill auk-tl__fill--${tone}" style="height:${Math.max(pct, 4)}%"></span></span>
+          <span class="auk-tl__meta"><strong>${fmtPctShort(segment.oee_pct)}</strong>${escapeHtml(formatSlotTick(segment.start))}</span>
+        </button>
+      `;
+    }).join('');
     modalBodyEl.innerHTML = `
-      <div class="auk-oee-modal__layout">
-        <div class="auk-oee-segments">${bars}</div>
-        <div>
-          ${renderSliceDetail(selected, selected && selected.start ? `Slice ${formatSlotTime(selected.start)}` : 'This slice')}
-          ${renderSliceDetail(payload, 'Whole range')}
+      <p class="auk-tl__hint">Each bar is one ${blockWord}. Taller means higher OEE. Grey means it was off the plan. Click a bar.</p>
+      <div class="auk-tl__track">${bars}</div>
+      <section class="auk-detail">
+        <div class="auk-detail__lead">
+          <p class="auk-detail__when">${escapeHtml(selected && selected.start ? formatSlotWindow(selected.start) : 'This block')}</p>
+          <p class="auk-detail__oee auk-detail__oee--${segmentTone(selected && selected.oee_pct)}">${fmtPctShort(selected && selected.oee_pct)}</p>
+          <p class="auk-detail__kicker">OEE for this ${blockWord}</p>
+          <p class="auk-detail__story">${escapeHtml(explainHour(selected))}</p>
         </div>
-      </div>
+        ${renderTimeSplit(selected && selected.losses)}
+        ${renderFactors(selected)}
+      </section>
+      <section class="auk-range">
+        <h3>Whole range</h3>
+        <p class="auk-detail__story">${escapeHtml(explainRange(payload))}</p>
+        ${renderFactors(payload)}
+      </section>
     `;
     modalBodyEl.querySelectorAll('[data-segment-index]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -883,17 +1488,28 @@
         renderTimeline(detailPayload);
       });
     });
+    const selectedBar = modalBodyEl.querySelector('.auk-tl__bar.is-selected');
+    if (selectedBar) selectedBar.scrollIntoView({ inline: 'center', block: 'nearest' });
   }
 
-  async function openDetail(equipmentId) {
+  function formatSlotTick(iso) {
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return '';
+    if (dt.getMinutes() === 0) return dt.toLocaleTimeString(undefined, { hour: 'numeric' });
+    return dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  }
+
+  async function openDetail(equipmentId, options) {
     const card = cardsById().get(Number(equipmentId));
+    const range = options && options.query;
     detailEquipmentId = equipmentId;
     detailSelected = null;
-    modalTitleEl.textContent = (card && (card.title || card.label)) || `Equipment ${equipmentId}`;
+    modalTitleEl.textContent = (options && options.label) || (card && (card.title || card.label)) || `Equipment ${equipmentId}`;
     modalSubEl.textContent = 'Loading time slices…';
     modalBodyEl.innerHTML = '<p class="auk-oee-widget__empty">Loading…</p>';
     modalEl.hidden = false;
-    const params = new URLSearchParams(currentQuery());
+    markFloorSelection();
+    const params = new URLSearchParams(range || currentQuery());
     if (detailRes === '15') {
       params.set('res_x', '15');
       params.set('res_period', 'minutes');
@@ -906,7 +1522,8 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not load the timeline');
       detailPayload = data;
-      modalSubEl.textContent = `${formatRangeLocal(data.from, data.to)} · ${(data.segments || []).length} slices`;
+      const blockLabel = detailRes === '15' ? '15-minute blocks' : 'hours';
+      modalSubEl.textContent = `${formatRangeLocal(data.from, data.to)} · ${(data.segments || []).length} ${blockLabel}`;
       renderTimeline(data);
     } catch (err) {
       modalSubEl.textContent = '';
@@ -918,11 +1535,16 @@
     if (!modalEl) return;
     modalEl.hidden = true;
     detailEquipmentId = null;
+    markFloorSelection();
   }
 
   function bindCardDetails() {
     gridEl.querySelectorAll('.auk-oee-widget--card').forEach((widget) => {
       widget.addEventListener('click', (event) => {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
         if (arranging || dragState) return;
         if (event.target.closest('button, .auk-oee-swatches')) return;
         const item = (layout.items || []).find((entry) => entry.id === widget.getAttribute('data-widget-id'));
@@ -961,39 +1583,199 @@
     }));
   }
 
+  function shortMachineName(label) {
+    const text = String(label || 'Machine').replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    return text || 'Machine';
+  }
+
+  function formatWait(minutes) {
+    const n = Number(minutes);
+    if (!Number.isFinite(n) || n <= 0) return 'now';
+    if (n < 60) return `${Math.round(n)}m`;
+    const hours = Math.floor(n / 60);
+    const rest = Math.round(n % 60);
+    return rest ? `${hours}h ${rest}m` : `${hours}h`;
+  }
+
   function renderLowBanner() {
     if (!lowEl) return;
-    const notices = liveNotices();
-    lowEl.hidden = false;
+    const notices = liveNotices().sort((a, b) => {
+      if (Boolean(a.triggered) !== Boolean(b.triggered)) return a.triggered ? -1 : 1;
+      return (Number(b.minutes) || 0) - (Number(a.minutes) || 0)
+        || (Number(a.oee_pct) || 0) - (Number(b.oee_pct) || 0);
+    });
     if (!notices.length) {
-      lowEl.className = 'auk-oee-low auk-oee-low--quiet';
-      lowEl.innerHTML = `No loaded machine is under 40%. Watch is ${alertMinutes()} min.`;
+      lowEl.hidden = true;
+      lowEl.innerHTML = '';
       return;
     }
     const triggered = notices.filter((notice) => notice.triggered);
-    lowEl.className = `auk-oee-low${triggered.length ? ' auk-oee-low--alert' : ' auk-oee-low--watch'}`;
-    const head = triggered.length
-      ? `<strong>Low OEE</strong> for ${alertMinutes()} min or more`
-      : `<strong>Watching low OEE</strong> — alert after ${alertMinutes()} min`;
-    const lines = notices.map((notice) => {
-      const name = notice.label || (notice.kind === 'plant' ? 'Plant' : 'Machine');
-      const waited = Number(notice.minutes) > 0 ? `${notice.minutes} min` : 'just now';
-      return `<span><strong>${escapeHtml(name)}</strong> ${fmtPctShort(notice.oee_pct)} · ${waited}</span>`;
+    lowEl.hidden = false;
+    lowEl.className = `auk-oee-low auk-oee-low--${triggered.length ? 'alert' : 'watch'}`;
+    const countLabel = triggered.length
+      ? `${notices.length} under 40%`
+      : `${notices.length} dipping`;
+    const chips = notices.map((notice) => {
+      const name = shortMachineName(notice.label || (notice.kind === 'plant' ? 'Plant' : 'Machine'));
+      const idAttr = notice.equipment_id != null ? ` data-low-equipment="${Number(notice.equipment_id)}"` : '';
+      return `
+        <button type="button" class="auk-oee-low__chip${notice.triggered ? ' is-hot' : ''}"${idAttr}>
+          <span>${escapeHtml(name)}</span>
+          <strong>${fmtPctShort(notice.oee_pct)}</strong>
+          <em>${formatWait(notice.minutes)}</em>
+        </button>
+      `;
     }).join('');
-    lowEl.innerHTML = `${head}<div class="auk-oee-low__list">${lines}</div>`;
+    lowEl.innerHTML = `<span class="auk-oee-low__count">${escapeHtml(countLabel)}</span><div class="auk-oee-low__list">${chips}</div>`;
   }
 
   function renderGuides() {
-    if (!arranging) return '';
     const items = layout.items || [];
-    const rows = Math.max(4, ...items.map((item) => item.y + item.h)) + 1;
+    const used = items.length ? Math.max(...items.map((item) => item.y + item.h)) : 4;
+    const rows = Math.max(used + 2, 8);
     let html = '';
     for (let y = 0; y < rows; y += 1) {
       for (let x = 0; x < GRID_COLS; x += 1) {
-        html += `<div class="auk-oee-cell" style="grid-column:${x + 1};grid-row:${y + 1}"></div>`;
+        html += `<div class="auk-oee-cell" data-cell="${x},${y}" style="grid-column:${x + 1};grid-row:${y + 1}"></div>`;
       }
     }
     return html;
+  }
+
+  function renderDropGhosts() {
+    return '<div class="auk-oee-drop-ghost" data-ghost="dest" hidden></div><div class="auk-oee-drop-ghost" data-ghost="origin" hidden></div>';
+  }
+
+  function gridMetrics() {
+    const origin = gridEl.querySelector('[data-cell="0,0"]');
+    if (!origin) return null;
+    const originRect = origin.getBoundingClientRect();
+    const right = gridEl.querySelector('[data-cell="1,0"]');
+    const below = gridEl.querySelector('[data-cell="0,1"]');
+    const strideX = right ? right.getBoundingClientRect().left - originRect.left : originRect.width;
+    const strideY = below ? below.getBoundingClientRect().top - originRect.top : originRect.height;
+    if (!(strideX > 0) || !(strideY > 0)) return null;
+    return { originX: originRect.left, originY: originRect.top, strideX, strideY };
+  }
+
+  function cellFromClient(clientX, clientY) {
+    const metrics = gridMetrics();
+    if (!metrics) return null;
+    return {
+      col: Math.floor((clientX - metrics.originX) / metrics.strideX),
+      row: Math.floor((clientY - metrics.originY) / metrics.strideY),
+    };
+  }
+
+  function snapCardOrigin(left, top, w) {
+    const metrics = gridMetrics();
+    if (!metrics) return null;
+    const col = Math.round((left - metrics.originX) / metrics.strideX);
+    const row = Math.round((top - metrics.originY) / metrics.strideY);
+    return {
+      col: Math.max(0, Math.min(GRID_COLS - w, col)),
+      row: Math.max(0, row),
+    };
+  }
+
+  function overlapArea(entry, x, y, w, h) {
+    const x1 = Math.max(entry.x, x);
+    const y1 = Math.max(entry.y, y);
+    const x2 = Math.min(entry.x + entry.w, x + w);
+    const y2 = Math.min(entry.y + entry.h, y + h);
+    if (x2 <= x1 || y2 <= y1) return 0;
+    return (x2 - x1) * (y2 - y1);
+  }
+
+  function itemAtCell(col, row, ignoreId) {
+    if (col < 0 || col >= GRID_COLS || row < 0) return null;
+    return (layout.items || []).find((entry) => (
+      entry.id !== ignoreId
+      && col >= entry.x
+      && col < entry.x + entry.w
+      && row >= entry.y
+      && row < entry.y + entry.h
+    )) || null;
+  }
+
+  function cellsFree(ignoreIds, x, y, w, h) {
+    if (x < 0 || y < 0 || x + w > GRID_COLS) return false;
+    return (layout.items || []).every((entry) => ignoreIds.has(entry.id) || overlapArea(entry, x, y, w, h) === 0);
+  }
+
+  function canSwap(item, other) {
+    if (other.w === item.w && other.h === item.h) return true;
+    const ignore = new Set([item.id, other.id]);
+    return cellsFree(ignore, other.x, other.y, item.w, item.h)
+      && cellsFree(ignore, item.x, item.y, other.w, other.h);
+  }
+
+  function resolveDrop(item, snapped, pointer) {
+    const hovered = pointer ? itemAtCell(pointer.col, pointer.row, item.id) : null;
+    if (hovered && canSwap(item, hovered)) {
+      return { type: 'swap', other: hovered, x: hovered.x, y: hovered.y };
+    }
+    if (!snapped) return { type: 'invalid' };
+    const hits = (layout.items || []).filter((entry) => entry.id !== item.id && overlapArea(entry, snapped.col, snapped.row, item.w, item.h) > 0);
+    if (!hits.length) return { type: 'move', x: snapped.col, y: snapped.row };
+    hits.sort((a, b) => overlapArea(b, snapped.col, snapped.row, item.w, item.h) - overlapArea(a, snapped.col, snapped.row, item.w, item.h));
+    const other = hits[0];
+    const area = overlapArea(other, snapped.col, snapped.row, item.w, item.h);
+    const covered = area / Math.min(item.w * item.h, other.w * other.h);
+    if (covered >= 0.5 && canSwap(item, other)) {
+      return { type: 'swap', other, x: other.x, y: other.y };
+    }
+    return { type: 'invalid', x: snapped.col, y: snapped.row };
+  }
+
+  function placeGhost(name, box, mode) {
+    const ghost = gridEl.querySelector(`[data-ghost="${name}"]`);
+    if (!ghost) return;
+    if (!box) {
+      ghost.hidden = true;
+      ghost.className = 'auk-oee-drop-ghost';
+      return;
+    }
+    ghost.hidden = false;
+    ghost.className = `auk-oee-drop-ghost is-${mode}`;
+    ghost.style.gridColumn = `${box.x + 1} / span ${box.w}`;
+    ghost.style.gridRow = `${box.y + 1} / span ${box.h}`;
+  }
+
+  function markSwapTarget(id) {
+    gridEl.querySelectorAll('.auk-oee-widget.is-swap-target').forEach((node) => node.classList.remove('is-swap-target'));
+    if (!id) return;
+    const target = gridEl.querySelector(`[data-widget-id="${CSS.escape(id)}"]`);
+    if (target) target.classList.add('is-swap-target');
+  }
+
+  function clearDropPreview() {
+    placeGhost('dest', null);
+    placeGhost('origin', null);
+    markSwapTarget(null);
+    gridEl.classList.remove('is-dragging-active');
+  }
+
+  function showDropPreview(decision, state) {
+    if (!decision || decision.type === 'invalid') {
+      placeGhost('origin', null);
+      markSwapTarget(null);
+      if (decision && decision.x != null) {
+        placeGhost('dest', { x: decision.x, y: decision.y, w: state.w, h: state.h }, 'invalid');
+      } else {
+        placeGhost('dest', null);
+      }
+      return;
+    }
+    if (decision.type === 'swap') {
+      placeGhost('dest', { x: decision.x, y: decision.y, w: state.w, h: state.h }, 'swap');
+      placeGhost('origin', { x: state.startX, y: state.startY, w: decision.other.w, h: decision.other.h }, 'origin');
+      markSwapTarget(decision.other.id);
+      return;
+    }
+    placeGhost('origin', null);
+    markSwapTarget(null);
+    placeGhost('dest', { x: decision.x, y: decision.y, w: state.w, h: state.h }, 'move');
   }
 
   function renderPalette() {
@@ -1034,17 +1816,6 @@
     return { x: 0, y: 0 };
   }
 
-  function cellFromPointer(clientX, clientY) {
-    const rect = gridEl.getBoundingClientRect();
-    const colWidth = (rect.width - GRID_GAP * (GRID_COLS - 1)) / GRID_COLS;
-    const col = Math.floor((clientX - rect.left) / (colWidth + GRID_GAP));
-    const row = Math.floor((clientY - rect.top) / (GRID_ROW + GRID_GAP));
-    return {
-      col: Math.max(0, Math.min(GRID_COLS - 1, col)),
-      row: Math.max(0, row),
-    };
-  }
-
   function bindCanvas() {
     if (!arranging) return;
     gridEl.querySelectorAll('.auk-oee-widget').forEach((widget) => {
@@ -1074,75 +1845,100 @@
 
   function onWidgetPointerDown(event) {
     if (!arranging || event.button !== 0) return;
-    if (event.target.closest('[data-remove], [data-color], .auk-oee-swatches')) return;
+    if (event.target.closest('[data-remove], [data-color], .auk-oee-swatches, [data-resize]')) return;
+    if (dragState) return;
+    event.preventDefault();
     const widget = event.currentTarget;
     const id = widget.getAttribute('data-widget-id');
     const item = (layout.items || []).find((entry) => entry.id === id);
     if (!item) return;
-    const resizing = Boolean(event.target.closest('[data-resize]'));
-    const origin = cellFromPointer(event.clientX, event.clientY);
+    const rect = widget.getBoundingClientRect();
     dragState = {
       id,
-      resizing,
-      originCol: origin.col,
-      originRow: origin.row,
       startX: item.x,
       startY: item.y,
-      startW: item.w,
-      startH: item.h,
+      w: item.w,
+      h: item.h,
+      originX: event.clientX,
+      originY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
+      moved: false,
     };
-    widget.setPointerCapture(event.pointerId);
-    widget.addEventListener('pointermove', onWidgetPointerMove);
-    widget.addEventListener('pointerup', onWidgetPointerUp);
+    if (widget.setPointerCapture) widget.setPointerCapture(event.pointerId);
+    document.addEventListener('pointermove', onWidgetPointerMove);
+    document.addEventListener('pointerup', onWidgetPointerUp);
+    document.addEventListener('pointercancel', onWidgetPointerUp);
+  }
+
+  function endWidgetDrag() {
+    document.removeEventListener('pointermove', onWidgetPointerMove);
+    document.removeEventListener('pointerup', onWidgetPointerUp);
+    document.removeEventListener('pointercancel', onWidgetPointerUp);
   }
 
   function onWidgetPointerMove(event) {
     if (!dragState) return;
+    const dx = event.clientX - dragState.originX;
+    const dy = event.clientY - dragState.originY;
+    if (!dragState.moved && Math.hypot(dx, dy) < 6) return;
+    dragState.moved = true;
+    const widget = gridEl.querySelector(`[data-widget-id="${CSS.escape(dragState.id)}"]`);
+    if (!widget) return;
+    const left = event.clientX - dragState.offsetX;
+    const top = event.clientY - dragState.offsetY;
+    widget.classList.add('is-dragging');
+    gridEl.classList.add('is-dragging-active');
+    widget.style.position = 'fixed';
+    widget.style.left = `${left}px`;
+    widget.style.top = `${top}px`;
+    widget.style.width = `${dragState.width}px`;
+    widget.style.height = `${dragState.height}px`;
+    widget.style.zIndex = '30';
+    widget.style.margin = '0';
     const item = (layout.items || []).find((entry) => entry.id === dragState.id);
     if (!item) return;
-    const cell = cellFromPointer(event.clientX, event.clientY);
-    if (dragState.resizing) {
-      const dw = cell.col - dragState.originCol;
-      const dh = cell.row - dragState.originRow;
-      const minH = item.type === 'card' ? 1 : 2;
-      item.w = Math.max(2, Math.min(12 - item.x, dragState.startW + dw));
-      item.h = Math.max(minH, Math.min(4, dragState.startH + dh));
-    } else {
-      const dx = cell.col - dragState.originCol;
-      const dy = cell.row - dragState.originRow;
-      item.x = Math.max(0, Math.min(12 - item.w, dragState.startX + dx));
-      item.y = Math.max(0, dragState.startY + dy);
-    }
-    const widget = gridEl.querySelector(`[data-widget-id="${dragState.id}"]`);
-    if (widget) widget.style.cssText = placeStyle(item);
+    const snapped = snapCardOrigin(left, top, dragState.w);
+    const pointer = cellFromClient(event.clientX, event.clientY);
+    dragState.decision = resolveDrop(item, snapped, pointer);
+    showDropPreview(dragState.decision, dragState);
   }
 
-  function onWidgetPointerUp(event) {
-    const widget = event.currentTarget;
-    widget.removeEventListener('pointermove', onWidgetPointerMove);
-    widget.removeEventListener('pointerup', onWidgetPointerUp);
+  function onWidgetPointerUp() {
+    endWidgetDrag();
     const state = dragState;
     dragState = null;
-    if (!state) return;
-    const item = (layout.items || []).find((entry) => entry.id === state.id);
-    if (!item || state.resizing) {
+    clearDropPreview();
+    if (!state || !state.moved) {
       renderCanvas();
       return;
     }
-    const other = (layout.items || []).find((entry) => {
-      if (entry.id === item.id) return false;
-      return item.x < entry.x + entry.w && item.x + item.w > entry.x
-        && item.y < entry.y + entry.h && item.y + item.h > entry.y;
-    });
-    if (other) {
-      const nextX = other.x;
-      const nextY = other.y;
-      other.x = Math.max(0, Math.min(12 - other.w, state.startX));
-      other.y = state.startY;
-      item.x = Math.max(0, Math.min(12 - item.w, nextX));
+    suppressClick = true;
+    window.setTimeout(() => { suppressClick = false; }, 0);
+    const item = (layout.items || []).find((entry) => entry.id === state.id);
+    const decision = state.decision;
+    if (!item || !decision || decision.type === 'invalid') {
+      renderCanvas();
+      return;
+    }
+    let changed = false;
+    if (decision.type === 'move') {
+      changed = item.x !== decision.x || item.y !== decision.y;
+      item.x = decision.x;
+      item.y = decision.y;
+    } else if (decision.type === 'swap' && decision.other) {
+      const nextX = decision.other.x;
+      const nextY = decision.other.y;
+      changed = nextX !== state.startX || nextY !== state.startY;
+      decision.other.x = state.startX;
+      decision.other.y = state.startY;
+      item.x = nextX;
       item.y = nextY;
     }
     renderCanvas();
+    if (changed) saveLayout().catch((err) => showAlert(err.message || 'Could not save the canvas'));
   }
 
   async function saveLayout() {
@@ -1166,6 +1962,7 @@
     if (cancelBtn) cancelBtn.hidden = !on;
     if (addBtn) addBtn.hidden = !on;
     if (paletteEl && !on) paletteEl.hidden = true;
+    syncViewChrome();
     renderCanvas();
   }
 
@@ -1206,7 +2003,7 @@
         }
         savedSnapshot = JSON.stringify(layout || data.default_layout || {});
       }
-      if (!arranging && !dragState) renderCanvas();
+      if (!arranging && !dragState) renderActive();
       hasLoadedOnce = true;
 
       const machineCount = data.machine_count || ((data.cards || []).filter((card) => card.is_machine).length);
@@ -1307,7 +2104,19 @@
     if (event.key === 'Escape') closeDetail();
   });
 
-  refreshBtn.addEventListener('click', loadDashboard);
+  if (lowEl) {
+    lowEl.addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-low-equipment]');
+      if (!chip) return;
+      const equipmentId = Number(chip.getAttribute('data-low-equipment'));
+      if (equipmentId) openDetail(equipmentId);
+    });
+  }
+
+  refreshBtn.addEventListener('click', () => {
+    if (viewMode === 'calendar') loadCalendar(true);
+    else loadDashboard();
+  });
   arrangeBtn.addEventListener('click', () => {
     savedSnapshot = JSON.stringify(layout);
     setArrange(true);
@@ -1369,9 +2178,51 @@
   alertMinutesEl.addEventListener('change', () => {
     if (layout) layout.alert_minutes = alertMinutes();
     loadHistory().then(() => {
-      if (!dragState) renderCanvas();
+      if (!dragState) renderActive();
     });
   });
+  viewButtons.forEach((button) => {
+    button.addEventListener('click', () => setView(button.dataset.view || 'cards'));
+  });
+  if (calendarEl) {
+    calendarEl.addEventListener('click', (event) => {
+      const monthBtn = event.target.closest('[data-cal-month]');
+      if (monthBtn) {
+        shiftCalendarMonth(Number(monthBtn.getAttribute('data-cal-month')));
+        return;
+      }
+      const toggle = event.target.closest('[data-cal-toggle]');
+      if (toggle) {
+        const id = toggle.getAttribute('data-cal-toggle');
+        if (calendarCollapsed.has(id)) calendarCollapsed.delete(id);
+        else calendarCollapsed.add(id);
+        renderCalendar();
+        return;
+      }
+      const open = event.target.closest('[data-cal-open]');
+      if (!open || !calendarData) return;
+      openDetail(Number(open.getAttribute('data-cal-open')), {
+        label: open.getAttribute('data-cal-label'),
+        query: { from: calendarData.query_from, to: calendarData.query_to },
+      });
+    });
+    calendarEl.addEventListener('change', (event) => {
+      if (event.target.id === 'auk-oee-cal-from' || event.target.id === 'auk-oee-cal-to') loadCalendar(true);
+    });
+  }
+  if (floorEl) {
+    floorEl.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-equipment-id]');
+      if (!target) return;
+      const equipmentId = Number(target.getAttribute('data-equipment-id'));
+      if (!equipmentId) return;
+      openDetail(equipmentId);
+    });
+  }
+  window.addEventListener('resize', () => {
+    if (viewMode === 'floor') sizeFloorCanvas();
+  });
+  setView(readSavedView());
   setActivePreset('day');
   scheduleRefresh();
   loadDashboard();

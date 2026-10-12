@@ -3,7 +3,7 @@
 {% block body_class %}auk-oee-page{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20261008b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20261008o">
 {% endblock %}
 {% block content %}
 <div class="auk-oee-shell">
@@ -11,7 +11,7 @@
     <div class="auk-oee-head-row">
       <div>
         <h1 class="auk-oee-title">Seletar OEE</h1>
-        <p class="auk-oee-subtitle">Live factory dashboard · refreshes every minute · drag the board to match the floor</p>
+        <p class="auk-oee-subtitle" id="auk-oee-subtitle">Live factory dashboard · refreshes every minute · drag the board to match the floor</p>
       </div>
       <div class="auk-oee-controls">
         <div class="auk-oee-presets" role="group" aria-label="Time range preset">
@@ -33,7 +33,12 @@
       </div>
     </div>
     <div class="auk-oee-board-tools">
-      <button type="button" class="auk-oee-btn" id="auk-oee-arrange">Arrange</button>
+      <div class="auk-oee-view-toggle" role="group" aria-label="Dashboard view">
+        <button type="button" class="auk-oee-view-btn is-active" data-view="cards">Cards</button>
+        <button type="button" class="auk-oee-view-btn" data-view="floor">Floor plan</button>
+        <button type="button" class="auk-oee-view-btn" data-view="calendar">Daily</button>
+      </div>
+      <button type="button" class="auk-oee-btn" id="auk-oee-arrange">Edit canvas</button>
       <button type="button" class="auk-oee-btn auk-oee-btn--primary" id="auk-oee-done" hidden>Done</button>
       <button type="button" class="auk-oee-btn" id="auk-oee-cancel" hidden>Cancel</button>
       <label class="auk-oee-field auk-oee-field--inline">
@@ -59,6 +64,8 @@
   </div>
 
   <div id="auk-oee-grid" class="auk-oee-grid" hidden></div>
+  <div id="auk-oee-floor" class="auk-oee-floor" hidden></div>
+  <div id="auk-oee-calendar" class="auk-oee-calendar" hidden></div>
 </div>
 
 <div id="auk-oee-modal" class="auk-oee-modal" hidden>
@@ -85,7 +92,8 @@
 <script>
   window.AUK_OEE_CONFIG = {
     configured: {{ auk_configured | tojson }},
+    floorLayout: {{ floor_layout | tojson }},
   };
 </script>
-<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20261008b"></script>
+<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20261008o"></script>
 {% endblock %}

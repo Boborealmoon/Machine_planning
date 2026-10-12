@@ -60,14 +60,6 @@ from planning.material_tracking_requests_route import material_tracking_requests
 from planning.program_tool_tracker_route import program_tool_tracker_bp
 from planning.repeat_orders_route import repeat_orders_bp
 from planning.auk_oee_route import auk_oee_bp
-from planning.daily_output_route import (
-    api_daily_output_get,
-    api_daily_output_patch,
-    api_daily_output_refresh_plan,
-    api_daily_output_snapshot_detail,
-    api_daily_output_unlock,
-    daily_output_page,
-)
 from planning.bom_variation_route import bom_variation_bp
 from planning.assembly_bom_route import assembly_bom_bp
 from planning.assembly_parts_route import assembly_parts_bp
@@ -87,7 +79,6 @@ from planning.floor_plan_route import floor_plan_bp
 from planning.monthly_delivery_plan_route import monthly_delivery_plan_bp
 from planning.so_outstanding_balance_route import so_outstanding_balance_bp
 from planning.sales_coordination_route import sales_coordination_bp
-from planning.so_archive_route import so_archive_bp
 from planning.first_article_route import first_article_bp
 from planning.rfq_checker_route import rfq_checker_bp
 from planning.aps_ps_match_route import aps_ps_match_bp
@@ -131,7 +122,6 @@ app.register_blueprint(pending_pp_bp)
 app.register_blueprint(sales_report_bp)
 app.register_blueprint(so_outstanding_balance_bp)
 app.register_blueprint(sales_coordination_bp)
-app.register_blueprint(so_archive_bp)
 app.register_blueprint(first_article_bp)
 app.register_blueprint(rfq_checker_bp)
 app.register_blueprint(aps_ps_match_bp)
@@ -1045,8 +1035,6 @@ def site_root_gate():
 def lock_planner():
     session.pop(PLANNER_SESSION_KEY, None)
     session.pop(PLANNER_SESSION_AT_KEY, None)
-    # Match USER_GUIDE: locking also clears the daily-output past-date edit unlock.
-    session.pop("daily_output_edit_ok", None)
     return redirect(url_for("site_root_gate"))
 
 
@@ -1122,36 +1110,6 @@ def queue_delays_redirect():
 @app.get("/delivery-schedule")
 def delivery_schedule_redirect():
     return redirect("/delivery")
-
-
-@app.get("/daily-output")
-def daily_output_view():
-    return daily_output_page()
-
-
-@app.get("/api/daily-output")
-def api_get_daily_output():
-    return api_daily_output_get()
-
-
-@app.route("/api/daily-output", methods=["PATCH"])
-def api_patch_daily_output():
-    return api_daily_output_patch()
-
-
-@app.post("/api/daily-output/refresh-plan")
-def api_post_daily_output_refresh_plan():
-    return api_daily_output_refresh_plan()
-
-
-@app.post("/api/daily-output/unlock")
-def api_post_daily_output_unlock():
-    return api_daily_output_unlock()
-
-
-@app.get("/api/daily-output/snapshots/<int:snapshot_id>")
-def api_get_daily_output_snapshot(snapshot_id: int):
-    return api_daily_output_snapshot_detail(snapshot_id)
 
 
 @app.get("/process-sheets")
@@ -4245,12 +4203,6 @@ if __name__ == "__main__":
         log.info("repeat orders routes: %s", ", ".join(repeat_rules))
     else:
         log.warning("repeat orders routes missing — check app.py was saved before restart")
-    daily_rules = [str(r) for r in app.url_map.iter_rules() if "daily-output" in str(r)]
-    if daily_rules:
-        log.info("daily output routes: %s", ", ".join(daily_rules))
-    else:
-        log.warning("daily output routes missing — restart Flask after pulling latest app.py")
-    log.info("daily output page: http://127.0.0.1:%s/daily-output", port)
     log.info("planner: http://127.0.0.1:%s%s", port, PLANNER_PATH)
     log.info("machinist board: http://127.0.0.1:%s%s", port, MACHINIST_BOARD_PATH)
     log.info("QAQC view: http://127.0.0.1:%s%s", port, FINISHING_QUEUE_PATH)

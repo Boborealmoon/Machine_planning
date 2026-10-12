@@ -2,16 +2,16 @@
 {% block title %}Monthly Delivery Plan{% endblock %}
 {% block main_class %}app-main--mdp{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20260731a">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261008b">
 {% endblock %}
 {% block content %}
 <div class="mdp-page">
   <header class="mdp-header">
     <div>
       <h1 class="mdp-title">Monthly Delivery Plan</h1>
-      <p class="mdp-subtitle" id="mdp-subtitle">
-        Target revenue by delivery month — counted when Coway EDD (or PO due date) falls in that month.
-        Amount = qty × unit cost × exchange rate (home $).
+      <p class="mdp-subtitle">
+        Open outstanding lines. Filter the columns, select rows, and assign a quantity to a delivery month.
+        A line can be split across months. PO due and Coway EDD stay as they are.
       </p>
     </div>
     <div class="mdp-header-actions">
@@ -21,6 +21,10 @@
   </header>
 
   <section class="mdp-toolbar card">
+    <label class="mdp-field mdp-field--search">
+      <span>Search</span>
+      <input type="search" id="mdp-search" placeholder="S/O, PS, part, description" autocomplete="off">
+    </label>
     <label class="mdp-field">
       <span>Year</span>
       <input type="number" id="mdp-year" min="2000" max="2100" step="1">
@@ -29,85 +33,47 @@
       <span>PS type</span>
       <div class="filter-dropdown" id="mdp-ps-type-dropdown">
         <button class="filter-dropdown-btn" type="button" id="mdp-ps-type-btn">APS, NPS ▾</button>
-        <div class="filter-dropdown-panel" id="mdp-ps-type-panel" hidden>
-          <label class="filter-dropdown-item"><input type="checkbox" value="APS" checked /> APS</label>
-          <label class="filter-dropdown-item"><input type="checkbox" value="NPS" checked /> NPS</label>
-          <label class="filter-dropdown-item"><input type="checkbox" value="PPS" /> PPS</label>
-        </div>
+        <div class="filter-dropdown-panel" id="mdp-ps-type-panel" hidden></div>
       </div>
     </div>
-    <nav class="mdp-month-nav" id="mdp-month-nav" aria-label="Select month">
-      <button type="button" class="mdp-month-chip is-active" data-month="">Overview</button>
-      <button type="button" class="mdp-month-chip" data-month="1">Jan</button>
-      <button type="button" class="mdp-month-chip" data-month="2">Feb</button>
-      <button type="button" class="mdp-month-chip" data-month="3">Mar</button>
-      <button type="button" class="mdp-month-chip" data-month="4">Apr</button>
-      <button type="button" class="mdp-month-chip" data-month="5">May</button>
-      <button type="button" class="mdp-month-chip" data-month="6">Jun</button>
-      <button type="button" class="mdp-month-chip" data-month="7">Jul</button>
-      <button type="button" class="mdp-month-chip" data-month="8">Aug</button>
-      <button type="button" class="mdp-month-chip" data-month="9">Sep</button>
-      <button type="button" class="mdp-month-chip" data-month="10">Oct</button>
-      <button type="button" class="mdp-month-chip" data-month="11">Nov</button>
-      <button type="button" class="mdp-month-chip" data-month="12">Dec</button>
-    </nav>
+    <nav class="mdp-month-nav" id="mdp-month-nav" aria-label="Filter by delivery month"></nav>
     <div class="mdp-meta" id="mdp-meta">Loading…</div>
   </section>
 
+  <section class="mdp-assign card">
+    <label class="mdp-field">
+      <span>Assign to</span>
+      <input type="month" id="mdp-assign-month">
+    </label>
+    <label class="mdp-field">
+      <span>Qty</span>
+      <input type="number" id="mdp-assign-qty" min="0" step="any" placeholder="Left qty" title="Blank uses whatever is still left on each selected line">
+    </label>
+    <div class="mdp-assign-actions">
+      <button type="button" class="btn btn-dark btn-sm" id="mdp-assign" disabled>Assign</button>
+      <button type="button" class="btn btn-light btn-sm" id="mdp-move" disabled>Move</button>
+      <button type="button" class="btn btn-light btn-sm" id="mdp-clear" disabled>Clear</button>
+    </div>
+    <p class="mdp-assign-note" id="mdp-selection-meta">Select lines, then assign them to a month.</p>
+  </section>
+
+  <div id="mdp-filter-chips" class="mdp-filter-chips" hidden></div>
+
   <div id="mdp-loading" class="mdp-loading" hidden>
     <div class="spinner"></div>
-    <span>Loading monthly delivery plan…</span>
+    <span>Loading outstanding lines…</span>
   </div>
   <div id="mdp-alert" class="mdp-alert" hidden></div>
 
   <section id="mdp-kpi" class="mdp-kpi-grid" hidden></section>
 
-  <section id="mdp-overview" class="mdp-overview card" hidden>
-    <div class="mdp-section-head">
-      <h2 class="mdp-section-title">Year overview</h2>
-      <p class="mdp-section-sub">Click a month to focus it, or select lines below to set target revenue.</p>
-    </div>
-    <div class="mdp-overview-grid" id="mdp-overview-grid"></div>
-    <div class="mdp-section-head mdp-lines-head">
-      <div>
-        <h2 class="mdp-section-title">All line items</h2>
-        <p class="mdp-section-sub" id="mdp-overview-sub"></p>
-      </div>
-    </div>
-    <div class="mdp-table-wrap">
-      <table class="mdp-table">
-        <thead>
-          <tr>
-            <th class="mdp-check-col">
-              <input type="checkbox" id="mdp-overview-select-all" title="Select all visible" aria-label="Select all visible">
-            </th>
-            <th>Month</th>
-            <th>S/O</th>
-            <th>Customer</th>
-            <th>PS</th>
-            <th>Part</th>
-            <th class="mdp-num">Qty</th>
-            <th class="mdp-num">U/Cost</th>
-            <th class="mdp-num">Amount</th>
-            <th>Stage</th>
-            <th>PO due</th>
-            <th>Coway EDD</th>
-            <th>Week</th>
-          </tr>
-        </thead>
-        <tbody id="mdp-overview-body"></tbody>
-      </table>
-    </div>
-    <div id="mdp-overview-empty" class="mdp-empty" hidden>No deliveries for the selected PS types this year.</div>
-  </section>
-
-  <section id="mdp-month-panel" class="mdp-month-panel card" hidden>
+  <section id="mdp-list" class="mdp-list card" hidden>
     <div class="mdp-section-head">
       <div>
-        <h2 class="mdp-section-title" id="mdp-month-title">Month</h2>
-        <p class="mdp-section-sub" id="mdp-month-sub"></p>
+        <h2 class="mdp-section-title">Outstanding lines</h2>
+        <p class="mdp-section-sub" id="mdp-list-sub"></p>
       </div>
-      <button type="button" class="btn btn-ghost btn-sm" id="mdp-back-overview">← Overview</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mdp-clear-filters" hidden>Clear filters</button>
     </div>
     <div class="mdp-table-wrap">
       <table class="mdp-table">
@@ -116,26 +82,78 @@
             <th class="mdp-check-col">
               <input type="checkbox" id="mdp-select-all" title="Select all visible" aria-label="Select all visible">
             </th>
-            <th>S/O</th>
-            <th>Customer</th>
-            <th>PS</th>
-            <th>Part</th>
-            <th class="mdp-num">Qty</th>
-            <th class="mdp-num">U/Cost</th>
-            <th class="mdp-num">Amount</th>
-            <th>Stage</th>
-            <th>PO due</th>
-            <th>Coway EDD</th>
-            <th>Week</th>
+            <th data-sort="plan_month" class="mdp-th-filterable">
+              <span class="mdp-th-inner">
+                <span>Plan month</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="plan_month" title="Filter plan month" aria-label="Filter plan month">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="sales_order_no" class="mdp-th-filterable">
+              <span class="mdp-th-inner">
+                <span>S/O</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="sales_order_no" title="Filter S/O" aria-label="Filter S/O">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="process_sheet_no" class="mdp-th-filterable">
+              <span class="mdp-th-inner">
+                <span>PS</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="ps_type" title="Filter PS type" aria-label="Filter PS type">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="part_no" class="mdp-th-filterable">
+              <span class="mdp-th-inner">
+                <span>Part</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="part_no" title="Filter part" aria-label="Filter part">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="part_desc">Description</th>
+            <th class="mdp-num" data-sort="open_qty">Open qty</th>
+            <th class="mdp-num" data-sort="allocated_qty">Allocated</th>
+            <th class="mdp-num" data-sort="left_qty">Left</th>
+            <th class="mdp-num" data-sort="unit_cost">U/Cost</th>
+            <th class="mdp-num" data-sort="amount">Amount</th>
+            <th data-sort="status" class="mdp-th-filterable">
+              <span class="mdp-th-inner">
+                <span>Stage</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="status" title="Filter stage" aria-label="Filter stage">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="due_date" class="mdp-th-filterable">
+              <span class="mdp-th-inner">
+                <span>PO due</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="due_month" title="Filter due month" aria-label="Filter due month">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
+            <th data-sort="coway_edd">Coway EDD</th>
+            <th data-sort="week">Week</th>
           </tr>
         </thead>
-        <tbody id="mdp-month-body"></tbody>
+        <tbody id="mdp-body"></tbody>
       </table>
     </div>
-    <div id="mdp-month-empty" class="mdp-empty" hidden>No deliveries committed to this month.</div>
+    <div id="mdp-empty" class="mdp-empty" hidden>No outstanding lines matched.</div>
   </section>
 </div>
+<div id="mdp-col-filter-popover" class="mdp-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20260731a"></script>
+<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261008b"></script>
 {% endblock %}

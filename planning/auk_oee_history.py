@@ -218,12 +218,12 @@ def default_layout_from_cards(
                 "type": "card",
                 "equipment_id": equipment_id,
                 "x": (index % 6) * 2,
-                "y": index // 6,
+                "y": (index // 6) * 2,
                 "w": 2,
-                "h": 1,
+                "h": 2,
             }
         )
-    base_y = (len(items) + 5) // 6
+    base_y = ((len(items) + 5) // 6) * 2
     items.extend(
         [
             {"id": "today", "type": "today", "x": 0, "y": base_y, "w": 6, "h": 2},

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date, datetime
 from decimal import Decimal
@@ -23,7 +24,14 @@ logger = logging.getLogger(__name__)
 material_inspection_bp = Blueprint("material_inspection", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 5  # bump when bucket / voucher filter logic changes
+_CACHE_VERSION = 6  # bump when bucket / voucher filter logic changes
+
+# Buyers write the job on the PO line, usually in brackets:
+#   [NPS26-0464]  [NPS26-0478,0479]  NPS26-0429 fixture
+_PS_PREFIX = r"APS|NPS|MPS|PPS|CPS|SR"
+_PS_FULL_RE = re.compile(rf"(?:{_PS_PREFIX})\d{{2}}-\d+(?:-\d+)?", re.IGNORECASE)
+_PS_BRACKET_RE = re.compile(r"\[([^\]]+)\]")
+_PS_SHORT_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
 _cache: dict[str, tuple[float, int, dict[str, list[dict[str, Any]]]]] = {}
 
 # Lot reference (M/04430/26) is the inventory batch string. QI stores only lot_no.
@@ -159,6 +167,54 @@ def _material_inspection_sql(variant: str) -> tuple[str, str]:
 from .staged_erp import fetch_rows, serialize_row as _serialize_row
 
 
+def process_sheet_nos_from_remarks(text: str | None) -> str:
+    """Process-sheet numbers typed on the PO line, e.g. NPS26-0464.
+
+    A bracket list may shorten later jobs: [NPS26-0478,0479] is
+    NPS26-0478 and NPS26-0479.
+    """
+    raw = compact_text(text)
+    if not raw:
+        return ""
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def add(token: str) -> None:
+        key = token.upper()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(key)
+
+    for bracket in _PS_BRACKET_RE.finditer(raw):
+        prefix = ""
+        for part in bracket.group(1).split(","):
+            piece = part.strip()
+            if not piece:
+                continue
+            full = _PS_FULL_RE.fullmatch(piece)
+            if full:
+                token = full.group(0).upper()
+                add(token)
+                year_prefix = re.match(rf"^((?:{_PS_PREFIX})\d{{2}}-)", token, re.IGNORECASE)
+                prefix = year_prefix.group(1).upper() if year_prefix else ""
+                continue
+            short = _PS_SHORT_RE.fullmatch(piece)
+            if short and prefix:
+                suffix = f"-{short.group(2)}" if short.group(2) else ""
+                add(f"{prefix}{short.group(1)}{suffix}")
+
+    for match in _PS_FULL_RE.finditer(raw):
+        add(match.group(0))
+    return ", ".join(found)
+
+
+def _annotate_process_sheets(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        row["process_sheet_nos"] = process_sheet_nos_from_remarks(row.get("line_item_remarks"))
+
+
 def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     outstanding: list[dict[str, Any]] = []
     ready: list[dict[str, Any]] = []
@@ -202,6 +258,7 @@ def _fetch_material_inspection(
 
     staged_sql, live_sql = _material_inspection_sql(variant)
     rows = fetch_rows(staged_sql, live_sql=live_sql, staging_table="stg_qc_inspection", domain="material_inspection")
+    _annotate_process_sheets(rows)
     payload = _split_by_status(rows)
     _cache[variant] = (now, _CACHE_VERSION, payload)
     return payload

@@ -117,11 +117,15 @@
       </div>
 
       {# Reports & analytics #}
-      <div class="nav-dropdown {% if nav_path in ('/sales-report', '/so-outstanding-balance', '/on-time-delivery', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry', '/kpi') or active in ('sales_report', 'so_outstanding_balance', 'on_time_delivery', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry', 'kpi') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/auk-oee', '/sales-report', '/so-outstanding-balance', '/on-time-delivery', '/job-ratio', '/production-capacity', '/repeat-orders', '/planning-data/repeat-orders', '/pr-status-enquiry', '/kpi') or active in ('auk_oee', 'sales_report', 'so_outstanding_balance', 'on_time_delivery', 'job_ratio', 'production_capacity', 'repeat_orders', 'pr_status_enquiry', 'kpi') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="reports" aria-expanded="false" aria-controls="dd-reports">
           REPORTS / ANALYTICS <span class="nav-caret">▾</span>
         </button>
         <div class="nav-dropdown-menu" id="dd-reports">
+          <a href="/auk-oee"
+             class="nav-dropdown-item {% if nav_path == '/auk-oee' or active == 'auk_oee' %}nav-dropdown-item--active{% endif %}">
+            AUK OEE dashboard
+          </a>
           <a href="/kpi"
              class="nav-dropdown-item {% if nav_path == '/kpi' or active == 'kpi' %}nav-dropdown-item--active{% endif %}">
             KPI
@@ -235,7 +239,7 @@
       </div>
 
       {# Archive — historical / reference views #}
-      <div class="nav-dropdown {% if nav_path in ('/daily-output', '/auk-oee', '/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/so-lines', '/archive/rfq-checker', '/archive/rfq-checker/upload', '/archive/aps-ps-match') or active in ('daily_output', 'auk_oee', 'preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'so_archive', 'rfq_checker', 'aps_ps_match') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/preferred-machines', '/floor-plan', '/monthly-delivery-plan', '/archive/rfq-checker', '/archive/rfq-checker/upload', '/archive/aps-ps-match') or active in ('preferred_machines', 'floor_plan', 'monthly_delivery_plan', 'rfq_checker', 'aps_ps_match') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="archive" aria-expanded="false" aria-controls="dd-archive">
           ARCHIVE <span class="nav-caret">▾</span>
         </button>
@@ -247,18 +251,6 @@
           <a href="/archive/aps-ps-match"
              class="nav-dropdown-item {% if nav_path == '/archive/aps-ps-match' or active == 'aps_ps_match' %}nav-dropdown-item--active{% endif %}">
             APS PS material match
-          </a>
-          <a href="/archive/so-lines"
-             class="nav-dropdown-item {% if nav_path == '/archive/so-lines' or active == 'so_archive' %}nav-dropdown-item--active{% endif %}">
-            SO line archive
-          </a>
-          <a href="/daily-output"
-             class="nav-dropdown-item {% if nav_path == '/daily-output' or active == 'daily_output' %}nav-dropdown-item--active{% endif %}">
-            Daily output
-          </a>
-          <a href="/auk-oee"
-             class="nav-dropdown-item {% if nav_path == '/auk-oee' or active == 'auk_oee' %}nav-dropdown-item--active{% endif %}">
-            AUK OEE dashboard
           </a>
           <a href="/preferred-machines"
              class="nav-dropdown-item {% if nav_path == '/preferred-machines' or active == 'preferred_machines' %}nav-dropdown-item--active{% endif %}">

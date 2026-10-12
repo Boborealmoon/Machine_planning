@@ -16,11 +16,13 @@ from .auk_oee_service import (
     fetch_asset_detail,
     fetch_canvas_dashboard,
     fetch_equipment_timeline,
+    fetch_oee_calendar,
     format_auk_http_error,
     load_dashboard_snapshot,
     parse_range_from_request,
     validate_pareto_dashboard,
 )
+from .floor_plan_service import floor_layout_payload
 
 auk_oee_bp = Blueprint("auk_oee", __name__)
 
@@ -31,6 +33,7 @@ def auk_oee_page():
         "auk_oee_dashboard.html",
         active="auk_oee",
         auk_configured=auk_configured(),
+        floor_layout=floor_layout_payload(),
     )
 
 
@@ -56,6 +59,7 @@ def api_auk_oee_dashboard():
         payload["range_preset"] = range_preset
         payload["shift_window"] = "00:00-24:00" if range_preset == "day" else "08:30-20:30"
         payload["default_layout"] = default_layout_from_cards(payload.get("cards") or [])
+        payload["floor_layout"] = floor_layout_payload()
         return jsonify(payload)
     except requests.HTTPError as exc:
         message, status = format_auk_http_error(exc)
@@ -65,6 +69,7 @@ def api_auk_oee_dashboard():
                 cached["configured"] = True
                 cached["range_preset"] = cached.get("range_preset") or "day"
                 cached["default_layout"] = default_layout_from_cards(cached.get("cards") or [])
+                cached["floor_layout"] = floor_layout_payload()
                 cached["stale"] = True
                 cached["warning"] = (
                     "Showing the Factory Dashboard read from the signed-in Auk session. "
@@ -72,6 +77,31 @@ def api_auk_oee_dashboard():
                     "until that token is replaced."
                 )
                 return jsonify(cached)
+        return jsonify({"error": message, "configured": True}), status
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc), "configured": True}), 502
+    except Exception as exc:
+        return jsonify({"error": str(exc), "configured": True}), 500
+
+
+@auk_oee_bp.get("/api/auk-oee/calendar")
+def api_auk_oee_calendar():
+    if not auk_configured():
+        return jsonify(
+            {"error": "Set AUK_ACCESS_TOKEN in .env to load live OEE data.", "configured": False}
+        ), 503
+
+    try:
+        payload = fetch_oee_calendar(
+            start_text=request.args.get("from") or request.args.get("lower") or "",
+            end_text=request.args.get("to") or request.args.get("upper") or "",
+        )
+        payload["configured"] = True
+        return jsonify(payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "configured": True}), 400
+    except requests.HTTPError as exc:
+        message, status = format_auk_http_error(exc)
         return jsonify({"error": message, "configured": True}), status
     except requests.RequestException as exc:
         return jsonify({"error": str(exc), "configured": True}), 502

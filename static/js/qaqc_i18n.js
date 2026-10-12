@@ -35,7 +35,7 @@ const FQ_STRINGS = {
     mi_outstanding: 'Outstanding',
     mi_ready: 'Ready',
     mi_historical: 'Historical',
-    mi_search_placeholder: 'Inspection, PO, supplier, GRN, lot, part...',
+    mi_search_placeholder: 'Inspection, PO, PS, supplier, GRN, lot, part...',
     qcq_status_aria: 'QC queue status',
     qcq_search_placeholder: 'Inspection, WO, MPS, process sheet, part, SO, stage, segment...',
     am_search_placeholder: 'Material, PS, description...',
@@ -77,6 +77,7 @@ const FQ_STRINGS = {
 
     mi_col_inspection: 'Inspection',
     mi_col_po: 'PO',
+    mi_col_ps: 'PS',
     mi_col_supplier: 'Supplier',
     mi_col_shipment: 'Shipment',
     mi_col_grn: 'GRN',
@@ -320,7 +321,7 @@ const FQ_STRINGS = {
     mi_outstanding: '未完成',
     mi_ready: '就绪',
     mi_historical: '历史',
-    mi_search_placeholder: '检验单、采购单、供应商、收货单、批次、零件…',
+    mi_search_placeholder: '检验单、采购单、工艺单、供应商、收货单、批次、零件…',
     qcq_status_aria: '质检队列状态',
     qcq_search_placeholder: '检验、工单、MPS、工艺单、零件、订单、工序、类型…',
     am_search_placeholder: '来料、工艺单、描述…',
@@ -362,6 +363,7 @@ const FQ_STRINGS = {
 
     mi_col_inspection: '检验单',
     mi_col_po: '采购单',
+    mi_col_ps: '工艺单',
     mi_col_supplier: '供应商',
     mi_col_shipment: '出货单',
     mi_col_grn: '收货单',

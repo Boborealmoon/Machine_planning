@@ -2037,3 +2037,307 @@ def validate_pareto_dashboard(
         },
         "rows": rows,
     }
+
+
+_CALENDAR_SPEC: tuple[dict[str, Any], ...] = (
+    {"label": "Seletar Overall"},
+    {"label": "Seletar Manufacturing Overall"},
+    {"label": "MPP", "cnc": (35, 36)},
+    {
+        "label": "Turning",
+        "groups": (
+            {"label": "APS Turn", "cnc": (10, 22, 30, 31, 32)},
+            {"label": "PS Turn", "cnc": (15, 21, 24, 27)},
+        ),
+    },
+    {"label": "Milling", "cnc": (20, 25, 26, 29)},
+    {"label": "Turn Mill", "cnc": (38, 39, 40, 41)},
+)
+
+_CALENDAR_GROUP_ROW = {
+    "mpp": "mpp",
+    "turning": "turning",
+    "milling": "milling",
+    "multiaxis": "turn mill",
+}
+
+_CALENDAR_MAX_DAYS = 62
+
+
+def _oee_int(value: float) -> int:
+    rounded = int(float(value) + 0.5) if value >= 0 else int(float(value) - 0.5)
+    return max(0, min(100, rounded))
+
+
+def _slot_local_day(slot: dict[str, Any]):
+    parsed = _parse_iso(slot.get("time") if isinstance(slot.get("time"), str) else None)
+    if parsed is None:
+        return None
+    return parsed.astimezone(PLANNER_TZ).date()
+
+
+def _month_end(day) -> datetime.date:
+    if day.month == 12:
+        return day.replace(year=day.year + 1, month=1, day=1) - timedelta(days=1)
+    return day.replace(month=day.month + 1, day=1) - timedelta(days=1)
+
+
+def parse_calendar_range(
+    start_text: str | None,
+    end_text: str | None,
+    *,
+    today=None,
+) -> tuple[Any, Any]:
+    """Inclusive local dates for the daily grid. Defaults to the current month."""
+    today = today or datetime.now(PLANNER_TZ).date()
+    start_text = (start_text or "").strip()[:10]
+    end_text = (end_text or "").strip()[:10]
+    if not start_text and not end_text:
+        return today.replace(day=1), _month_end(today)
+    if not start_text or not end_text:
+        raise ValueError("Choose both a start date and an end date.")
+    try:
+        start = datetime.strptime(start_text, "%Y-%m-%d").date()
+        end = datetime.strptime(end_text, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError("Dates must look like 2026-09-01.") from exc
+    if end < start:
+        start, end = end, start
+    if (end - start).days > _CALENDAR_MAX_DAYS:
+        end = start + timedelta(days=_CALENDAR_MAX_DAYS)
+    return start, end
+
+
+def daily_oee_from_site_rows(site_rows: list[dict[str, Any]]) -> dict[int, dict[Any, int]]:
+    """Map equipment id → local date → OEE rounded the way the utilization grid shows it."""
+    buckets: dict[int, dict[Any, list[dict[str, Any]]]] = {}
+    for row in site_rows:
+        equipment_id = row.get("equipment_id")
+        if equipment_id is None:
+            continue
+        try:
+            equipment_id = int(equipment_id)
+        except (TypeError, ValueError):
+            continue
+        grouped = buckets.setdefault(equipment_id, {})
+        for slot in _slots_for_site_row(row):
+            day = _slot_local_day(slot)
+            if day is None:
+                continue
+            grouped.setdefault(day, []).append(slot)
+
+    series: dict[int, dict[Any, int]] = {}
+    for equipment_id, grouped in buckets.items():
+        by_day: dict[Any, int] = {}
+        for day, slots in grouped.items():
+            overall = overall_from_oee_slots(slots)
+            if not overall or overall.get("final_effective") is None:
+                continue
+            by_day[day] = _oee_int(overall["final_effective"])
+        series[equipment_id] = by_day
+    return series
+
+
+def _calendar_entries(widgets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for widget in widgets:
+        label = (widget.get("label") or widget.get("title") or "").strip()
+        if not label:
+            continue
+        equipment_id = _widget_equipment_id(widget)
+        classification = _classify_card(label)
+        entries.append(
+            {
+                "label": label,
+                "equipment_id": equipment_id,
+                "cnc_number": classification.get("cnc_number"),
+                "group_id": classification.get("group_id"),
+                "is_machine": bool(classification.get("is_machine")),
+            }
+        )
+    return entries
+
+
+def build_calendar_rows(
+    entries: list[dict[str, Any]],
+    daily: dict[int, dict[Any, int]],
+    days: list[Any],
+) -> list[dict[str, Any]]:
+    """Flatten the shop tree into table rows aligned with `days`."""
+    by_label: dict[str, dict[str, Any]] = {}
+    by_cnc: dict[int, dict[str, Any]] = {}
+    for entry in entries:
+        by_label[(entry.get("label") or "").strip().lower()] = entry
+        cnc_number = entry.get("cnc_number")
+        if cnc_number is not None:
+            by_cnc[int(cnc_number)] = entry
+
+    used: set[int] = set()
+    rows: list[dict[str, Any]] = []
+
+    def values_for(entry: dict[str, Any] | None) -> list[int | None]:
+        equipment_id = None if not entry else entry.get("equipment_id")
+        series = daily.get(int(equipment_id), {}) if equipment_id is not None else {}
+        return [series.get(day) for day in days]
+
+    def push(
+        entry: dict[str, Any] | None,
+        *,
+        label: str,
+        depth: int,
+        row_id: str,
+        parent_id: str | None,
+        is_machine: bool,
+    ) -> None:
+        if entry and entry.get("cnc_number") is not None:
+            used.add(int(entry["cnc_number"]))
+        rows.append(
+            {
+                "id": row_id,
+                "parent_id": parent_id,
+                "depth": depth,
+                "label": label,
+                "equipment_id": None if not entry else entry.get("equipment_id"),
+                "is_machine": is_machine,
+                "expandable": False,
+                "values": values_for(entry),
+            }
+        )
+
+    def add_spec(node: dict[str, Any], depth: int, parent_id: str | None) -> None:
+        label = str(node["label"])
+        row_id = label.lower() if parent_id is None else f"{parent_id}/{label.lower()}"
+        entry = by_label.get(label.lower())
+        start = len(rows)
+        push(
+            entry,
+            label=(entry or {}).get("label") or label,
+            depth=depth,
+            row_id=row_id,
+            parent_id=parent_id,
+            is_machine=False,
+        )
+        child_count = 0
+        for child in node.get("groups") or ():
+            before = len(rows)
+            add_spec(child, depth + 1, row_id)
+            child_count += len(rows) - before
+        for cnc_number in node.get("cnc") or ():
+            machine = by_cnc.get(int(cnc_number))
+            if machine is None:
+                continue
+            push(
+                machine,
+                label=machine["label"],
+                depth=depth + 1,
+                row_id=f"{row_id}/cnc-{int(cnc_number)}",
+                parent_id=row_id,
+                is_machine=True,
+            )
+            child_count += 1
+        if child_count == 0 and entry is None:
+            rows.pop()
+            return
+        rows[start]["expandable"] = child_count > 0
+
+    for node in _CALENDAR_SPEC:
+        add_spec(node, 0, None)
+
+    leftovers: list[dict[str, Any]] = []
+    for entry in entries:
+        cnc_number = entry.get("cnc_number")
+        if cnc_number is None or int(cnc_number) in used or not entry.get("is_machine"):
+            continue
+        leftovers.append(entry)
+
+    for entry in leftovers:
+        group_id = entry.get("group_id") or "other"
+        parent_id = _CALENDAR_GROUP_ROW.get(str(group_id))
+        parent_index = next((idx for idx, row in enumerate(rows) if row["id"] == parent_id), None)
+        if parent_index is None:
+            parent_id = "other"
+            parent_index = next((idx for idx, row in enumerate(rows) if row["id"] == "other"), None)
+            if parent_index is None:
+                push(None, label="Other", depth=0, row_id="other", parent_id=None, is_machine=False)
+                parent_index = len(rows) - 1
+                rows[parent_index]["expandable"] = True
+        insert_at = parent_index + 1
+        while insert_at < len(rows) and rows[insert_at]["depth"] > rows[parent_index]["depth"]:
+            insert_at += 1
+        cnc_number = int(entry["cnc_number"])
+        used.add(cnc_number)
+        rows.insert(
+            insert_at,
+            {
+                "id": f"{parent_id}/cnc-{cnc_number}",
+                "parent_id": parent_id,
+                "depth": rows[parent_index]["depth"] + 1,
+                "label": entry["label"],
+                "equipment_id": entry.get("equipment_id"),
+                "is_machine": True,
+                "expandable": False,
+                "values": values_for(entry),
+            },
+        )
+        rows[parent_index]["expandable"] = True
+
+    return rows
+
+
+def fetch_oee_calendar(
+    *,
+    start_text: str | None = None,
+    end_text: str | None = None,
+    entity_id: int | None = None,
+    canvas_id: int | None = None,
+) -> dict[str, Any]:
+    """Daily OEE grid for the utilization-style table."""
+    if not auk_configured():
+        raise RuntimeError("AUK_ACCESS_TOKEN is not configured")
+
+    start, end = parse_calendar_range(start_text, end_text)
+    days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+    lower_dt = datetime.combine(start, time.min, tzinfo=PLANNER_TZ)
+    upper_dt = datetime.combine(end + timedelta(days=1), time.min, tzinfo=PLANNER_TZ)
+    now = _floor_to_minute(datetime.now(PLANNER_TZ))
+    if upper_dt > now:
+        upper_dt = now
+    if upper_dt <= lower_dt:
+        upper_dt = now
+
+    entity = entity_id if entity_id is not None else _entity_id()
+    preferred = canvas_id if canvas_id is not None else _canvas_id()
+    canvases = fetch_canvases(entity_id=entity)
+    _canvas, widgets = _pick_dashboard_canvas(canvases, entity=entity, preferred_id=preferred)
+    if not widgets:
+        raise RuntimeError(
+            f"No OEE widgets found for entity {entity}. "
+            "Check that the Factory Dashboard is shared with this Auk user."
+        )
+
+    entries = _calendar_entries(widgets)
+    equipment_ids = [
+        int(entry["equipment_id"])
+        for entry in entries
+        if entry.get("equipment_id") is not None
+    ]
+    site_rows = fetch_site_oee(
+        equipment_ids,
+        lower=_to_utc_z(lower_dt),
+        upper=_to_utc_z(upper_dt),
+        res_x=1,
+        res_period="days",
+        entity_id=entity,
+    )
+    daily = daily_oee_from_site_rows(site_rows)
+    rows = build_calendar_rows(entries, daily, days)
+    return {
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "query_from": _to_utc_z(lower_dt),
+        "query_to": _to_utc_z(upper_dt),
+        "days": [day.isoformat() for day in days],
+        "rows": rows,
+        "row_count": len(rows),
+        "fetched_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }

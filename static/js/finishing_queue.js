@@ -1634,7 +1634,8 @@ function fqMiRowSearchText(row) {
   return [
     row.inspection_voucher_no, row.po_no, row.supplier_name, row.shipment_voucher_no,
     row.shipment_line_item_no, row.grn_no, row.inspector_code, row.inspector_name,
-    row.inventory_code, row.inventory_desc, row.lot_reference_no, row.assigned_inspector_name,
+    row.inventory_code, row.inventory_desc, row.lot_reference_no, row.process_sheet_nos,
+    row.line_item_remarks, row.assigned_inspector_name,
   ].map((v) => String(v == null ? '' : v).toLowerCase()).join(' ');
 }
 
@@ -1683,6 +1684,7 @@ function fqMiRenderRow(row) {
     <tr class="fq-row fq-row--mi${!isHistorical && done ? ' fq-row--done' : ''}" data-mi-key="${escapeHtml(fqMiRowKey(row))}">
       <td class="fq-col-sticky fq-col-sticky--mi fq-col-mono">${escapeHtml(voucher || '—')}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.po_no || '—'))}</td>
+      <td class="fq-col-mono fq-col-ps">${escapeHtml(String(row.process_sheet_nos || '').trim() || '—')}</td>
       <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
       <td class="fq-col-mono">${escapeHtml(String(row.grn_no || '—'))}</td>

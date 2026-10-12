@@ -49,8 +49,7 @@ The top navigation bar is always visible and provides access to all sections.
 | **ORDERS** | New Orders | Goods received this week from COMAIN ERP |
 | | Sales Orders | Sales order headers → PP voucher groups |
 | | Repeat Orders | Recurring purchase orders |
-| **PRODUCTION** | Daily Output | Shift production board |
-| | Finishing Queue | Parts at Deburring / Final Inspection / Packing |
+| **PRODUCTION** | Finishing Queue | Parts at Deburring / Final Inspection / Packing |
 | | Material Inspection | QC inspection status of incoming materials |
 | | Auk OEE | Machine efficiency dashboard |
 | | Queue Delays | Late / at-risk scheduled jobs |
@@ -286,63 +285,7 @@ Shows recurring POs with their frequency, last ordered date, and calculated next
 
 ## 6. Production Dashboards
 
-### 6.1 Daily Output
-
-**URL:** `/daily-output`
-
-The shift production board. Used by shift supervisors to log actual output for every machine against the planned schedule.
-
-#### Header Controls
-
-| Control | Action |
-|---------|--------|
-| **Date picker** | Select the work date (defaults to today) |
-| **Shift Start / End** | Enter shift times (e.g., 08:30 and 20:00). Effective minutes are auto-calculated. |
-| **Refresh plan** | Re-pull the latest schedule for this date (POST to `/api/daily-output/refresh-plan`) |
-| **Unlock edit** | Prompt for passcode to enable editing of a past date |
-
-#### Toolbar Toggles
-
-| Toggle | Effect |
-|--------|--------|
-| **Hide empty rows** | Collapse machine rows with no scheduled ops |
-| **Collapse idle machines** | Reduce rows for machines with no activity |
-| **Full column labels** | Show full header text instead of abbreviations |
-| **Column guide** | Switch between Details and Summary column views |
-
-#### Board Columns
-
-| Column | Full Name | Description |
-|--------|-----------|-------------|
-| **PS** | Process Sheet | PS / voucher number |
-| **Opn** | Operation | Operation code and name |
-| **C/T** | Cycle Time | Seconds per piece (from master cycle time) |
-| **Tgt** | Target | Planned output qty for this shift (from schedule) |
-| **Out** | Output | **Editable.** Actual pieces produced |
-| **F/pce** | Finish per piece | Quality: finished pieces per unit (flag field) |
-| **In-pro** | In Progress | **Editable.** Pieces started but not yet completed |
-| **Qua/his** | Quality / History | **Editable.** Quality issue code or history flag |
-| **Rej** | Reject | **Editable.** Rejected pieces this shift |
-| **Util %** | Utilisation | Auto-calculated: (Tgt / effective minutes) × C/T |
-| **Actual %** | Actual efficiency | Auto-calculated: (Out / Tgt) × 100 |
-
-Grey cells are auto-filled from the schedule. White cells are manually editable. Changes are saved automatically on cell edit.
-
-#### Editing Past Dates
-
-Past dates are locked by default. To edit:
-
-1. Click **Unlock edit**.
-2. Enter the planner passcode.
-3. Session unlocks for all past dates until you lock again.
-
-#### Snapshots
-
-The system records an 11:00 snapshot of the board state for each work day. The snapshots panel (right side) shows timestamps. Click a snapshot to view the board as it looked at that point in time.
-
----
-
-### 6.2 Finishing Queue
+### 6.1 Finishing Queue
 
 **URL:** `/finishing-queue`
 
@@ -628,29 +571,21 @@ Progress is shown in the button label (e.g., "3/9 Work order status…"). When c
 | **+ Create temp PS** | Modal to create a [Temp] PS |
 | **Refresh From Cache** | Reload board data |
 
-### 10.5 Daily Output
-
-| Button | Action |
-|--------|--------|
-| **Refresh plan** | Recalculate daily board from current schedule |
-| **Unlock edit** | Prompt for passcode to enable past-date editing |
-| **Save** (auto) | Cells save on edit automatically |
-
-### 10.6 Finishing Queue
+### 10.5 Finishing Queue
 
 | Button | Action |
 |--------|--------|
 | **All / Deburring / Final Inspection / Packing** | Stage filter tabs |
 | **All / In process / Ready** | Status filter tabs |
 
-### 10.7 Queue Delays
+### 10.6 Queue Delays
 
 | Button | Action |
 |--------|--------|
 | **All / At risk only** | Risk filter toggle |
 | **↑ / ↓** | Sort direction toggle |
 
-### 10.8 Machinist Board (Shop Floor)
+### 10.7 Machinist Board (Shop Floor)
 
 | Button | Action |
 |--------|--------|
@@ -725,13 +660,12 @@ Progress is shown in the button label (e.g., "3/9 Work order status…"). When c
 | Session | How to get it | What it allows |
 |---------|---------------|----------------|
 | **Planner session** | Enter planner passcode at `/` | Full read/write access to all planner features |
-| **Daily output edit** | Enter planner passcode via "Unlock edit" | Edit past dates on the daily output board |
 | **Machinist board** | No login required | Read-only view of `/machine-queue` |
 
 ### 12.2 Locking & Handover
 
 - Always click **Lock** before leaving the planning workstation unattended.
-- Locking clears both the planner session and the daily output edit session.
+- Locking clears the planner session.
 - The machinist board (`/machine-queue`) is always public and cannot be locked.
 
 ### 12.3 Data Cache
