@@ -25,7 +25,7 @@
             Assembly jobs such as <code>NPS26-0321</code> and <code>N26-[SR]22</code> expand to show each sub-assembly finished good as its own line (1/n, 2/n).
             Toggle <strong>Active</strong> (SO line not fully shipped), <strong>Complete</strong> (fully shipped qty on the SO line),
             or <strong>No WO</strong> (active SO lines with PP qty not yet fully issued as WO vouchers — includes partial batches still awaiting the next WO).
-            <strong>Needs action</strong> sits beside those statuses and shows active rows that have an exception, or are not queued on CNC and are not yet at Deburring, Final inspection, Packing (including Engraving &amp; Packing), or All complete.
+            <strong>Needs action</strong> hides Deburring, Final inspection, Packing (including Engraving &amp; Packing), and All complete. What remains is an exception, or a row that is not queued on CNC.
           </span>
         </button>
       </div>
@@ -58,7 +58,7 @@
           </button>
         </div>
         <button type="button" class="so-attention-view-btn" data-so-view="attention" role="tab" aria-selected="false"
-                title="Exception flagged, or not queued on CNC and not yet at Deburring, Final inspection, Packing, or All complete">
+                title="Hides Deburring, Final inspection, Packing, and All complete. Shows the rest if they have an exception or are not queued on CNC.">
           Needs action
           <span class="ps-view-tab-count" id="so-attention-tab-count" hidden>0</span>
         </button>
@@ -193,5 +193,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sales-orders-pp-20260608"></script>
 <script src="{{ url_for('static', filename='js/repeat_order_tags.js') }}?v=so-slim-similar-20260804"></script>
-<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-needs-action-20261012"></script>
+<script src="{{ url_for('static', filename='js/sales_orders.js') }}?v=so-needs-action-stage-20261012"></script>
 {% endblock %}

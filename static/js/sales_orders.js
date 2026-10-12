@@ -743,11 +743,11 @@ function soStageIsClearedFinal(partial) {
   return soStageDescIsFinal(stage.desc);
 }
 
-/** Exception, or not on a CNC queue and not yet cleared to a final stage. */
+/** Still before final stages, and either flagged or not yet on a CNC queue. */
 function soLeafMatchesAttention(pp, partial) {
+  if (soStageIsClearedFinal(partial)) return false;
   if (soPartialExceptionIssues(pp, partial).length) return true;
-  if (soPartialQueuedMachines(pp, partial).length > 0) return false;
-  return !soStageIsClearedFinal(partial);
+  return soPartialQueuedMachines(pp, partial).length === 0;
 }
 
 /** SO-linked PP with qty still awaiting WO voucher issuance (incl. partial batches). */
@@ -4795,7 +4795,7 @@ function soRender() {
     } else if (soState.view === 'no-wo') {
       emptyMsg = 'No PP vouchers have qty awaiting WO issuance — every process sheet in view is fully issued.';
     } else if (soState.view === 'attention') {
-      emptyMsg = 'No rows have an exception, or are unqueued and still before Deburring, Final inspection, Packing, or All complete.';
+      emptyMsg = 'No rows are still before Deburring, Final inspection, Packing, or All complete, with an exception or an empty CNC queue.';
     } else {
       emptyMsg = 'No rows match your search or column filters — adjust filters in the column headers above.';
     }
