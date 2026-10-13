@@ -1680,20 +1680,23 @@ function fqMiRenderRow(row) {
     : `<button type="button" class="fq-icon-btn fq-icon-btn--done${done ? ' is-on' : ''}" data-fq-mi-toggle="done" data-fq-mi-voucher="${escapeHtml(voucher)}" aria-pressed="${done ? 'true' : 'false'}" title="${done ? ((typeof fqT === 'function') ? fqT('mark_not_done') : 'Mark not done') : ((typeof fqT === 'function') ? fqT('mark_inspection_done') : 'Mark inspection done')}">✓</button>`;
   const desc = String(row.inventory_desc || '').trim();
   const lotRef = String(row.lot_reference_no || '').trim();
+  const supplier = String(row.supplier_name || '').trim();
+  const ps = String(row.process_sheet_nos || '').trim();
+  const part = String(row.inventory_code || '').trim();
   return `
     <tr class="fq-row fq-row--mi${!isHistorical && done ? ' fq-row--done' : ''}" data-mi-key="${escapeHtml(fqMiRowKey(row))}">
       <td class="fq-col-sticky fq-col-sticky--mi fq-col-mono">${escapeHtml(voucher || '—')}</td>
-      <td class="fq-col-mono">${escapeHtml(String(row.po_no || '—'))}</td>
-      <td class="fq-col-mono fq-col-ps">${escapeHtml(String(row.process_sheet_nos || '').trim() || '—')}</td>
-      <td>${escapeHtml(String(row.supplier_name || '—'))}</td>
-      <td class="fq-col-mono">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
-      <td class="fq-col-mono">${escapeHtml(String(row.grn_no || '—'))}</td>
+      <td class="fq-col-mono fq-col-po">${escapeHtml(String(row.po_no || '—'))}</td>
+      <td class="fq-col-mono fq-col-ps" title="${escapeHtml(ps)}"><span class="fq-ellipsis">${escapeHtml(ps || '—')}</span></td>
+      <td class="fq-col-supplier" title="${escapeHtml(supplier)}"><span class="fq-ellipsis">${escapeHtml(supplier || '—')}</span></td>
+      <td class="fq-col-mono fq-col-ship">${escapeHtml(String(row.shipment_voucher_no || '—'))}</td>
+      <td class="fq-col-mono fq-col-grn">${escapeHtml(String(row.grn_no || '—'))}</td>
       <td class="fq-col-date">${escapeHtml(fqMiFormatDate(fqMiReceivedDate(row)))}</td>
-      <td class="fq-col-mono">${escapeHtml(String(row.inventory_code || '—'))}</td>
-      <td class="fq-col-mono fq-col-lot-ref" title="${escapeHtml(lotRef)}">${escapeHtml(lotRef || '—')}</td>
-      <td class="fq-col-desc" title="${escapeHtml(desc)}">${escapeHtml(desc || '—')}</td>
+      <td class="fq-col-mono fq-col-part" title="${escapeHtml(part)}"><span class="fq-ellipsis">${escapeHtml(part || '—')}</span></td>
+      <td class="fq-col-mono fq-col-lot-ref" title="${escapeHtml(lotRef)}"><span class="fq-ellipsis">${escapeHtml(lotRef || '—')}</span></td>
+      <td class="fq-col-desc" title="${escapeHtml(desc)}"><span class="fq-ellipsis">${escapeHtml(desc || '—')}</span></td>
       <td class="fq-col-num">${escapeHtml(row.receiving_qty == null ? '—' : String(row.receiving_qty))}</td>
-      <td>${fqMiStatusPill(row.status)}</td>
+      <td class="fq-col-mi-status">${fqMiStatusPill(row.status)}</td>
       <td class="fq-col-mi-assignee${isHistorical ? ' fq-col-mi-assignee--stated' : ' fq-col-edit'}">${assigneeCell}</td>
       <td class="fq-col-mi-done">${doneBtn}</td>
     </tr>

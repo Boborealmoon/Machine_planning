@@ -2,7 +2,7 @@
 {% block title %}Monthly Delivery Plan{% endblock %}
 {% block main_class %}app-main--mdp{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261012b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261013c">
 {% endblock %}
 {% block content %}
 <div class="mdp-page">
@@ -10,7 +10,7 @@
     <div>
       <h1 class="mdp-title">Monthly Delivery Plan</h1>
       <p class="mdp-subtitle">
-        Select lines and assign them to a delivery month. The whole open quantity goes to that month.
+        Select lines and assign them to a delivery month. Jobs delivered in a month stay on that month.
       </p>
     </div>
     <div class="mdp-header-actions">
@@ -161,6 +161,7 @@
               </span>
             </th>
             <th data-sort="coway_edd" data-col="coway_edd">Coway EDD</th>
+            <th data-sort="delivery_date" data-col="delivery_date">Delivered</th>
             <th data-sort="week" data-col="week">Week</th>
           </tr>
         </thead>
@@ -173,5 +174,5 @@
 <div id="mdp-col-filter-popover" class="mdp-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261012b"></script>
+<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261013c"></script>
 {% endblock %}

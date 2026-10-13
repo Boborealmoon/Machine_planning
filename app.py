@@ -86,7 +86,11 @@ from planning.queue_exit_history_route import queue_exit_history_bp
 from planning.erp_scanned_output_route import erp_scanned_output_bp
 from planning.mpp_planner_route import mpp_planner_bp
 from planning.inventory_enquiry_route import inventory_enquiry_bp
-from planning.process_sheet_trace_route import process_sheet_trace_bp
+from planning.process_sheet_trace_route import (
+    LEGACY_TRACE_PATH,
+    TRACE_PATH,
+    process_sheet_trace_bp,
+)
 from planning.excel_local_route import excel_local_bp
 from planning.frame_agreement_route import frame_agreement_bp
 from planning.mro_route import MRO_PATH, mro_bp
@@ -339,6 +343,8 @@ def _is_gate_public_path(path: str) -> bool:
     if normalized in (
         "/",
         MACHINIST_BOARD_PATH.lower(),
+        TRACE_PATH.lower(),
+        LEGACY_TRACE_PATH.lower(),
         LOCK_PLANNER_PATH.lower(),
         REPORTS_GATE_PATH.lower(),
         FINANCE_GATE_PATH.lower(),

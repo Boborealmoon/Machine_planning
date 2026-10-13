@@ -6,6 +6,7 @@ import unittest
 from planning.monthly_delivery_plan_service import (
     build_monthly_delivery_plan,
     commitment_date,
+    expand_delivered_lines,
     expand_delivery_lines,
 )
 from planning.process_sheets import _so_line_pricing_key
@@ -178,6 +179,46 @@ class MonthlyDeliveryPlanTests(unittest.TestCase):
         plan = build_monthly_delivery_plan(orders, year=2026)
         self.assertEqual(plan["year_summary"]["undated_count"], 1)
         self.assertEqual(plan["year_summary"]["target_revenue"], 0.0)
+
+    def test_delivered_lines_keep_jobs_shipped_in_the_year(self):
+        orders = [
+            {
+                "sales_order_no": "SO/300",
+                "customer_name": "Gamma",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "APS26-9",
+                        "process_sheet_no": "APS26-9",
+                        "source_line_item_no": "10",
+                        "inventory_code": "P-9",
+                        "description": "Shipped widget",
+                        "due_date": "2026-09-01",
+                        "delivery_date": "2026-10-03",
+                        "pp_qty": 4,
+                        "so_det_qty": 4,
+                        "qty_shipped": 4,
+                        "unit_selling_price": 50,
+                        "shipped_completed": True,
+                        "partials": [],
+                    },
+                    {
+                        "pp_voucher_no": "NPS25-1",
+                        "process_sheet_no": "NPS25-1",
+                        "source_line_item_no": "20",
+                        "delivery_date": "2025-10-03",
+                        "pp_qty": 1,
+                        "shipped_completed": True,
+                        "partials": [],
+                    },
+                ],
+            }
+        ]
+        lines = expand_delivered_lines(orders, year=2026)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["delivery_date"], "2026-10-03")
+        self.assertTrue(lines[0]["delivered"])
+        self.assertEqual(lines[0]["ps_type"], "APS")
+        self.assertEqual(lines[0]["remaining_qty"], 4.0)
 
 
 if __name__ == "__main__":

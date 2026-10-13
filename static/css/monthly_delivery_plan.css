@@ -379,6 +379,7 @@
 
 .mdp-flag--over { background: #ffedd5; color: #9a3412; }
 .mdp-flag--closed { background: #e2e8f0; color: #334155; }
+.mdp-flag--delivered { background: #dcfce7; color: #166534; margin-left: 0.35rem; }
 
 .mdp-th-inner {
   display: inline-flex;

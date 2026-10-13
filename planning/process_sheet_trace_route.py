@@ -1,9 +1,9 @@
-"""Process sheet trace — pushed BOM inventory code through to allocated batch / heat."""
+"""Process sheet trace — public shop-floor view of a job's assigned batch."""
 from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request
 
 from db import planner_db_connect_error
 
@@ -14,18 +14,31 @@ logger = logging.getLogger(__name__)
 
 process_sheet_trace_bp = Blueprint("process_sheet_trace", __name__)
 
-TRACE_PATH = "/planning-data/process-sheet-trace"
+TRACE_PATH = "/process-sheet-trace"
+LEGACY_TRACE_PATH = "/planning-data/process-sheet-trace"
 
 
-@process_sheet_trace_bp.get(TRACE_PATH)
-def process_sheet_trace_page():
+def _render_trace_page():
     return render_template(
         "process_sheet_trace.html",
-        active="planning_data",
+        active="process_sheet_trace",
         initial_ps=compact_text(request.args.get("ps")),
     )
 
 
+@process_sheet_trace_bp.get(TRACE_PATH)
+def process_sheet_trace_page():
+    return _render_trace_page()
+
+
+@process_sheet_trace_bp.get(LEGACY_TRACE_PATH)
+def process_sheet_trace_legacy_page():
+    query = request.query_string.decode()
+    target = TRACE_PATH + (f"?{query}" if query else "")
+    return redirect(target, code=302)
+
+
+@process_sheet_trace_bp.get("/api/process-sheet-trace")
 @process_sheet_trace_bp.get("/api/planning-data/process-sheet-trace")
 def api_process_sheet_trace():
     process_sheet_no = compact_text(request.args.get("ps") or request.args.get("q"))

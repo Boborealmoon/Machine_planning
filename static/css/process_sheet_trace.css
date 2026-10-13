@@ -1,3 +1,17 @@
+body.pst-view .navbar,
+body.pst-view .navbar-backdrop {
+  display: none !important;
+}
+
+body.pst-view .app-main--process-sheet-trace {
+  min-height: 100dvh;
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 20px 24px 28px;
+  box-sizing: border-box;
+}
+
 .pst-page {
   max-width: 1280px;
 }

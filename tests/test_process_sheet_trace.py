@@ -199,7 +199,7 @@ def test_special_bom_lists_each_sub_part_line_and_marks_a_shared_material():
     assert payload["lines"][1]["materials"][0]["shared"] is True
     alloc = payload["lines"][0]["materials"][0]["allocations"][0]
     assert alloc["batch_no"] == "M/04373/26"
-    assert alloc["other_refs"] == ["HEAT-9"]
+    assert alloc["other_refs"] == []
     assert len(payload["lines"][0]["materials"][0]["allocations"]) == 1
 
 
@@ -249,19 +249,126 @@ def test_focus_keeps_only_the_requested_line_item():
     assert payload["lines"][0]["materials"][0]["allocations"] == []
 
 
+def test_shared_material_keeps_only_the_batch_issued_to_that_job():
+    payload = build_trace(
+        {"pp_voucher_no": "N26-[SR]22", "inventory_code": "PARENT", "pp_qty": 2},
+        [
+            {
+                "inventory_code": "PARENT",
+                "line_item_no": 1,
+                "material_inventory_code": "SUB-A",
+                "qty": 1,
+                "in_house_production": "Y",
+            },
+            {
+                "inventory_code": "PARENT",
+                "line_item_no": 3,
+                "material_inventory_code": "SUB-C",
+                "qty": 1,
+                "in_house_production": "Y",
+            },
+            {
+                "inventory_code": "SUB-A",
+                "line_item_no": 2,
+                "material_inventory_code": "ALU 6061_BAR_CTS",
+                "qty": 1,
+                "in_house_production": "N",
+            },
+            {
+                "inventory_code": "SUB-C",
+                "line_item_no": 2,
+                "material_inventory_code": "ALU 6061_BAR_CTS",
+                "qty": 1,
+                "in_house_production": "N",
+            },
+        ],
+        [
+            {"process_sheet_no": "N26-[SR]22-1", "inventory_code": "SUB-A", "component_line_item_no": "1", "type": "COMP"},
+            {"process_sheet_no": "N26-[SR]22-3", "inventory_code": "SUB-C", "component_line_item_no": "3", "type": "COMP"},
+        ],
+        [
+            {
+                "alloc_voucher_no": "IC-A",
+                "inventory_code": "ALU 6061_BAR_CTS",
+                "lot_no": 11,
+                "alloc_qty": 2,
+                "remain_alloc_qty": 0,
+                "issued_alloc_qty": 2,
+                "alloc_to_voucher_no": "M-A",
+                "own_inventory_code": "SUB-A",
+                "wo_voucher_no": "MFG-A",
+            },
+            {
+                "alloc_voucher_no": "IC-C",
+                "inventory_code": "ALU 6061_BAR_CTS",
+                "lot_no": 12,
+                "alloc_qty": 2,
+                "remain_alloc_qty": 0,
+                "issued_alloc_qty": 2,
+                "alloc_to_voucher_no": "M-C",
+                "own_inventory_code": "SUB-C",
+                "wo_voucher_no": "MFG-C",
+            },
+        ],
+        [
+            {
+                "inventory_code": "ALU 6061_BAR_CTS",
+                "lot_no": 11,
+                "reference_no": "M/04425/26",
+                "allocation_qty": 0,
+                "remaining_qty": 0,
+            },
+            {
+                "inventory_code": "ALU 6061_BAR_CTS",
+                "lot_no": 11,
+                "reference_no": "M/04378/26",
+                "allocation_qty": 0,
+                "remaining_qty": 0,
+            },
+        ],
+        issued_lots=[
+            {
+                "own_inventory_code": "SUB-A",
+                "mps_voucher_no": "M-A",
+                "inventory_code": "ALU 6061_BAR_CTS",
+                "lot_no": 11,
+                "reference_no": "JOB-BATCH-A",
+            }
+        ],
+    )
+
+    line_a = payload["lines"][0]["materials"][0]
+    line_c = payload["lines"][1]["materials"][0]
+    assert line_a["shared"] is False
+    assert [row["lot_no"] for row in line_a["allocations"]] == [11]
+    assert line_a["allocations"][0]["batch_no"] == "JOB-BATCH-A"
+    assert line_a["allocations"][0]["work_order_no"] == "MFG-A"
+    assert [row["lot_no"] for row in line_c["allocations"]] == [12]
+    assert line_c["allocations"][0]["work_order_no"] == "MFG-C"
+
+
 def test_trace_page_and_api():
     client = app.test_client()
     with patch.dict(os.environ, {"PLANNER_PASSCODE": ""}):
-        page = client.get("/planning-data/process-sheet-trace")
+        page = client.get("/process-sheet-trace")
         assert page.status_code == 200
-        assert b"Process sheet trace" in page.data
+        body = page.get_data(as_text=True)
+        assert "Process sheet trace" in body
+        assert "pst-view" in body
+
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "secret"}):
+            public_page = client.get("/process-sheet-trace")
+            assert public_page.status_code == 200
+            legacy = client.get("/planning-data/process-sheet-trace?ps=NPS26-0321")
+            assert legacy.status_code == 302
+            assert "/process-sheet-trace" in legacy.headers["Location"]
 
         with patch(
             "planning.process_sheet_trace_route.trace_process_sheet",
             return_value={"found": False, "query": "MISSING", "lines": []},
         ):
-            missing = client.get("/api/planning-data/process-sheet-trace?ps=MISSING")
+            missing = client.get("/api/process-sheet-trace?ps=MISSING")
         assert missing.status_code == 404
 
-        blank = client.get("/api/planning-data/process-sheet-trace")
+        blank = client.get("/api/process-sheet-trace")
         assert blank.status_code == 400

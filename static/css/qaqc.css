@@ -23,6 +23,8 @@ body.qaqc-view {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   margin: 0 auto;
 }
@@ -299,6 +301,8 @@ body.qaqc-view {
 /* ── Table card ─────────────────────────────────────────── */
 
 .fq-table-card {
+  min-width: 0;
+  max-width: 100%;
   background: var(--fq-paper);
   border: 1px solid var(--fq-line);
   border-radius: 16px;
@@ -306,6 +310,8 @@ body.qaqc-view {
 }
 
 .fq-table-scroll {
+  min-width: 0;
+  max-width: 100%;
   overflow: auto;
   max-height: calc(100dvh - 220px);
   overscroll-behavior: contain;
@@ -1312,6 +1318,80 @@ body.qaqc-view {
   margin-top: 0;
 }
 
+/* Fit the card. Long text ellipsizes instead of stacking or shoving
+   status and assignee off the row. */
+.fq-table--material-inspection {
+  width: 100%;
+  min-width: 76rem;
+  table-layout: fixed;
+}
+
+.fq-table--material-inspection th,
+.fq-table--material-inspection td {
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fq-table--material-inspection .fq-ellipsis {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fq-table--material-inspection .fq-col-sticky--mi {
+  width: 9.5%;
+  min-width: 0;
+  max-width: none;
+}
+
+.fq-table--material-inspection .fq-col-po { width: 7.5%; }
+.fq-table--material-inspection .fq-col-ps { width: 6.5%; }
+.fq-table--material-inspection .fq-col-supplier { width: 8.5%; max-width: none; }
+.fq-table--material-inspection .fq-col-ship { width: 7.5%; }
+.fq-table--material-inspection .fq-col-grn { width: 7%; }
+.fq-table--material-inspection .fq-col-date { width: 6.5%; white-space: nowrap; }
+.fq-table--material-inspection .fq-col-part { width: 6.5%; }
+.fq-table--material-inspection .fq-col-lot-ref { width: 6.5%; }
+.fq-table--material-inspection .fq-col-desc { width: 8.5%; max-width: none; white-space: nowrap; }
+.fq-table--material-inspection .fq-col-num {
+  width: 3.5%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.fq-table--material-inspection .fq-col-mi-status {
+  width: 10.5%;
+  min-width: 0;
+  white-space: nowrap;
+}
+.fq-table--material-inspection .fq-col-mi-assignee {
+  width: 8.5%;
+  min-width: 0;
+  max-width: none;
+}
+.fq-table--material-inspection .fq-col-mi-assignee .fq-cell-select--compact {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.fq-table--material-inspection .fq-col-mi-done {
+  width: 3%;
+  min-width: 0;
+  max-width: none;
+  text-align: center;
+  overflow: visible;
+}
+.fq-table--material-inspection .fq-mi-inspector-stated {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .fq-table td.fq-col-mono,
 .fq-table .fq-col-mono {
   font-family: ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
@@ -1373,7 +1453,9 @@ body.qaqc-view {
 }
 
 .fq-table--material-inspection tbody tr.fq-row--mi .fq-col-desc {
-  max-width: 260px;
+  max-width: none;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .fq-col-lot-ref {

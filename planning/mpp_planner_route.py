@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 from flask import Blueprint, jsonify, render_template, request
@@ -57,6 +58,7 @@ def _request_fa_only() -> bool:
 def api_mpp_planner_jobs():
     try:
         fa_only = _request_fa_only()
+        started = time.perf_counter()
         with planner_db() as con:
             # Keep the op-pool fetch inside a bounded window so the page can
             # paint the saved queue even when ERP fallback is slow.
@@ -64,6 +66,12 @@ def api_mpp_planner_jobs():
             con.execute("SET LOCAL lock_timeout = '8s'")
             jobs = fetch_mpp_planner_jobs(con, fa_only=fa_only)
             meta = fetch_mpp_planner_intake_meta(con)
+        logger.info(
+            "mpp planner jobs fa_only=%s count=%s in %.1fs",
+            fa_only,
+            len(jobs),
+            time.perf_counter() - started,
+        )
         return jsonify({
             "ok": True,
             "count": len(jobs),

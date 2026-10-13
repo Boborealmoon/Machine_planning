@@ -6,6 +6,20 @@ import logging
 
 from flask import Blueprint, jsonify, redirect, render_template, request, send_file
 
+from .cmm_queue_service import (
+    CmmError,
+    cmm_metrics,
+    complete_cmm_job,
+    complete_cmm_subtask,
+    create_cmm_job,
+    get_cmm_job,
+    list_cmm_history,
+    list_cmm_queue,
+    parse_override,
+    parse_programme_count,
+    set_cmm_programmes,
+    update_cmm_jigs,
+)
 from .first_article_service import (
     add_new_part_exception,
     add_pic,
@@ -40,11 +54,17 @@ first_article_bp = Blueprint("first_article", __name__)
 
 FIRST_ARTICLE_PATH = "/ops/first-article"
 FIRST_ARTICLE_LEGACY_PATH = "/archive/first-article"
+CMM_QUEUE_PATH = "/cmm-queue"
 
 
 @first_article_bp.get(FIRST_ARTICLE_PATH)
 def first_article_page():
     return render_template("first_article.html", active="first_article")
+
+
+@first_article_bp.get(CMM_QUEUE_PATH)
+def cmm_queue_page():
+    return render_template("cmm_queue.html", active="cmm_queue")
 
 
 @first_article_bp.get(FIRST_ARTICLE_LEGACY_PATH)
@@ -380,7 +400,7 @@ def api_reorder_new_part_queue():
     sheets = data.get("process_sheet_nos")
     if sheets is None:
         sheets = data.get("ids")
-    if not isinstance(sheets, list) or not sheets:
+    if not isinstance(sheets, list):
         return jsonify({"error": "process_sheet_nos is required"}), 400
     try:
         orders = reorder_new_part_queue(sheets)
@@ -475,4 +495,132 @@ def api_delete_first_article_pic(pic_id: int):
             "removed_count": result.get("removed_count", 0),
             "message": f"Removed {result.get('name') or 'PIC'}",
         }
+    )
+
+
+def _cmm_response(fn, *, status: int = 200):
+    try:
+        payload = fn()
+    except CmmError as exc:
+        body = {"error": str(exc)}
+        body.update(exc.extra)
+        return jsonify(body), exc.status
+    except Exception as exc:
+        logger.exception("cmm queue request failed")
+        payload, code = json_error(exc)
+        return jsonify(payload), code
+    return jsonify(payload), status
+
+
+def _json_object():
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+@first_article_bp.get("/api/first-article/cmm/queue")
+def api_list_cmm_queue():
+    def run():
+        jobs = list_cmm_queue()
+        return {"ok": True, "count": len(jobs), "jobs": jobs}
+
+    return _cmm_response(run)
+
+
+@first_article_bp.get("/api/first-article/cmm/history")
+def api_list_cmm_history():
+    def run():
+        jobs = list_cmm_history()
+        return {"ok": True, "count": len(jobs), "jobs": jobs}
+
+    return _cmm_response(run)
+
+
+@first_article_bp.get("/api/first-article/cmm/metrics")
+def api_cmm_metrics():
+    def run():
+        return {"ok": True, "metrics": cmm_metrics()}
+
+    return _cmm_response(run)
+
+
+@first_article_bp.get("/api/first-article/cmm/jobs/<int:job_id>")
+def api_get_cmm_job(job_id: int):
+    return _cmm_response(lambda: {"ok": True, "job": get_cmm_job(job_id)})
+
+
+@first_article_bp.post("/api/first-article/cmm/jobs")
+def api_create_cmm_job():
+    data = _json_object()
+    if data is None:
+        return jsonify({"error": "A JSON object is required"}), 400
+    if not compact_text(data.get("process_sheet_no") or data.get("pp_voucher_no")):
+        return jsonify({"error": "process_sheet_no is required"}), 400
+    return _cmm_response(lambda: {"ok": True, "job": create_cmm_job(data)}, status=201)
+
+
+@first_article_bp.put("/api/first-article/cmm/jobs/<int:job_id>/programmes")
+def api_set_cmm_programmes(job_id: int):
+    data = _json_object()
+    if data is None:
+        return jsonify({"error": "A JSON object is required"}), 400
+    if "count" not in data:
+        return jsonify({"error": "count is required"}), 400
+    try:
+        count = parse_programme_count(data.get("count"))
+    except CmmError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    actor = compact_text(data.get("actor"))
+    return _cmm_response(
+        lambda: {"ok": True, "job": set_cmm_programmes(job_id, count, actor=actor)}
+    )
+
+
+@first_article_bp.patch("/api/first-article/cmm/jobs/<int:job_id>/subtasks/<int:subtask_id>")
+def api_complete_cmm_subtask(job_id: int, subtask_id: int):
+    data = _json_object()
+    if data is None:
+        return jsonify({"error": "A JSON object is required"}), 400
+    if data.get("completed") is not True:
+        return jsonify({"error": "Completed programmes stay locked."}), 409
+    actor = compact_text(data.get("actor"))
+    return _cmm_response(
+        lambda: {"ok": True, "job": complete_cmm_subtask(job_id, subtask_id, actor=actor)}
+    )
+
+
+@first_article_bp.patch("/api/first-article/cmm/jobs/<int:job_id>/jigs")
+def api_update_cmm_jigs(job_id: int):
+    data = _json_object()
+    if data is None:
+        return jsonify({"error": "A JSON object is required"}), 400
+    if "jig_requirements" not in data or "jigs_ready" not in data:
+        return jsonify({"error": "jig_requirements and jigs_ready are required"}), 400
+    actor = compact_text(data.get("actor"))
+    return _cmm_response(
+        lambda: {
+            "ok": True,
+            "job": update_cmm_jigs(
+                job_id,
+                jig_requirements=data.get("jig_requirements"),
+                jigs_ready=data.get("jigs_ready"),
+                actor=actor,
+            ),
+        }
+    )
+
+
+@first_article_bp.post("/api/first-article/cmm/jobs/<int:job_id>/complete")
+def api_complete_cmm_job(job_id: int):
+    data = _json_object()
+    if data is None:
+        return jsonify({"error": "A JSON object is required"}), 400
+    try:
+        override = parse_override(data.get("override"))
+    except CmmError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    actor = compact_text(data.get("actor"))
+    return _cmm_response(
+        lambda: {"ok": True, "job": complete_cmm_job(job_id, override=override, actor=actor)}
     )

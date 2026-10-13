@@ -181,10 +181,6 @@
              class="nav-dropdown-item {% if nav_path == '/planning-data/inventory-enquiry' %}nav-dropdown-item--active{% endif %}">
             Inventory enquiry
           </a>
-          <a href="/planning-data/process-sheet-trace"
-             class="nav-dropdown-item {% if nav_path == '/planning-data/process-sheet-trace' %}nav-dropdown-item--active{% endif %}">
-            Process sheet trace
-          </a>
           <a href="/planning-data/inventory-bom"
              class="nav-dropdown-item {% if nav_path == '/planning-data/inventory-bom' %}nav-dropdown-item--active{% endif %}">
             Inventory BOM
@@ -218,7 +214,7 @@
       </div>
 
       {# Shop-floor & operational views #}
-      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/sales-orders/logistics', '/sales-coordination') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'sales_orders_logistics', 'sales_coordination') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in (machinist_board_path, finishing_queue_path, driver_view_path, '/process-sheet-trace', '/sales-orders/logistics', '/sales-coordination', '/cmm-queue') or active in ('machinist_board', 'finishing_queue', 'driver_view', 'process_sheet_trace', 'sales_orders_logistics', 'sales_coordination', 'cmm_queue') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="views" aria-expanded="false" aria-controls="dd-views">
           VIEWS <span class="nav-caret">▾</span>
         </button>
@@ -231,6 +227,10 @@
              class="nav-dropdown-item {% if nav_path == finishing_queue_path or active == 'finishing_queue' %}nav-dropdown-item--active{% endif %}">
             QAQC View
           </a>
+          <a href="/cmm-queue"
+             class="nav-dropdown-item {% if nav_path == '/cmm-queue' or active == 'cmm_queue' %}nav-dropdown-item--active{% endif %}">
+            CMM Queue
+          </a>
           <a href="{{ driver_view_path }}"
              class="nav-dropdown-item {% if nav_path == driver_view_path or active == 'driver_view' %}nav-dropdown-item--active{% endif %}">
             Delivery Schedule View
@@ -242,6 +242,10 @@
           <a href="/sales-coordination"
              class="nav-dropdown-item {% if nav_path == '/sales-coordination' or active == 'sales_coordination' %}nav-dropdown-item--active{% endif %}">
             Sales Coordination
+          </a>
+          <a href="/process-sheet-trace"
+             class="nav-dropdown-item {% if nav_path == '/process-sheet-trace' or active == 'process_sheet_trace' %}nav-dropdown-item--active{% endif %}">
+            Process sheet trace
           </a>
         </div>
       </div>

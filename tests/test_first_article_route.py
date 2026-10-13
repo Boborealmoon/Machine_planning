@@ -30,6 +30,7 @@ from planning.first_article_service import (
     _live_job_map,
     _merge_live_job,
     _merge_new_part_row,
+    normalize_programme_queue,
     plan_queue_order,
     _parse_priority,
     _parse_check_cell,
@@ -843,6 +844,14 @@ class FirstArticleServiceTests(unittest.TestCase):
             _apply_tracker_patch(None, {}, {"program_due_date": "nope"})
         with self.assertRaises(ValueError):
             _apply_tracker_patch(None, {}, {"queue_order": 0})
+
+    def test_normalize_programme_queue(self):
+        self.assertEqual(normalize_programme_queue([]), [])
+        self.assertEqual(normalize_programme_queue(None), [])
+        self.assertEqual(
+            normalize_programme_queue([" NPS26-1 ", "nps26-1", "NPS26-2::extra", ""]),
+            ["NPS26-1", "NPS26-2"],
+        )
 
     def test_plan_queue_order_reorders_visible_slots(self):
         self.assertEqual(plan_queue_order([1, 2, 3, 4], [4, 3, 2, 1]), [4, 3, 2, 1])
@@ -1777,11 +1786,26 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertEqual(response.get_json()["orders"], orders)
         reorder.assert_called_once_with(["NPS26-0402"])
 
+    def test_new_part_queue_accepts_empty(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            with patch(
+                "planning.first_article_route.reorder_new_part_queue",
+                return_value=[],
+            ) as reorder:
+                response = self.client.post(
+                    "/api/first-article/new-parts/queue",
+                    json={"process_sheet_nos": []},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["orders"], [])
+        reorder.assert_called_once_with([])
+
     def test_new_part_queue_requires_sheets(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
             response = self.client.post(
                 "/api/first-article/new-parts/queue",
-                json={"process_sheet_nos": []},
+                json={},
             )
 
         self.assertEqual(response.status_code, 400)
@@ -1849,8 +1873,17 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-tab-qa\"", html)
         self.assertIn("id=\"fa-panel-qa\"", html)
         self.assertIn("id=\"fa-qa-table\"", html)
+        self.assertIn("id=\"fa-qa-queue\"", html)
+        self.assertIn("id=\"fa-qa-types\"", html)
+        self.assertIn("Programme queue", html)
         self.assertIn("Programme Due Date", html)
-        self.assertIn("fa-qa-queue-card-20261012", html)
+        self.assertIn("fa-cmm-view-20261013", html)
+        self.assertIn('href="/cmm-queue"', html)
+        self.assertNotIn("id=\"fa-tab-cmm\"", html)
+        self.assertNotIn("id=\"fa-panel-cmm\"", html)
+        self.assertNotIn("id=\"fa-qa-view-cmm\"", html)
+        self.assertNotIn("id=\"fa-cmm-metrics\"", html)
+        self.assertNotIn("data-fa-cmm-send", html)
         self.assertIn("id=\"fa-flag-one\"", html)
         self.assertIn("id=\"fa-import-excel\"", html)
         self.assertIn("fa-bulk-scopes", html)
@@ -1862,7 +1895,7 @@ class FirstArticleRouteTests(unittest.TestCase):
         self.assertIn("id=\"fa-history-table-body\"", html)
         self.assertIn("id=\"fa-history-modal\"", html)
         self.assertIn("quotations for new parts", html)
-        self.assertIn("fa-qa-queue-card-20261012", html)
+        self.assertIn("first_article.js?v=fa-cmm-view-20261013", html)
         self.assertIn("fa-col-done", html)
         self.assertIn("id=\"fa-new-assigned-pic\"", html)
         self.assertIn("id=\"fa-col-filter-popover\"", html)

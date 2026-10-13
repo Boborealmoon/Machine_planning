@@ -37,6 +37,8 @@ _LINE_FIELDS = (
     "commitment_date",
     "material_need_date",
     "material_in_date",
+    "delivery_date",
+    "delivered",
 )
 
 
@@ -338,9 +340,16 @@ def _joined_row(
     if unit is None:
         unit = _unit(source.get("unit_selling_price"))
     exch = _rate(source.get("exch_rate"))
-    amount_qty = allocated if public else float(open_qty)
-    over = (not no_longer_open) and allocated > float(open_qty) + QTY_TOLERANCE
+    delivered = bool(source.get("delivered"))
+    if delivered:
+        amount_qty = float(open_qty)
+        left = 0.0
+    else:
+        amount_qty = allocated if public else float(open_qty)
+    over = (not no_longer_open) and (not delivered) and allocated > float(open_qty) + QTY_TOLERANCE
     row = {field: source.get(field) for field in _LINE_FIELDS}
+    row["delivered"] = delivered
+    row["delivery_date"] = _date_text(source.get("delivery_date"))
     row.update(
         {
             "unit_cost": unit,
@@ -375,6 +384,8 @@ def _snapshot_source(item: dict[str, Any]) -> dict[str, Any]:
         "coway_edd": _date_text(item.get("coway_edd")),
         "week": item.get("week") or item.get("week_label") or "",
         "commitment_date": _date_text(item.get("commitment_date")),
+        "delivery_date": _date_text(item.get("delivery_date")),
+        "delivered": bool(item.get("delivered")),
         "unit_cost": item.get("unit_cost"),
         "unit_selling_price": item.get("unit_selling_price"),
         "exch_rate": item.get("exch_rate"),
@@ -421,6 +432,7 @@ def join_delivery_lines(
     joined.sort(
         key=lambda row: (
             1 if row.get("no_longer_open") else 0,
+            1 if row.get("delivered") else 0,
             0 if row.get("over_allocated") else 1,
             row.get("due_date") or "9999-12-31",
             row.get("sales_order_no") or "",
@@ -584,41 +596,47 @@ def _snapshot_params(source: dict[str, Any], plan_month: date, qty: float) -> tu
     )
 
 
-def upsert_commitment(con, source: dict[str, Any], plan_month: date, qty: float) -> None:
+def upsert_commitment(con, source: dict[str, Any], plan_month: date, qty: float) -> int:
     ensure_delivery_commitment_schema(con)
-    con.execute(
-        """
-        INSERT INTO public.planner_delivery_commitment (
-            row_id, sales_order_no, source_line_item_no, pp_voucher_no,
-            process_sheet_no, pp_partial_no, ps_type, part_no, part_desc,
-            unit_cost, exch_rate, status, due_date, coway_edd, week_label,
-            plan_month, qty, updated_at
-        ) VALUES (
-            %s, %s, %s, %s,
-            %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s,
-            %s, %s, NOW()
+    saved = one(
+        con.execute(
+            """
+            INSERT INTO public.planner_delivery_commitment (
+                row_id, sales_order_no, source_line_item_no, pp_voucher_no,
+                process_sheet_no, pp_partial_no, ps_type, part_no, part_desc,
+                unit_cost, exch_rate, status, due_date, coway_edd, week_label,
+                plan_month, qty, updated_at
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, NOW()
+            )
+            ON CONFLICT (row_id, plan_month) DO UPDATE SET
+                sales_order_no = EXCLUDED.sales_order_no,
+                source_line_item_no = EXCLUDED.source_line_item_no,
+                pp_voucher_no = EXCLUDED.pp_voucher_no,
+                process_sheet_no = EXCLUDED.process_sheet_no,
+                pp_partial_no = EXCLUDED.pp_partial_no,
+                ps_type = EXCLUDED.ps_type,
+                part_no = EXCLUDED.part_no,
+                part_desc = EXCLUDED.part_desc,
+                unit_cost = EXCLUDED.unit_cost,
+                exch_rate = EXCLUDED.exch_rate,
+                status = EXCLUDED.status,
+                due_date = EXCLUDED.due_date,
+                coway_edd = EXCLUDED.coway_edd,
+                week_label = EXCLUDED.week_label,
+                qty = EXCLUDED.qty,
+                updated_at = NOW()
+            RETURNING commitment_id
+            """,
+            _snapshot_params(source, plan_month, qty),
         )
-        ON CONFLICT (row_id, plan_month) DO UPDATE SET
-            sales_order_no = EXCLUDED.sales_order_no,
-            source_line_item_no = EXCLUDED.source_line_item_no,
-            pp_voucher_no = EXCLUDED.pp_voucher_no,
-            process_sheet_no = EXCLUDED.process_sheet_no,
-            pp_partial_no = EXCLUDED.pp_partial_no,
-            ps_type = EXCLUDED.ps_type,
-            part_no = EXCLUDED.part_no,
-            part_desc = EXCLUDED.part_desc,
-            unit_cost = EXCLUDED.unit_cost,
-            exch_rate = EXCLUDED.exch_rate,
-            status = EXCLUDED.status,
-            due_date = EXCLUDED.due_date,
-            coway_edd = EXCLUDED.coway_edd,
-            week_label = EXCLUDED.week_label,
-            qty = EXCLUDED.qty,
-            updated_at = NOW()
-        """,
-        _snapshot_params(source, plan_month, qty),
     )
+    if saved is None:
+        raise AllocationError("Could not save that month.")
+    return int(saved["commitment_id"])
 
 
 def delete_commitment(con, commitment_id: int) -> bool:
@@ -688,24 +706,44 @@ def save_adds(
         upsert_commitment(con, line, month, qty)
 
 
+def _assign_source(
+    item: dict[str, Any],
+    lines_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Prefer the posted row. It already has the qty on screen, so assign need not reload ERP."""
+    row_id = _compact(item.get("row_id"))
+    posted_qty = item.get("remaining_qty")
+    if posted_qty in (None, ""):
+        posted_qty = item.get("open_qty")
+    if posted_qty not in (None, "") and _round_qty(posted_qty) > QTY_TOLERANCE:
+        source = dict(item)
+        source["row_id"] = row_id
+        source["remaining_qty"] = posted_qty
+        return source
+    return lines_by_id.get(row_id)
+
+
 def save_assign_month(
     con,
     lines_by_id: dict[str, dict[str, Any]],
     plan_month: Any,
     items: list[dict[str, Any]],
-) -> None:
-    """Assign each line's full open qty to one month."""
+) -> list[dict[str, Any]]:
+    """Assign each line's full qty to one month. Returns the saved slices."""
     if not items:
         raise AllocationError("Select at least one line.")
     commitments = load_commitments(con)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in commitments:
         grouped.setdefault(_compact(item.get("row_id")), []).append(item)
+    saved: list[dict[str, Any]] = []
     for item in items:
+        if not isinstance(item, dict):
+            raise AllocationError("Missing line.")
         row_id = _compact(item.get("row_id"))
         if not row_id:
             raise AllocationError("Missing line.")
-        line = lines_by_id.get(row_id)
+        line = _assign_source(item, lines_by_id)
         if line is None:
             raise AllocationError("That line is no longer open.")
         month, qty, drop_ids = plan_whole_month_assign(
@@ -713,7 +751,22 @@ def save_assign_month(
         )
         for commitment_id in drop_ids:
             delete_commitment(con, commitment_id)
-        upsert_commitment(con, line, month, qty)
+        commitment_id = upsert_commitment(con, line, month, qty)
+        month_key = plan_month_key(month)
+        grouped[row_id] = [
+            row
+            for row in grouped.get(row_id, [])
+            if row.get("plan_month") == month_key or row.get("commitment_id") not in set(drop_ids)
+        ]
+        saved.append(
+            {
+                "row_id": row_id,
+                "plan_month": month_key,
+                "qty": qty,
+                "commitment_id": commitment_id,
+            }
+        )
+    return saved
 
 
 def save_qty(

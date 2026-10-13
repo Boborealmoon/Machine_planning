@@ -9,6 +9,10 @@
     pics: '/api/first-article/pics',
     newParts: '/api/first-article/new-parts',
     history: '/api/first-article/history',
+    cmmQueue: '/api/first-article/cmm/queue',
+    cmmJobs: '/api/first-article/cmm/jobs',
+    cmmHistory: '/api/first-article/cmm/history',
+    cmmMetrics: '/api/first-article/cmm/metrics',
   };
   const CHECK_FIELDS = [
     { prefix: 'tooling', label: 'Tooling' },
@@ -86,6 +90,22 @@
     machines: [],
     filter: '',
     qaFilter: '',
+    qaTypes: new Set(['NPS']),
+    cmm: {
+      queue: [],
+      queueLoaded: false,
+      queueToken: 0,
+      selectedId: null,
+      job: null,
+      jobToken: 0,
+      filter: '',
+      jigTimer: 0,
+      history: [],
+      historyLoaded: false,
+      historyFilter: '',
+      addHits: [],
+      addTimer: 0,
+    },
     searchHits: [],
     searchTimer: 0,
     exceptionHits: [],
@@ -593,7 +613,12 @@
     try {
       const res = await fetch(url, opts);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        const error = new Error(data.error || `HTTP ${res.status}`);
+        error.status = res.status;
+        error.payload = data;
+        throw error;
+      }
       return data;
     } catch (err) {
       if (err && err.name === 'AbortError') {
@@ -1151,6 +1176,7 @@
   function qaFilteredRows() {
     const needle = state.qaFilter.trim().toUpperCase();
     const rows = state.newRows.filter((row) => {
+      if (!state.qaTypes.has(newRowPsType(row))) return false;
       if (!needle) return true;
       const blob = [
         row.process_sheet_no,
@@ -1172,22 +1198,118 @@
       ].join(' ').toUpperCase();
       return blob.includes(needle);
     });
-    rows.sort(compareQueue);
+    rows.sort(qaReviewSort);
     return rows;
+  }
+
+  function qaReviewSort(a, b) {
+    const da = String(a?.po_due_date || '').slice(0, 10);
+    const db = String(b?.po_due_date || '').slice(0, 10);
+    if (da !== db) {
+      if (!da) return 1;
+      if (!db) return -1;
+      return da < db ? -1 : 1;
+    }
+    return qaSheet(a).localeCompare(qaSheet(b));
+  }
+
+  function qaQueuedRows() {
+    return state.newRows.filter((row) => queueRank(row) !== Number.POSITIVE_INFINITY).sort(compareQueue);
+  }
+
+  function qaQueuedSheets() {
+    return qaQueuedRows().map((row) => qaSheet(row)).filter(Boolean);
+  }
+
+  function qaIsQueued(row) {
+    return queueRank(row) !== Number.POSITIVE_INFINITY;
   }
 
   function qaQueueHandle(row) {
     const order = queueRank(row);
-    const label = order === Number.POSITIVE_INFINITY ? '\u2014' : String(order);
+    const queued = order !== Number.POSITIVE_INFINITY;
+    const label = queued ? String(order) : 'Op';
+    const title = queued
+      ? 'In the programme queue. Drag to move this job block.'
+      : 'Drag into the programme queue when a programme is required.';
+    const aria = queued
+      ? `Job block ${label} in the programme queue. Drag to move.`
+      : 'Drag into the programme queue';
     return `
-      <div class="fa-qa-op-card" draggable="true" role="button" tabindex="0"
+      <div class="fa-qa-op-card${queued ? ' is-queued' : ''}" draggable="true" role="button" tabindex="0"
            data-fa-qa-drag="${escapeHtml(qaSheet(row))}"
-           title="Drag this card to set the technician queue"
-           aria-label="Drag to set queue position ${escapeHtml(label)}">
+           title="${escapeHtml(title)}"
+           aria-label="${escapeHtml(aria)}">
         <span class="fa-qa-grip" aria-hidden="true"></span>
         <span class="fa-qa-order">${escapeHtml(label)}</span>
       </div>
     `;
+  }
+
+  function qaBlockHtml(row, index) {
+    const ps = qaSheet(row);
+    const stage = stageFilterLabel(row);
+    const due = row.program_due_date ? compactDate(row.program_due_date) : '';
+    const part = String(row.part_no || '').trim();
+    const detail = stage || String(row.part_description || '').trim();
+    return `
+      <li class="fa-qa-block" draggable="true" data-fa-qa-block="${escapeHtml(ps)}">
+        <span class="fa-qa-block-order">${index}</span>
+        <div class="fa-qa-block-main">
+          <div class="fa-qa-block-title">
+            <span class="fa-mono">${escapeHtml(ps || '\u2014')}</span>
+            ${part ? `<span>${escapeHtml(part)}</span>` : ''}
+          </div>
+          ${detail ? `<div class="fa-qa-block-meta">${escapeHtml(detail)}</div>` : ''}
+          ${due ? `<div class="fa-qa-block-due">Programme due ${escapeHtml(due)}</div>` : ''}
+        </div>
+        <button type="button" class="fa-qa-block-remove" data-fa-qa-unqueue="${escapeHtml(ps)}"
+                aria-label="Remove ${escapeHtml(ps)} from the programme queue">Remove</button>
+      </li>
+    `;
+  }
+
+  function renderQaQueue() {
+    const blocks = qaQueuedRows();
+    const countEl = $('fa-qa-queue-count');
+    if (countEl) countEl.textContent = String(blocks.length);
+    const empty = $('fa-qa-queue-empty');
+    const list = $('fa-qa-queue-list');
+    if (empty) empty.hidden = blocks.length > 0;
+    if (list) {
+      list.hidden = blocks.length === 0;
+      const signature = blocks.map((row) => [
+        qaSheet(row),
+        queueRank(row),
+        row.part_no || '',
+        row.program_due_date || '',
+        stageFilterLabel(row),
+      ].join('\t')).join('\n');
+      if (list.dataset.signature !== signature) {
+        const scroll = list.scrollTop;
+        list.dataset.signature = signature;
+        list.innerHTML = blocks.map((row, index) => qaBlockHtml(row, index + 1)).join('');
+        list.scrollTop = scroll;
+      }
+    }
+    if (state.tab === 'qa') {
+      const total = state.newRows.length;
+      const queuePart = `${blocks.length} in the programme queue.`;
+      if (!state.newLoaded) {
+        $('fa-subtitle').textContent = 'Loading new parts that need a programme...';
+      } else if (!total) {
+        $('fa-subtitle').textContent = 'Review new parts, then drag an op card into the programme queue when a programme is required.';
+      } else {
+        const shown = qaFilteredRows().length;
+        const labels = PS_TYPE_ORDER.filter((label) => state.qaTypes.has(label)).join(' / ');
+        const counts = newTypeCounts();
+        const present = PS_TYPE_ORDER.filter((label) => counts[label]);
+        const allSelected = present.length > 0 && present.every((label) => state.qaTypes.has(label));
+        const typePart = allSelected ? '' : `${labels || 'selected'} `;
+        const ofPart = allSelected ? '' : ` of ${total}`;
+        $('fa-subtitle').textContent = `${shown} ${typePart}part${shown === 1 ? '' : 's'}${ofPart}. ${queuePart}`;
+      }
+    }
   }
 
   function qaReviewCell(row) {
@@ -1237,17 +1359,27 @@
     `;
   }
 
+  function renderQaTypeChips() {
+    const host = $('fa-qa-types');
+    if (!host) return;
+    const counts = newTypeCounts();
+    const present = PS_TYPE_ORDER.filter((label) => counts[label] || label === 'APS' || label === 'NPS');
+    const allOn = present.length > 0 && present.every((label) => state.qaTypes.has(label));
+    const chips = [`<button type="button" class="fa-type-chip${allOn ? ' is-active' : ''}" data-fa-qa-type="__all">All ${state.newRows.length}</button>`]
+      .concat(present.map((label) => {
+        const active = state.qaTypes.has(label);
+        return `<button type="button" class="fa-type-chip${active ? ' is-active' : ''}" data-fa-qa-type="${escapeHtml(label)}">${escapeHtml(label)} ${counts[label] || 0}</button>`;
+      }));
+    host.innerHTML = chips.join('');
+  }
+
   function renderQaTable() {
     const host = $('fa-qa-table-host');
     const empty = $('fa-qa-empty');
     const body = $('fa-qa-table-body');
     const rows = qaFilteredRows();
-    if (state.tab === 'qa') {
-      const count = state.newRows.length;
-      $('fa-subtitle').textContent = count
-        ? `${count} new part${count === 1 ? '' : 's'} needing a programme`
-        : 'Review new parts that need a programme, set a deadline, and order the technician queue.';
-    }
+    renderQaTypeChips();
+    renderQaQueue();
     if (!state.newRows.length) {
       if (host) host.hidden = true;
       if (empty) {
@@ -1263,7 +1395,10 @@
       if (host) host.hidden = true;
       if (empty) {
         empty.hidden = false;
-        empty.textContent = 'No jobs match this filter.';
+        const labels = PS_TYPE_ORDER.filter((label) => state.qaTypes.has(label)).join(' / ');
+        empty.textContent = state.qaFilter.trim()
+          ? 'No jobs match this filter.'
+          : `No ${labels || 'selected'} jobs in this review.`;
       }
       if (body) body.innerHTML = '';
       return;
@@ -1272,24 +1407,17 @@
     if (empty) empty.hidden = true;
     if (!body) return;
     body.innerHTML = rows.map((row) => {
-      const gaugesReady = row.gauges_tick ? ' is-ready' : '';
+      const queued = qaIsQueued(row) ? ' is-queued' : '';
       return `
-        <tr data-ps="${escapeHtml(qaSheet(row))}">
+        <tr class="${queued.trim()}" data-ps="${escapeHtml(qaSheet(row))}">
           <td class="fa-col-review">${qaReviewCell(row)}</td>
           <td>${psCell(row)}</td>
           <td class="fa-readonly">${escapeHtml(dash(row.part_no))}${npiStatusBadge(row)}</td>
           <td>${escapeHtml(dash(row.part_description))}</td>
           <td class="fa-col-qty">${escapeHtml(dash(row.total_qty))}</td>
           <td class="fa-col-date">${escapeHtml(dash(row.po_due_date))}</td>
-          <td class="fa-col-date">${escapeHtml(dash(row.posted_date))}</td>
           <td class="fa-col-stage">${stageCell(row)}</td>
-          <td class="fa-col-machine">${faRenderCncPills(proposedCncMachines(row))}</td>
-          <td class="fa-edd">${escapeHtml(dash(row.coway_proposed_edd))}</td>
-          <td class="fa-col-pic">${escapeHtml(dash(qaPicText(row)))}</td>
           <td class="fa-col-finish">${qaProgrammeDueCell(row)}</td>
-          <td class="fa-col-check">${checkReadout(row, 'tooling')}</td>
-          <td class="fa-col-check">${checkReadout(row, 'fixture')}</td>
-          <td class="fa-col-gauges${gaugesReady}">${qaGaugesCell(row)}</td>
           <td class="fa-col-remarks">
             <textarea class="fa-cell-input fa-remarks" data-fa-qa-field="remarks" data-ps="${escapeHtml(qaSheet(row))}" placeholder="Remarks">${escapeHtml(row.remarks || '')}</textarea>
           </td>
@@ -1820,7 +1948,15 @@
 
   function setTab(tab, options) {
     const persistHash = options && options.persistHash;
-    const next = tab === 'new' ? 'new' : (tab === 'history' ? 'history' : (tab === 'qa' ? 'qa' : 'flagged'));
+    const next = tab === 'new'
+      ? 'new'
+      : (tab === 'history'
+        ? 'history'
+        : (tab === 'cmm-history'
+          ? 'cmm-history'
+          : (tab === 'cmm'
+            ? 'cmm'
+            : (tab === 'qa' ? 'qa' : 'flagged'))));
     if (next !== state.tab) {
       closeColumnFilter();
       closeProposedCncPopover();
@@ -1833,14 +1969,23 @@
     });
     const flagged = $('fa-panel-flagged');
     const qa = $('fa-panel-qa');
+    const cmm = $('fa-panel-cmm');
     const neu = $('fa-panel-new');
     const hist = $('fa-panel-history');
+    const cmmHist = $('fa-panel-cmm-history');
     if (flagged) flagged.hidden = next !== 'flagged';
     if (qa) qa.hidden = next !== 'qa';
+    if (cmm) cmm.hidden = next !== 'cmm';
     if (neu) neu.hidden = next !== 'new';
     if (hist) hist.hidden = next !== 'history';
+    if (cmmHist) cmmHist.hidden = next !== 'cmm-history';
     if (persistHash !== false) {
-      const hash = next === 'new' ? '#new' : (next === 'history' ? '#history' : (next === 'qa' ? '#qa' : '#flagged'));
+      let hash = '#flagged';
+      if (next === 'new') hash = '#new';
+      else if (next === 'history') hash = '#history';
+      else if (next === 'cmm-history') hash = '#cmm-history';
+      else if (next === 'cmm') hash = '#cmm';
+      else if (next === 'qa') hash = '#qa';
       if (window.location.hash !== hash) {
         history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`);
       }
@@ -1851,6 +1996,14 @@
     } else if (next === 'history') {
       renderHistoryTable();
       if (!state.completedLoaded) loadCompletedParts();
+    } else if (next === 'cmm-history') {
+      renderCmmHistory();
+      if (!state.cmm.historyLoaded) loadCmmHistory();
+    } else if (next === 'cmm') {
+      renderCmmQueue();
+      renderCmmWorkspace();
+      updateCmmSubtitle();
+      if (!state.cmm.queueLoaded) loadCmmQueue();
     } else if (next === 'qa') {
       renderQaTable();
       if (!state.newLoaded) loadNewParts();
@@ -1977,7 +2130,10 @@
     const empty = $('fa-new-empty');
     const qaEmpty = $('fa-qa-empty');
     if (state.tab === 'new' && empty) empty.hidden = true;
-    if (state.tab === 'qa' && qaEmpty) qaEmpty.hidden = true;
+    if (state.tab === 'qa' && qaEmpty && !state.newLoaded) {
+      qaEmpty.hidden = false;
+      qaEmpty.textContent = 'Loading new parts that need a programme...';
+    }
     showAlert('');
     return withTabLoad('new', async () => {
       try {
@@ -2048,7 +2204,59 @@
       || state.completedRows.find((row) => newRowKey(row) === key);
   }
 
-  function applyNewRow(updated, { render } = {}) {
+  function cellValueEmpty(value) {
+    if (value == null) return true;
+    if (Array.isArray(value)) return value.filter(Boolean).length === 0;
+    if (typeof value === 'string') return value.trim() === '';
+    return false;
+  }
+
+  function rowStillHasJob(row) {
+    if (!row) return false;
+    return !cellValueEmpty(row.part_no)
+      || !cellValueEmpty(row.part_description)
+      || !cellValueEmpty(row.po_due_date)
+      || !cellValueEmpty(row.coway_proposed_edd)
+      || !cellValueEmpty(row.sales_order_no)
+      || !cellValueEmpty(row.proposed_cnc);
+  }
+
+  function mergeSavedNewRow(prev, updated, patch) {
+    if (!prev) return updated;
+    const next = updated || {};
+    const lostJob = rowStillHasJob(prev) && !rowStillHasJob(next);
+    if (patch && lostJob) {
+      const merged = { ...prev };
+      Object.keys(patch).forEach((key) => {
+        if (key in next) merged[key] = next[key];
+      });
+      if ('program_pic_ids' in patch && Array.isArray(next.program_pics)) {
+        merged.program_pics = next.program_pics;
+      }
+      if (next.history_count != null) merged.history_count = next.history_count;
+      if (next.list_scope) merged.list_scope = next.list_scope;
+      if (!('proposed_cnc' in patch) && !cellValueEmpty(next.proposed_cnc)) {
+        merged.proposed_cnc = next.proposed_cnc;
+      }
+      return merged;
+    }
+    const merged = { ...prev, ...next };
+    if (!patch) return merged;
+    [
+      'part_no', 'part_description', 'total_qty', 'po_due_date', 'posted_date',
+      'coway_proposed_edd', 'sales_order_no', 'customer_name',
+      'current_stage_desc', 'current_stage_status', 'current_stage_status_label',
+      'erp_last_stage_desc', 'machine_cnc', 'queued_machines', 'proposed_cnc',
+      'remarks', 'program_finish_at', 'priority', 'program_pic_ids', 'program_pics',
+    ].forEach((key) => {
+      if (key in patch) return;
+      if (key === 'program_pics' && 'program_pic_ids' in patch) return;
+      if (cellValueEmpty(merged[key]) && !cellValueEmpty(prev[key])) merged[key] = prev[key];
+    });
+    return merged;
+  }
+
+  function applyNewRow(updated, { render, patch } = {}) {
     if (!updated) return;
     const key = newRowKey(updated);
     const fromNew = state.newRows.findIndex((row) => newRowKey(row) === key);
@@ -2056,7 +2264,7 @@
     const prev = fromNew >= 0
       ? state.newRows[fromNew]
       : (fromHist >= 0 ? state.completedRows[fromHist] : null);
-    const merged = prev ? { ...prev, ...updated } : updated;
+    const merged = prev ? mergeSavedNewRow(prev, updated, patch) : updated;
     if (fromNew >= 0) state.newRows.splice(fromNew, 1);
     if (fromHist >= 0) state.completedRows.splice(fromHist, 1);
     const kind = newRowPsType(merged);
@@ -2084,7 +2292,7 @@
         ...patch,
       }),
     });
-    if (apply !== false) applyNewRow(data.row, { render });
+    if (apply !== false) applyNewRow(data.row, { render, patch });
     return data.row;
   }
 
@@ -3421,7 +3629,8 @@
       const table = cell.closest('table');
       const pos = cellPos(cell);
       if (pos.row < 0 || pos.col < 0) return;
-      if (event.shiftKey && grid.tableId === table.id && grid.anchor) {
+      const editing = event.target.closest?.('input, textarea, select, button, label');
+      if (event.shiftKey && !editing && grid.tableId === table.id && grid.anchor) {
         event.preventDefault();
         grid.focus = pos;
         paintGridSelection();
@@ -3431,7 +3640,7 @@
       grid.tableId = table.id;
       grid.anchor = pos;
       grid.focus = pos;
-      grid.pending = { x: event.clientX, y: event.clientY };
+      grid.pending = editing ? null : { x: event.clientX, y: event.clientY };
       grid.dragging = false;
       paintGridSelection();
     });
@@ -3491,15 +3700,15 @@
     }, true);
 
     document.addEventListener('keydown', (event) => {
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedCells().length && grid.tableId) {
-        const active = document.activeElement;
-        if (active && active.closest?.('input, textarea, select') && active.closest('td[data-fa-grid]') && selectedCells().length < 2) return;
-        if (active && !active.closest?.('td[data-fa-grid], #' + grid.tableId) && active !== $(grid.tableId)) return;
-        event.preventDefault();
-        applyGridValues(selectedCells().map((td) => ({ td, raw: '' }))).catch((err) => {
-          showAlert(err.message || 'Could not clear cells');
-        });
-      }
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      if (!selectedCells().length || !grid.tableId) return;
+      const active = document.activeElement;
+      if (active && active.closest?.('input, textarea, select, button')) return;
+      if (active && !active.closest?.('td[data-fa-grid], #' + grid.tableId) && active !== $(grid.tableId)) return;
+      event.preventDefault();
+      applyGridValues(selectedCells().map((td) => ({ td, raw: '' }))).catch((err) => {
+        showAlert(err.message || 'Could not clear cells');
+      });
     });
 
     ['fa-new-table', 'fa-history-table'].forEach((id) => {
@@ -3568,16 +3777,8 @@
     { id: 'part_description', label: 'Part Description', width: 36 },
     { id: 'total_qty', label: 'Total Qty', width: 12 },
     { id: 'po_due_date', label: 'PO Due Date', width: 14 },
-    { id: 'posted_date', label: 'Posted', width: 12 },
     { id: 'stage', label: 'WO / Stage', width: 28 },
-    { id: 'proposed_cnc', label: 'Proposed CNC', width: 18 },
-    { id: 'coway_proposed_edd', label: 'Stipulated Coway EDD', width: 22 },
-    { id: 'pic', label: 'PIC', width: 16 },
     { id: 'program_due_date', label: 'Programme Due Date', width: 18 },
-    { id: 'tooling', label: 'Tooling', width: 14 },
-    { id: 'fixture', label: 'Fixture/Jig', width: 14 },
-    { id: 'gauges_tick', label: 'Gauges complete', width: 16 },
-    { id: 'gauges_text', label: 'Gauges remarks', width: 24 },
     { id: 'remarks', label: 'Remark', width: 28 },
   ];
 
@@ -3659,6 +3860,26 @@
 
   function exportListSpec() {
     const stamp = exportStamp();
+    if (state.tab === 'cmm-history') {
+      if (!state.cmm.historyLoaded) return { error: 'CMM history is still loading.' };
+      return {
+        rows: filteredCmmHistory(),
+        columns: CMM_EXPORT_COLUMNS,
+        sheetName: 'CMM History',
+        filename: `cmm-history-${stamp}.xlsx`,
+        value: cmmExportValue,
+      };
+    }
+    if (state.tab === 'cmm') {
+      if (!state.cmm.queueLoaded) return { error: 'CMM queue is still loading.' };
+      return {
+        rows: filteredCmmQueue(),
+        columns: CMM_EXPORT_COLUMNS,
+        sheetName: 'CMM Queue',
+        filename: `cmm-queue-${stamp}.xlsx`,
+        value: cmmExportValue,
+      };
+    }
     if (state.tab === 'new') {
       if (!state.newLoaded) return { error: 'New parts are still loading.' };
       return {
@@ -3703,7 +3924,11 @@
     if (!btn) return;
     const label = state.tab === 'new'
       ? 'New parts'
-      : (state.tab === 'history' ? 'History' : (state.tab === 'qa' ? 'QA Review' : 'NPI Tracker'));
+      : (state.tab === 'history'
+        ? 'History'
+        : (state.tab === 'cmm-history'
+          ? 'CMM History'
+          : (state.tab === 'cmm' ? 'CMM Queue' : (state.tab === 'qa' ? 'QA Review' : 'NPI Tracker'))));
     btn.title = `Download the visible ${label} list as Excel`;
   }
 
@@ -3774,61 +3999,126 @@
     }
   }
 
-  const qaDrag = { id: '', order: '', dropped: false };
+  const qaDrag = { ps: '', index: 0 };
+  let qaQueueSaveToken = 0;
+  const QA_QUEUE_HINT = 'Drag an op card into the programme queue when a programme is required.';
 
-  function qaBodyIds() {
-    const body = $('fa-qa-table-body');
-    if (!body) return [];
-    return [...body.querySelectorAll('tr[data-ps]')]
-      .map((tr) => tr.getAttribute('data-ps') || '')
-      .filter(Boolean);
-  }
-
-  function qaFullQueueSheets() {
-    const visible = qaBodyIds();
-    const visibleKeys = new Set(visible.map((ps) => ps.toUpperCase()));
-    const full = state.newRows.slice().sort(compareQueue);
-    let index = 0;
-    return full.map((row) => {
-      const sheet = qaSheet(row);
-      if (!visibleKeys.has(sheet.toUpperCase())) return sheet;
-      const next = visible[index];
-      index += 1;
-      return next || sheet;
-    }).filter(Boolean);
-  }
-
-  async function persistQaQueue() {
-    const sheets = qaFullQueueSheets();
-    const data = await api(`${API.newParts}/queue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ process_sheet_nos: sheets }),
-    });
-    const orders = new Map((data.orders || []).map((item) => [
+  function applyQaQueueOrders(orders) {
+    const ranked = new Map((orders || []).map((item) => [
       String(item.process_sheet_no || '').trim().toUpperCase(),
       Number(item.queue_order),
     ]));
     state.newRows.forEach((row) => {
-      const order = orders.get(qaSheet(row).toUpperCase());
-      if (order) row.queue_order = order;
+      const order = ranked.get(qaSheet(row).toUpperCase());
+      row.queue_order = order || null;
     });
+  }
+
+  function syncQaOpCards() {
     $('fa-qa-table-body')?.querySelectorAll('tr[data-ps]').forEach((tr) => {
+      const ps = String(tr.getAttribute('data-ps') || '').trim().toUpperCase();
+      const row = state.newRows.find((item) => qaSheet(item).toUpperCase() === ps);
+      const order = queueRank(row);
+      const queued = order !== Number.POSITIVE_INFINITY;
+      tr.classList.toggle('is-queued', queued);
       const badge = tr.querySelector('.fa-qa-order');
-      const order = orders.get(String(tr.getAttribute('data-ps') || '').trim().toUpperCase());
-      if (badge && order) {
-        badge.textContent = String(order);
-        const handle = tr.querySelector('[data-fa-qa-drag]');
-        if (handle) handle.setAttribute('aria-label', `Drag to set queue position ${order}`);
+      const handle = tr.querySelector('[data-fa-qa-drag]');
+      if (badge) badge.textContent = queued ? String(order) : 'Op';
+      if (handle) {
+        handle.classList.toggle('is-queued', queued);
+        handle.title = queued
+          ? 'In the programme queue. Drag to move this job block.'
+          : 'Drag into the programme queue when a programme is required.';
+        handle.setAttribute('aria-label', queued
+          ? `Job block ${order} in the programme queue. Drag to move.`
+          : 'Drag into the programme queue');
       }
     });
-    setStatus('fa-qa-status', 'Queue saved', 'saved');
+  }
+
+  function qaQueueSnapshot() {
+    return state.newRows.map((row) => ({ ps: qaSheet(row).toUpperCase(), order: row.queue_order }));
+  }
+
+  function restoreQaQueueSnapshot(snapshot) {
+    const ranked = new Map(snapshot.map((item) => [item.ps, item.order]));
+    state.newRows.forEach((row) => {
+      const order = ranked.get(qaSheet(row).toUpperCase());
+      row.queue_order = order == null || order === '' ? null : order;
+    });
+  }
+
+  async function persistQaQueue(sheets) {
+    const token = ++qaQueueSaveToken;
+    const previous = qaQueueSnapshot();
+    applyQaQueueOrders(sheets.map((ps, index) => ({ process_sheet_no: ps, queue_order: index + 1 })));
+    renderQaQueue();
+    syncQaOpCards();
+    try {
+      const data = await api(`${API.newParts}/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ process_sheet_nos: sheets }),
+      });
+      if (token !== qaQueueSaveToken) return;
+      applyQaQueueOrders(data.orders || []);
+      renderQaQueue();
+      syncQaOpCards();
+      setStatus('fa-qa-status', 'Queue saved', 'saved');
+      window.setTimeout(() => {
+        const el = $('fa-qa-status');
+        if (el && el.textContent === 'Queue saved') setStatus('fa-qa-status', QA_QUEUE_HINT);
+      }, 1600);
+    } catch (err) {
+      if (token !== qaQueueSaveToken) return;
+      restoreQaQueueSnapshot(previous);
+      renderQaQueue();
+      syncQaOpCards();
+      showAlert(err.message || 'Could not save the queue');
+    }
+  }
+
+  function endQaDrag() {
+    const ps = qaDrag.ps;
     window.setTimeout(() => {
-      const el = $('fa-qa-status');
-      if (el && el.textContent === 'Queue saved') {
-        setStatus('fa-qa-status', 'Drag the queue card on the right of a row to set the order technicians work.');
+      if (qaDrag.ps !== ps) return;
+      clearQaDropMarks();
+      qaDrag.ps = '';
+    }, 0);
+  }
+
+  function clearQaDropMarks() {
+    $('fa-qa-queue')?.classList.remove('is-drop');
+    $('fa-qa-queue-list')?.querySelectorAll('.is-drop-before, .is-drop-after, .is-dragging').forEach((el) => {
+      el.classList.remove('is-drop-before', 'is-drop-after', 'is-dragging');
+    });
+    document.querySelectorAll('.fa-qa-op-card.is-dragging').forEach((el) => el.classList.remove('is-dragging'));
+  }
+
+  function markQaDrop(event) {
+    const list = $('fa-qa-queue-list');
+    const items = list ? [...list.querySelectorAll('[data-fa-qa-block]')] : [];
+    items.forEach((el) => el.classList.remove('is-drop-before', 'is-drop-after'));
+    const dragged = qaDrag.ps.toUpperCase();
+    const others = items.filter((el) => (el.getAttribute('data-fa-qa-block') || '').trim().toUpperCase() !== dragged);
+    let index = others.length;
+    for (let i = 0; i < others.length; i += 1) {
+      const rect = others[i].getBoundingClientRect();
+      if (event.clientY < rect.top + rect.height / 2) {
+        index = i;
+        others[i].classList.add('is-drop-before');
+        break;
       }
-    }, 1600);
+    }
+    if (index === others.length && others.length) others[others.length - 1].classList.add('is-drop-after');
+    qaDrag.index = index;
+  }
+
+  function sheetsAfterQaDrop() {
+    const current = qaQueuedSheets().filter((ps) => ps.toUpperCase() !== qaDrag.ps.toUpperCase());
+    const index = Number.isInteger(qaDrag.index) ? qaDrag.index : current.length;
+    current.splice(Math.max(0, Math.min(index, current.length)), 0, qaDrag.ps);
+    return current;
   }
 
   async function saveQaField(fieldEl) {
@@ -3872,6 +4162,7 @@
       syncFinishField(fieldEl.parentElement, iso);
       try {
         await saveNewPatch(ps, { program_due_date: iso }, { render: false });
+        renderQaQueue();
       } catch (err) {
         showAlert(err.message || 'Save failed');
       }
@@ -3885,6 +4176,23 @@
 
     $('fa-qa-filter')?.addEventListener('input', (e) => {
       state.qaFilter = e.target.value || '';
+      renderQaTable();
+    });
+
+    $('fa-qa-types')?.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-fa-qa-type]');
+      if (!chip) return;
+      const value = chip.getAttribute('data-fa-qa-type') || '';
+      const counts = newTypeCounts();
+      const present = PS_TYPE_ORDER.filter((label) => counts[label] || label === 'APS' || label === 'NPS');
+      if (value === '__all') {
+        const allOn = present.length > 0 && present.every((label) => state.qaTypes.has(label));
+        state.qaTypes = allOn ? new Set(['NPS']) : new Set(present);
+      } else if (state.qaTypes.has(value)) {
+        state.qaTypes.delete(value);
+      } else {
+        state.qaTypes.add(value);
+      }
       renderQaTable();
     });
 
@@ -3909,6 +4217,7 @@
         syncFinishField(picker.parentElement, iso);
         try {
           await saveNewPatch(picker.getAttribute('data-ps'), { program_due_date: iso }, { render: false });
+          renderQaQueue();
           showAlert('');
         } catch (err) {
           showAlert(err.message || 'Save failed');
@@ -3945,59 +4254,793 @@
     body.addEventListener('dragstart', (e) => {
       const handle = e.target.closest('[data-fa-qa-drag]');
       if (!handle) return;
-      const tr = handle.closest('tr');
-      qaDrag.id = tr?.getAttribute('data-ps') || '';
-      qaDrag.order = qaBodyIds().join(',');
-      qaDrag.dropped = false;
-      tr?.classList.add('is-dragging');
+      qaDrag.ps = handle.getAttribute('data-fa-qa-drag') || '';
+      qaDrag.index = qaQueuedSheets().length;
+      handle.classList.add('is-dragging');
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'copyMove';
+        e.dataTransfer.setData('text/plain', qaDrag.ps);
+      }
+    });
+
+    body.addEventListener('dragend', () => endQaDrag());
+
+    const queue = $('fa-qa-queue');
+    if (!queue) return;
+
+    queue.addEventListener('dragstart', (e) => {
+      if (e.target.closest('[data-fa-qa-unqueue]')) {
+        e.preventDefault();
+        return;
+      }
+      const block = e.target.closest('[data-fa-qa-block]');
+      if (!block) return;
+      qaDrag.ps = block.getAttribute('data-fa-qa-block') || '';
+      qaDrag.index = qaQueuedSheets().length;
+      block.classList.add('is-dragging');
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', qaDrag.id);
+        e.dataTransfer.setData('text/plain', qaDrag.ps);
       }
     });
 
-    body.addEventListener('dragover', (e) => {
-      const tr = e.target.closest('tr[data-ps]');
-      if (!tr || !qaDrag.id) return;
+    queue.addEventListener('dragover', (e) => {
+      if (!qaDrag.ps) return;
       e.preventDefault();
-      const dragging = body.querySelector('tr.is-dragging');
-      if (!dragging || dragging === tr) return;
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      const rect = tr.getBoundingClientRect();
-      const after = e.clientY > rect.top + rect.height / 2;
-      body.querySelectorAll('tr.fa-qa-over').forEach((el) => el.classList.remove('fa-qa-over'));
-      tr.classList.add('fa-qa-over');
-      if (after) tr.after(dragging);
-      else tr.before(dragging);
+      queue.classList.add('is-drop');
+      markQaDrop(e);
     });
 
-    body.addEventListener('drop', async (e) => {
-      if (!qaDrag.id) return;
+    queue.addEventListener('dragleave', (e) => {
+      if (queue.contains(e.relatedTarget)) return;
+      queue.classList.remove('is-drop');
+    });
+
+    queue.addEventListener('drop', (e) => {
+      if (!qaDrag.ps) return;
       e.preventDefault();
-      qaDrag.dropped = true;
-      body.querySelectorAll('tr.fa-qa-over').forEach((el) => el.classList.remove('fa-qa-over'));
-      const next = qaBodyIds().join(',');
-      if (next === qaDrag.order) return;
-      try {
-        await persistQaQueue();
-      } catch (err) {
-        showAlert(err.message || 'Could not save the queue');
-        renderQaTable();
+      markQaDrop(e);
+      const next = sheetsAfterQaDrop();
+      const same = next.join('\n').toUpperCase() === qaQueuedSheets().join('\n').toUpperCase();
+      clearQaDropMarks();
+      qaDrag.ps = '';
+      if (same) return;
+      persistQaQueue(next);
+    });
+
+    queue.addEventListener('dragend', () => endQaDrag());
+
+    queue.addEventListener('mousedown', (e) => {
+      const block = e.target.closest('[data-fa-qa-block]');
+      if (!block) return;
+      block.draggable = !e.target.closest('[data-fa-qa-unqueue]');
+    });
+
+    queue.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-fa-qa-unqueue]');
+      if (!btn) return;
+      const ps = String(btn.getAttribute('data-fa-qa-unqueue') || '').trim().toUpperCase();
+      persistQaQueue(qaQueuedSheets().filter((sheet) => sheet.toUpperCase() !== ps));
+    });
+  }
+
+  const CMM_EXPORT_COLUMNS = [
+    { id: 'cmm_job_id', label: 'Job ID', width: 12 },
+    { id: 'process_sheet_no', label: 'Process sheet', width: 18 },
+    { id: 'part_no', label: 'Part', width: 16 },
+    { id: 'part_description', label: 'Part name', width: 28 },
+    { id: 'status', label: 'Status', width: 14 },
+    { id: 'programme_done', label: 'Programmes done', width: 16 },
+    { id: 'programme_total', label: 'Programmes', width: 14 },
+    { id: 'jig_requirements', label: 'Jigs / fixtures', width: 28 },
+    { id: 'jigs_ready', label: 'Jigs ready', width: 12 },
+    { id: 'overall_completed_at', label: 'Completed at', width: 20 },
+    { id: 'subtask_stamps', label: 'Programme timestamps', width: 42 },
+  ];
+
+  function cmmStatusLabel(status) {
+    if (status === 'COMPLETED') return 'Completed';
+    if (status === 'IN_PROGRESS') return 'In progress';
+    return 'Pending';
+  }
+
+  function formatDuration(seconds) {
+    if (seconds == null || seconds === '') return '\u2014';
+    const total = Math.round(Number(seconds));
+    if (!Number.isFinite(total) || total < 0) return '\u2014';
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    if (hours && minutes) return `${hours}h ${minutes}m`;
+    if (hours) return `${hours}h`;
+    if (minutes) return `${minutes}m`;
+    return `${total}s`;
+  }
+
+  function cmmBlob(job) {
+    return [
+      job.cmm_job_id,
+      job.process_sheet_no,
+      job.part_no,
+      job.part_description,
+      cmmStatusLabel(job.status),
+      job.jig_requirements,
+      job.technician_name,
+    ].join(' ').toUpperCase();
+  }
+
+  function filteredCmmQueue() {
+    const needle = state.cmm.filter.trim().toUpperCase();
+    const jobs = state.cmm.queue.slice();
+    if (!needle) return jobs;
+    return jobs.filter((job) => cmmBlob(job).includes(needle));
+  }
+
+  function filteredCmmHistory() {
+    const needle = state.cmm.historyFilter.trim().toUpperCase();
+    const jobs = state.cmm.history.slice();
+    if (!needle) return jobs;
+    return jobs.filter((job) => {
+      const stamps = (job.subtasks || []).map((task) => `${task.programme_number} ${task.completed_at || ''}`).join(' ');
+      return `${cmmBlob(job)} ${job.overall_completed_at || ''} ${stamps}`.toUpperCase().includes(needle);
+    });
+  }
+
+  function cmmExportValue(row, colId) {
+    if (colId === 'status') return cmmStatusLabel(row.status);
+    if (colId === 'jigs_ready') return row.jigs_ready ? 'Yes' : 'No';
+    if (colId === 'overall_completed_at') return formatReviewStamp(row.overall_completed_at);
+    if (colId === 'subtask_stamps') {
+      return (row.subtasks || []).map((task) => {
+        const when = task.completed_at ? formatReviewStamp(task.completed_at) : 'open';
+        return `${task.programme_number} ${when}`;
+      }).join('; ');
+    }
+    if (colId === 'programme_done' || colId === 'programme_total' || colId === 'cmm_job_id') {
+      return row[colId] == null ? '' : Number(row[colId]);
+    }
+    return String(row[colId] == null ? '' : row[colId]).trim();
+  }
+
+  function setCmmStatus(message, kind) {
+    setStatus('fa-cmm-status', message, kind);
+  }
+
+  function updateCmmSubtitle() {
+    if (state.tab !== 'cmm') return;
+    const subtitle = $('fa-subtitle');
+    if (!subtitle) return;
+    if (!state.cmm.queueLoaded) {
+      subtitle.textContent = 'Loading the CMM queue...';
+      return;
+    }
+    const shown = filteredCmmQueue().length;
+    subtitle.textContent = state.cmm.queue.length
+      ? `${shown} active CMM job${shown === 1 ? '' : 's'}.`
+      : 'No active CMM jobs. Type a process sheet and press CMM.';
+  }
+
+  function renderCmmMetrics(metrics) {
+    const today = $('fa-cmm-completed-today');
+    const average = $('fa-cmm-avg-time');
+    const count = $('fa-cmm-completed-count');
+    if (today) today.textContent = String(metrics.completed_today || 0);
+    if (average) {
+      average.textContent = metrics.average_seconds == null ? '\u2014' : formatDuration(metrics.average_seconds);
+    }
+    if (count) count.textContent = String(metrics.completed_count || 0);
+  }
+
+  async function loadCmmMetrics() {
+    try {
+      const data = await api(API.cmmMetrics);
+      renderCmmMetrics(data.metrics || {});
+    } catch (err) {
+      /* Leave the metric cards as dashes when the database is unavailable. */
+    }
+  }
+
+  function cmmQueueItemHtml(job) {
+    const selected = Number(job.cmm_job_id) === Number(state.cmm.selectedId);
+    const done = Number(job.programme_done || 0);
+    const total = Number(job.programme_total || job.programme_count || 0);
+    const part = job.part_description || job.part_no || '\u2014';
+    return `
+      <button type="button" class="fa-cmm-job${selected ? ' is-selected' : ''}" role="option"
+              aria-selected="${selected ? 'true' : 'false'}" data-cmm-open="${escapeHtml(job.cmm_job_id)}">
+        <span class="fa-cmm-job-id">Job ${escapeHtml(job.cmm_job_id)}</span>
+        <span class="fa-cmm-job-ps">${escapeHtml(job.process_sheet_no || '\u2014')}</span>
+        <span class="fa-cmm-job-part">${escapeHtml(part)}</span>
+        <span class="fa-cmm-job-meta">${escapeHtml(cmmStatusLabel(job.status))} \u00b7 ${done}/${total} programmes</span>
+      </button>
+    `;
+  }
+
+  function renderCmmQueue() {
+    const jobs = filteredCmmQueue();
+    const list = $('fa-cmm-queue-list');
+    const empty = $('fa-cmm-queue-empty');
+    const count = $('fa-cmm-queue-count');
+    if (count) count.textContent = String(state.cmm.queue.length);
+    if (list) {
+      const scroll = list.scrollTop;
+      list.innerHTML = jobs.map(cmmQueueItemHtml).join('');
+      list.hidden = jobs.length === 0;
+      list.scrollTop = scroll;
+    }
+    if (empty) {
+      if (!state.cmm.queue.length) {
+        empty.hidden = false;
+        empty.textContent = state.cmm.queueLoaded
+          ? 'No active CMM jobs. Type a process sheet and press CMM.'
+          : 'Loading the CMM queue...';
+      } else if (!jobs.length) {
+        empty.hidden = false;
+        empty.textContent = 'No jobs match this filter.';
+      } else {
+        empty.hidden = true;
+      }
+    }
+    updateCmmSubtitle();
+  }
+
+  function cmmWorkspaceHtml(job) {
+    const tasks = job.subtasks || [];
+    const openCount = tasks.filter((task) => !task.completed_at).length;
+    const taskHtml = tasks.map((task) => {
+      const locked = !!task.completed_at;
+      const stamp = locked ? formatReviewStamp(task.completed_at) : '';
+      return `
+        <li class="fa-cmm-task">
+          <label>
+            <input type="checkbox" data-cmm-subtask="${escapeHtml(task.subtask_id)}"${locked ? ' checked disabled' : ''}
+                   aria-label="Programme ${escapeHtml(task.programme_number)}">
+            <span>Programme ${escapeHtml(task.programme_number)}</span>
+          </label>
+          <time>${escapeHtml(stamp)}</time>
+        </li>
+      `;
+    }).join('');
+    const readyStamp = job.jigs_ready_at ? `Ready ${formatReviewStamp(job.jigs_ready_at)}` : '';
+    const countValue = job.programme_count ? String(job.programme_count) : '';
+    return `
+      <header class="fa-cmm-job-head">
+        <div>
+          <p class="fa-cmm-kicker">Job ${escapeHtml(job.cmm_job_id)}</p>
+          <h2 class="fa-cmm-ps">${escapeHtml(job.process_sheet_no || '\u2014')}</h2>
+          <p class="fa-cmm-part">${escapeHtml(job.part_no || '\u2014')} \u00b7 ${escapeHtml(job.part_description || '\u2014')}</p>
+        </div>
+        <span class="fa-cmm-status-pill is-${escapeHtml(String(job.status || 'pending').toLowerCase())}">${escapeHtml(cmmStatusLabel(job.status))}</span>
+      </header>
+      <section class="fa-cmm-section">
+        <h3>Programmes</h3>
+        <p class="fa-cmm-hint">Ticking a programme records the time and locks it.</p>
+        <div class="fa-cmm-generate">
+          <label>
+            <span class="fa-add-label">Number of programmes</span>
+            <input id="fa-cmm-count" class="fa-search-input" type="number" min="1" max="50" step="1"
+                   value="${escapeHtml(countValue)}" inputmode="numeric">
+          </label>
+          <button type="button" class="fa-btn fa-btn--primary" id="fa-cmm-generate">Generate</button>
+        </div>
+        <ul class="fa-cmm-tasks">${taskHtml || '<li class="fa-cmm-task-empty">No programmes yet.</li>'}</ul>
+      </section>
+      <section class="fa-cmm-section">
+        <h3>Jigs / fixtures</h3>
+        <textarea id="fa-cmm-jigs" class="fa-cmm-jigs" rows="3"
+                  placeholder="List the jigs and fixtures this job needs">${escapeHtml(job.jig_requirements || '')}</textarea>
+        <label class="fa-cmm-check">
+          <input type="checkbox" id="fa-cmm-jigs-ready"${job.jigs_ready ? ' checked' : ''}>
+          <span>Jigs/Fixtures Received &amp; Ready</span>
+        </label>
+        <span class="fa-cmm-stamp" id="fa-cmm-jigs-stamp">${escapeHtml(readyStamp)}</span>
+      </section>
+      <section class="fa-cmm-section fa-cmm-complete">
+        <h3>Overall completion</h3>
+        ${openCount ? `
+          <label class="fa-cmm-check">
+            <input type="checkbox" id="fa-cmm-override">
+            <span>Complete even if a programme is still open</span>
+          </label>
+        ` : ''}
+        <label class="fa-cmm-check fa-cmm-check--master">
+          <input type="checkbox" id="fa-cmm-complete">
+          <span>Mark Process Sheet as Complete</span>
+        </label>
+      </section>
+    `;
+  }
+
+  function renderCmmWorkspace() {
+    const empty = $('fa-cmm-workspace-empty');
+    const body = $('fa-cmm-workspace-body');
+    const job = state.cmm.job;
+    if (!body) return;
+    const selectedId = Number(state.cmm.selectedId);
+    if (!job || Number(job.cmm_job_id) !== selectedId || !job.subtasks) {
+      body.hidden = true;
+      body.innerHTML = '';
+      delete body.dataset.jobId;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = selectedId
+          ? 'Loading job...'
+          : 'Select a job to set programmes, jigs, and completion.';
+      }
+      return;
+    }
+    const sameJob = Number(body.dataset.jobId) === selectedId;
+    const draft = sameJob && $('fa-cmm-jigs') ? $('fa-cmm-jigs').value : null;
+    const readyDraft = sameJob && $('fa-cmm-jigs-ready') ? $('fa-cmm-jigs-ready').checked : null;
+    const countDraft = sameJob && $('fa-cmm-count') ? $('fa-cmm-count').value : null;
+    body.dataset.jobId = String(job.cmm_job_id);
+    body.hidden = false;
+    body.innerHTML = cmmWorkspaceHtml(job);
+    if (draft != null && $('fa-cmm-jigs')) $('fa-cmm-jigs').value = draft;
+    if (readyDraft != null && $('fa-cmm-jigs-ready')) $('fa-cmm-jigs-ready').checked = readyDraft;
+    if (countDraft != null && $('fa-cmm-count')) $('fa-cmm-count').value = countDraft;
+    if (empty) empty.hidden = true;
+  }
+
+  function syncCmmQueueJob(job) {
+    if (!job || job.status === 'COMPLETED') {
+      state.cmm.queue = state.cmm.queue.filter((item) => Number(item.cmm_job_id) !== Number(job && job.cmm_job_id));
+      return;
+    }
+    const index = state.cmm.queue.findIndex((item) => Number(item.cmm_job_id) === Number(job.cmm_job_id));
+    if (index >= 0) state.cmm.queue[index] = { ...state.cmm.queue[index], ...job };
+    else state.cmm.queue.unshift(job);
+  }
+
+  async function loadCmmQueue() {
+    const token = ++state.cmm.queueToken;
+    try {
+      const data = await api(API.cmmQueue);
+      if (token !== state.cmm.queueToken) return;
+      state.cmm.queue = data.jobs || [];
+      state.cmm.queueLoaded = true;
+      if (state.cmm.selectedId && !state.cmm.queue.some((job) => Number(job.cmm_job_id) === Number(state.cmm.selectedId))) {
+        state.cmm.selectedId = null;
+        state.cmm.job = null;
+      }
+      if (state.tab === 'cmm') {
+        renderCmmQueue();
+        if (!state.cmm.job) renderCmmWorkspace();
+      } else {
+        const count = $('fa-cmm-queue-count');
+        if (count) count.textContent = String(state.cmm.queue.length);
+      }
+    } catch (err) {
+      if (token !== state.cmm.queueToken) return;
+      state.cmm.queueLoaded = true;
+      if (state.tab === 'cmm') {
+        setCmmStatus(err.message || 'Could not load the CMM queue.', 'error');
+        renderCmmQueue();
+      }
+    }
+  }
+
+  async function loadCmmJob(jobId) {
+    const token = ++state.cmm.jobToken;
+    try {
+      const data = await api(`${API.cmmJobs}/${jobId}`);
+      if (token !== state.cmm.jobToken) return;
+      if (Number(state.cmm.selectedId) !== Number(jobId)) return;
+      state.cmm.job = data.job;
+      syncCmmQueueJob(data.job);
+      if (state.tab === 'cmm') {
+        renderCmmQueue();
+        renderCmmWorkspace();
+      }
+    } catch (err) {
+      if (token !== state.cmm.jobToken) return;
+      setCmmStatus(err.message || 'Could not open this CMM job.', 'error');
+    }
+  }
+
+  function selectCmmJob(jobId) {
+    state.cmm.selectedId = Number(jobId);
+    const summary = state.cmm.queue.find((job) => Number(job.cmm_job_id) === state.cmm.selectedId);
+    if (!state.cmm.job || Number(state.cmm.job.cmm_job_id) !== state.cmm.selectedId || !state.cmm.job.subtasks) {
+      state.cmm.job = summary ? { ...summary } : { cmm_job_id: state.cmm.selectedId };
+      delete state.cmm.job.subtasks;
+    }
+    renderCmmQueue();
+    renderCmmWorkspace();
+    loadCmmJob(state.cmm.selectedId);
+  }
+
+  function hideCmmAdd() {
+    const list = $('fa-cmm-add-results');
+    if (!list) return;
+    list.hidden = true;
+    list.innerHTML = '';
+    $('fa-cmm-add')?.setAttribute('aria-expanded', 'false');
+  }
+
+  function renderCmmAddHits(hits, status) {
+    const list = $('fa-cmm-add-results');
+    if (!list) return;
+    list.hidden = false;
+    $('fa-cmm-add')?.setAttribute('aria-expanded', 'true');
+    if (status) {
+      list.innerHTML = `<div class="fa-typeahead-status">${escapeHtml(status)}</div>`;
+      return;
+    }
+    if (!hits.length) {
+      const query = String($('fa-cmm-add')?.value || '').trim();
+      state.cmm.addHits = query ? [{
+        process_sheet_no: query,
+        part_no: '',
+        part_description: '',
+        flag_anyway: true,
+      }] : [];
+      if (!query) {
+        list.innerHTML = '<div class="fa-typeahead-status">No matching process sheet.</div>';
+        return;
+      }
+      hits = state.cmm.addHits;
+    }
+    list.innerHTML = hits.map((hit, index) => {
+      const desc = [hit.part_no, hit.part_description].filter(Boolean).join(' | ');
+      return `
+        <button type="button" class="fa-typeahead-item${index === 0 ? ' is-active' : ''}"
+                role="option" data-index="${index}">
+          <span class="fa-typeahead-main">
+            <span class="fa-typeahead-code">${escapeHtml(hit.process_sheet_no || hit.pp_voucher_no)}</span>
+            <span class="fa-typeahead-desc">${escapeHtml(desc || (hit.flag_anyway ? 'Not listed in S/O management' : 'No description'))}</span>
+          </span>
+          <span class="fa-typeahead-action">CMM</span>
+        </button>
+      `;
+    }).join('');
+  }
+
+  async function runCmmAddSearch(query) {
+    const needle = String(query || '').trim();
+    if (needle.length < 2) {
+      hideCmmAdd();
+      return;
+    }
+    renderCmmAddHits([], 'Searching...');
+    try {
+      const data = await api(`${API.search}?q=${encodeURIComponent(needle)}`);
+      if (String($('fa-cmm-add')?.value || '').trim() !== needle) return;
+      state.cmm.addHits = data.rows || [];
+      renderCmmAddHits(state.cmm.addHits);
+    } catch (err) {
+      renderCmmAddHits([], err.message || 'Search failed');
+    }
+  }
+
+  async function addCmmSheet(hit) {
+    const ps = String(hit?.process_sheet_no || hit?.pp_voucher_no || '').trim();
+    if (!ps) {
+      setCmmStatus('Type a process sheet number first.', 'error');
+      return;
+    }
+    const btn = $('fa-cmm-add-btn');
+    if (btn) btn.disabled = true;
+    try {
+      const data = await api(API.cmmJobs, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          process_sheet_no: ps,
+          part_no: hit.part_no || '',
+          part_description: hit.part_description || '',
+        }),
+      });
+      const input = $('fa-cmm-add');
+      if (input) input.value = '';
+      hideCmmAdd();
+      await focusCmmJob(data.job);
+      setCmmStatus(`Added ${ps} to the CMM queue.`, 'saved');
+    } catch (err) {
+      const existingId = err.payload && err.payload.cmm_job_id;
+      if (err.status === 409 && existingId) {
+        const input = $('fa-cmm-add');
+        if (input) input.value = '';
+        hideCmmAdd();
+        await focusCmmJob({ cmm_job_id: existingId, process_sheet_no: ps });
+        setCmmStatus(err.message || 'This process sheet is already in the CMM queue.', 'error');
+        return;
+      }
+      setCmmStatus(err.message || 'Could not add this process sheet.', 'error');
+    } finally {
+      if ($('fa-cmm-add-btn')) $('fa-cmm-add-btn').disabled = false;
+    }
+  }
+
+  function addTypedCmm() {
+    const processSheetNo = String($('fa-cmm-add')?.value || '').trim();
+    const exact = state.cmm.addHits.find((hit) => {
+      const ps = String(hit?.process_sheet_no || hit?.pp_voucher_no || '').trim();
+      return ps.toUpperCase() === processSheetNo.toUpperCase();
+    });
+    addCmmSheet(exact || { process_sheet_no: processSheetNo });
+  }
+
+  async function focusCmmJob(job) {
+    state.cmm.selectedId = Number(job.cmm_job_id);
+    state.cmm.job = job && job.subtasks ? job : null;
+    if (job && job.status !== 'COMPLETED') syncCmmQueueJob(job);
+    if (state.tab !== 'cmm') setTab('cmm');
+    else {
+      renderCmmQueue();
+      renderCmmWorkspace();
+    }
+    await loadCmmJob(state.cmm.selectedId);
+    await loadCmmQueue();
+  }
+
+  async function generateCmmProgrammes() {
+    const job = state.cmm.job;
+    if (!job) return;
+    const raw = String($('fa-cmm-count')?.value || '').trim();
+    const count = Number(raw);
+    if (!raw || !Number.isInteger(count) || count < 1 || count > 50) {
+      setCmmStatus('Enter a number of programmes from 1 to 50.', 'error');
+      return;
+    }
+    const btn = $('fa-cmm-generate');
+    if (btn) btn.disabled = true;
+    try {
+      const data = await api(`${API.cmmJobs}/${job.cmm_job_id}/programmes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count }),
+      });
+      state.cmm.job = data.job;
+      syncCmmQueueJob(data.job);
+      renderCmmQueue();
+      renderCmmWorkspace();
+      setCmmStatus(`Generated ${count} programme${count === 1 ? '' : 's'}.`, 'saved');
+    } catch (err) {
+      setCmmStatus(err.message || 'Could not generate programmes.', 'error');
+    } finally {
+      if ($('fa-cmm-generate')) $('fa-cmm-generate').disabled = false;
+    }
+  }
+
+  async function completeCmmSubtask(box) {
+    const job = state.cmm.job;
+    if (!job) return;
+    if (!box.checked) {
+      box.checked = true;
+      setCmmStatus('Completed programmes stay locked.', 'error');
+      return;
+    }
+    const subtaskId = Number(box.getAttribute('data-cmm-subtask'));
+    box.disabled = true;
+    try {
+      const data = await api(`${API.cmmJobs}/${job.cmm_job_id}/subtasks/${subtaskId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed: true }),
+      });
+      if (Number(state.cmm.selectedId) !== Number(job.cmm_job_id)) return;
+      state.cmm.job = data.job;
+      syncCmmQueueJob(data.job);
+      renderCmmQueue();
+      renderCmmWorkspace();
+      setCmmStatus('Programme time recorded.', 'saved');
+    } catch (err) {
+      box.checked = false;
+      box.disabled = false;
+      setCmmStatus(err.message || 'Could not complete this programme.', 'error');
+    }
+  }
+
+  function scheduleCmmJigSave() {
+    window.clearTimeout(state.cmm.jigTimer);
+    state.cmm.jigTimer = window.setTimeout(saveCmmJigs, 400);
+  }
+
+  async function saveCmmJigs() {
+    window.clearTimeout(state.cmm.jigTimer);
+    const job = state.cmm.job;
+    if (!job || !job.subtasks) return;
+    const jigRequirements = $('fa-cmm-jigs') ? $('fa-cmm-jigs').value : (job.jig_requirements || '');
+    const jigsReady = $('fa-cmm-jigs-ready') ? $('fa-cmm-jigs-ready').checked : !!job.jigs_ready;
+    try {
+      const data = await api(`${API.cmmJobs}/${job.cmm_job_id}/jigs`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jig_requirements: jigRequirements,
+          jigs_ready: jigsReady,
+        }),
+      });
+      if (!state.cmm.job || Number(state.cmm.job.cmm_job_id) !== Number(job.cmm_job_id)) return;
+      const typed = $('fa-cmm-jigs') ? $('fa-cmm-jigs').value : jigRequirements;
+      const readyNow = $('fa-cmm-jigs-ready') ? $('fa-cmm-jigs-ready').checked : jigsReady;
+      state.cmm.job = data.job;
+      if ($('fa-cmm-jigs') && typed !== jigRequirements) state.cmm.job.jig_requirements = typed;
+      const stamp = $('fa-cmm-jigs-stamp');
+      if (stamp) {
+        stamp.textContent = data.job.jigs_ready_at ? `Ready ${formatReviewStamp(data.job.jigs_ready_at)}` : '';
+      }
+      setCmmStatus('Jigs saved.', 'saved');
+      if (typed !== jigRequirements || readyNow !== jigsReady) scheduleCmmJigSave();
+    } catch (err) {
+      setCmmStatus(err.message || 'Could not save jigs.', 'error');
+    }
+  }
+
+  async function completeCmmJob(checked) {
+    const box = $('fa-cmm-complete');
+    const job = state.cmm.job;
+    if (!checked || !job) return;
+    const tasks = job.subtasks || [];
+    const open = tasks.some((task) => !task.completed_at);
+    const override = !!$('fa-cmm-override')?.checked;
+    if (!tasks.length) {
+      if (box) box.checked = false;
+      setCmmStatus('Generate at least one programme before marking the process sheet complete.', 'error');
+      return;
+    }
+    if (open && !override) {
+      if (box) box.checked = false;
+      setCmmStatus('Tick every programme, or turn on the override, before marking the process sheet complete.', 'error');
+      return;
+    }
+    if (box) box.disabled = true;
+    try {
+      await api(`${API.cmmJobs}/${job.cmm_job_id}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ override: !!(open && override) }),
+      });
+      state.cmm.queue = state.cmm.queue.filter((item) => Number(item.cmm_job_id) !== Number(job.cmm_job_id));
+      state.cmm.selectedId = null;
+      state.cmm.job = null;
+      state.cmm.historyLoaded = false;
+      renderCmmQueue();
+      renderCmmWorkspace();
+      setCmmStatus('Process sheet marked complete and removed from the queue.', 'saved');
+      loadCmmMetrics();
+      if (state.tab === 'cmm-history') loadCmmHistory();
+    } catch (err) {
+      if (box) {
+        box.checked = false;
+        box.disabled = false;
+      }
+      setCmmStatus(err.message || 'Could not complete this process sheet.', 'error');
+    }
+  }
+
+  function cmmHistoryRowHtml(job) {
+    const stamps = (job.subtasks || []).map((task) => {
+      const when = task.completed_at ? formatReviewStamp(task.completed_at) : 'Open';
+      return `Programme ${escapeHtml(task.programme_number)}: ${escapeHtml(when)}`;
+    }).join('<br>');
+    const ready = job.jigs_ready ? 'Yes' : 'No';
+    const readyAt = job.jigs_ready_at
+      ? `<div class="fa-cmm-stamp">${escapeHtml(formatReviewStamp(job.jigs_ready_at))}</div>`
+      : '';
+    return `
+      <tr>
+        <td class="fa-mono">${escapeHtml(job.process_sheet_no || '\u2014')}</td>
+        <td>${escapeHtml(job.part_no || '\u2014')}</td>
+        <td>${escapeHtml(job.part_description || '\u2014')}</td>
+        <td>${escapeHtml(formatReviewStamp(job.overall_completed_at) || '\u2014')}</td>
+        <td>${escapeHtml(formatDuration(job.duration_seconds))}</td>
+        <td>${stamps || '\u2014'}</td>
+        <td>${escapeHtml(job.jig_requirements || '\u2014')}</td>
+        <td>${escapeHtml(ready)}${readyAt}</td>
+      </tr>
+    `;
+  }
+
+  function renderCmmHistory() {
+    const rows = filteredCmmHistory();
+    const host = $('fa-cmm-history-host');
+    const empty = $('fa-cmm-history-empty');
+    const body = $('fa-cmm-history-body');
+    const count = $('fa-cmm-history-count');
+    if (count) {
+      count.hidden = !state.cmm.history.length;
+      count.textContent = String(state.cmm.history.length);
+    }
+    if (state.tab === 'cmm-history') {
+      const subtitle = $('fa-subtitle');
+      if (subtitle) {
+        subtitle.textContent = state.cmm.historyLoaded
+          ? `${rows.length} completed CMM job${rows.length === 1 ? '' : 's'}.`
+          : 'Loading completed CMM jobs...';
+      }
+    }
+    if (!state.cmm.history.length) {
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = !state.cmm.historyLoaded;
+        empty.textContent = 'No completed CMM jobs yet. When a technician marks a process sheet complete, it appears here with every programme timestamp.';
+      }
+      if (body) body.innerHTML = '';
+      return;
+    }
+    if (!rows.length) {
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'No completed CMM jobs match this filter.';
+      }
+      if (body) body.innerHTML = '';
+      return;
+    }
+    if (host) host.hidden = false;
+    if (empty) empty.hidden = true;
+    if (body) body.innerHTML = rows.map(cmmHistoryRowHtml).join('');
+  }
+
+  async function loadCmmHistory() {
+    try {
+      const data = await api(API.cmmHistory);
+      state.cmm.history = (data.jobs || []).filter((job) => job.status === 'COMPLETED');
+      state.cmm.historyLoaded = true;
+      renderCmmHistory();
+    } catch (err) {
+      state.cmm.historyLoaded = true;
+      showAlert(err.message || 'Could not load CMM history.');
+      renderCmmHistory();
+    }
+  }
+
+  function bindCmm() {
+    $('fa-cmm-add')?.addEventListener('input', (event) => {
+      clearTimeout(state.cmm.addTimer);
+      const value = event.target.value || '';
+      state.cmm.addTimer = setTimeout(() => runCmmAddSearch(value), 220);
+    });
+    $('fa-cmm-add')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hideCmmAdd();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        addTypedCmm();
       }
     });
-
-    body.addEventListener('dragend', () => {
-      body.querySelectorAll('tr.is-dragging, tr.fa-qa-over').forEach((el) => {
-        el.classList.remove('is-dragging');
-        el.classList.remove('fa-qa-over');
-      });
-      if (!qaDrag.dropped && qaDrag.id && qaBodyIds().join(',') !== qaDrag.order) renderQaTable();
-      qaDrag.id = '';
-      qaDrag.dropped = false;
+    $('fa-cmm-add-results')?.addEventListener('click', (event) => {
+      const item = event.target.closest('.fa-typeahead-item');
+      if (!item) return;
+      const hit = state.cmm.addHits[Number(item.getAttribute('data-index'))];
+      addCmmSheet(hit);
+    });
+    $('fa-cmm-add-btn')?.addEventListener('click', () => addTypedCmm());
+    $('fa-panel-cmm')?.addEventListener('click', (event) => {
+      const open = event.target.closest('[data-cmm-open]');
+      if (open) {
+        selectCmmJob(open.getAttribute('data-cmm-open'));
+        return;
+      }
+      if (event.target.closest('#fa-cmm-generate')) generateCmmProgrammes();
+    });
+    $('fa-panel-cmm')?.addEventListener('change', (event) => {
+      if (event.target.id === 'fa-cmm-jigs-ready') saveCmmJigs();
+      else if (event.target.id === 'fa-cmm-complete') completeCmmJob(event.target.checked);
+      else if (event.target.matches('[data-cmm-subtask]')) completeCmmSubtask(event.target);
+    });
+    $('fa-panel-cmm')?.addEventListener('input', (event) => {
+      if (event.target.id === 'fa-cmm-jigs') scheduleCmmJigSave();
+      if (event.target.id === 'fa-cmm-filter') {
+        state.cmm.filter = event.target.value || '';
+        renderCmmQueue();
+      }
+    });
+    $('fa-panel-cmm')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.target.id === 'fa-cmm-count') {
+        event.preventDefault();
+        generateCmmProgrammes();
+      }
+    });
+    $('fa-cmm-history-filter')?.addEventListener('input', (event) => {
+      state.cmm.historyFilter = event.target.value || '';
+      renderCmmHistory();
     });
   }
 
   function bind() {
+    bindCmm();
     $('fa-export-excel')?.addEventListener('click', () => exportCurrentList());
     document.addEventListener('click', (e) => {
       const chip = e.target.closest('[data-fa-clear-filter], [data-fa-clear-all-filters], [data-fa-clear-sort]');
@@ -4016,8 +5059,11 @@
       rerenderTable(which);
     });
     $('fa-refresh')?.addEventListener('click', () => {
+      loadCmmMetrics();
       if (state.tab === 'new' || state.tab === 'qa') loadNewParts();
+      else if (state.tab === 'cmm') loadCmmQueue();
       else if (state.tab === 'history') loadCompletedParts();
+      else if (state.tab === 'cmm-history') loadCmmHistory();
       else loadTracker();
     });
     document.querySelectorAll('[data-fa-tab]').forEach((btn) => {
@@ -4426,6 +5472,7 @@
       if (e.target.closest('.fa-typeahead')) return;
       hideSearch();
       hideExceptionSearch();
+      hideCmmAdd();
     });
 
     $('fa-table-body')?.addEventListener('change', async (e) => {
@@ -4670,11 +5717,26 @@
     bindQaReview();
   }
 
+  const bootHash = String(window.location.hash || '').toLowerCase();
+  const cmmStandalone = document.body.classList.contains('cmm-view');
+  if (!cmmStandalone && (bootHash === '#cmm' || bootHash === '#cmm-history')) {
+    window.location.replace(bootHash === '#cmm-history' ? '/cmm-queue#history' : '/cmm-queue');
+    return;
+  }
   bind();
   syncExportButton();
+  if (cmmStandalone) {
+    if (bootHash === '#history' || bootHash === '#cmm-history') {
+      setTab('cmm-history', { persistHash: false });
+    } else {
+      setTab('cmm', { persistHash: false });
+    }
+    loadCmmMetrics();
+    loadCmmQueue();
+    return;
+  }
   ensureMaterialModalShell();
   loadMaterialModalScript();
-  const bootHash = String(window.location.hash || '').toLowerCase();
   if (bootHash === '#new') {
     setTab('new', { persistHash: false });
   } else if (bootHash === '#history') {

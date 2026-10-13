@@ -38,13 +38,12 @@
 
   function batchCell(row) {
     const batch = String(row.batch_no || "").trim();
-    const others = Array.isArray(row.other_refs) ? row.other_refs.filter(Boolean) : [];
-    if (!batch && !others.length) return '<span class="pst-empty">—</span>';
-    let html = '<span class="pst-code">' + escapeHtml(batch || others[0]) + "</span>";
-    const extra = batch ? others : others.slice(1);
-    if (extra.length) {
-      html += '<span class="pst-also">Also ' + escapeHtml(extra.join(", ")) + "</span>";
-    }
+    const job = String(row.work_order_no || "").trim();
+    if (!batch && !job) return '<span class="pst-empty">—</span>';
+    let html = batch
+      ? '<span class="pst-code">' + escapeHtml(batch) + "</span>"
+      : '<span class="pst-empty">—</span>';
+    if (job) html += '<span class="pst-desc">Job ' + escapeHtml(job) + "</span>";
     return html;
   }
 
@@ -53,7 +52,7 @@
     (materials || []).forEach((material) => {
       const allocs = Array.isArray(material.allocations) ? material.allocations : [];
       const shared = material.shared
-        ? '<span class="pst-shared" title="This material is on more than one line. The allocation is for the process sheet.">Shared</span>'
+        ? '<span class="pst-shared" title="This material is on more than one line, and the job did not record which lot belongs to this line.">Shared</span>'
         : "";
       const identity =
         '<div class="pst-code">' +
@@ -254,7 +253,7 @@
     resultEl.hidden = true;
     try {
       const response = await fetch(
-        "/api/planning-data/process-sheet-trace?ps=" + encodeURIComponent(query)
+        "/api/process-sheet-trace?ps=" + encodeURIComponent(query)
       );
       const payload = await response.json();
       if (!response.ok) {

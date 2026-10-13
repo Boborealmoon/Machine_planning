@@ -36,6 +36,7 @@ const MDP_COLUMNS = [
   { id: 'material_in_date', label: 'In date' },
   { id: 'due_date', label: 'PO due' },
   { id: 'coway_edd', label: 'Coway EDD' },
+  { id: 'delivery_date', label: 'Delivered' },
   { id: 'week', label: 'Week' },
 ];
 
@@ -167,7 +168,7 @@ function mdpSetAlert(message) {
 function mdpSetLoading(loading) {
   mdpState.loading = loading;
   const el = mdp$('mdp-loading');
-  if (el) el.hidden = !loading;
+  if (el) el.hidden = !loading || Boolean(mdpState.data);
 }
 
 function mdpCurrentMonthValue() {
@@ -175,9 +176,14 @@ function mdpCurrentMonthValue() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+function mdpDeliveryMonth(row) {
+  return String(row?.delivery_date || '').slice(0, 7);
+}
+
 function mdpPlanTokens(row) {
   const tokens = (row.slices || []).map((slice) => mdpMonthKeyLabel(slice.plan_month));
-  if (!row.no_longer_open && Number(row.left_qty) > MDP_QTY_TOLERANCE) tokens.push('Unassigned');
+  if (row.delivered && !tokens.length) tokens.push('Delivered');
+  if (!row.delivered && !row.no_longer_open && Number(row.left_qty) > MDP_QTY_TOLERANCE) tokens.push('Unassigned');
   if (!tokens.length) tokens.push(row.no_longer_open ? '(Closed)' : 'Unassigned');
   return tokens;
 }
@@ -203,6 +209,12 @@ function mdpSearchOk(row) {
 
 function mdpFocusOk(row) {
   const focus = mdpState.focus || 'all';
+  if (row.delivered) {
+    const month = mdpDeliveryMonth(row);
+    if (focus === 'unassigned') return false;
+    if (focus === 'all') return month === mdpCurrentMonthValue();
+    return month === focus || (row.slices || []).some((slice) => slice.plan_month === focus);
+  }
   if (focus === 'all') return true;
   if (focus === 'unassigned') {
     return !row.no_longer_open && Number(row.left_qty) > MDP_QTY_TOLERANCE;
@@ -264,8 +276,16 @@ function mdpVisibleLines() {
   return lines;
 }
 
+function mdpShowsDeliveredQty(line) {
+  if (!line.delivered) return false;
+  const focus = mdpState.focus || 'all';
+  const month = mdpDeliveryMonth(line);
+  return focus === 'all' || month === focus;
+}
+
 function mdpDisplayAmount(line) {
   const focus = mdpState.focus || 'all';
+  if (mdpShowsDeliveredQty(line)) return Number(line.amount) || 0;
   if (focus === 'unassigned') return mdpMoney(line.unit_cost, line.left_qty, line.exch_rate);
   if (focus !== 'all') {
     const slice = (line.slices || []).find((item) => item.plan_month === focus);
@@ -276,6 +296,7 @@ function mdpDisplayAmount(line) {
 
 function mdpDisplayQty(line) {
   const focus = mdpState.focus || 'all';
+  if (mdpShowsDeliveredQty(line)) return Number(line.open_qty) || 0;
   if (focus === 'unassigned') return Number(line.left_qty) || 0;
   if (focus !== 'all') {
     const slice = (line.slices || []).find((item) => item.plan_month === focus);
@@ -395,11 +416,11 @@ function mdpRenderMeta() {
   if (sub) {
     const focus = mdpState.focus || 'all';
     if (focus === 'all') {
-      sub.textContent = 'Plan month is the month the line is assigned to.';
+      sub.textContent = 'Open lines, plus anything delivered this month.';
     } else if (focus === 'unassigned') {
       sub.textContent = 'Lines that are not assigned to a month yet.';
     } else {
-      sub.textContent = `Lines assigned to ${mdpMonthKeyLabel(focus)}.`;
+      sub.textContent = `Lines assigned to ${mdpMonthKeyLabel(focus)}, plus lines delivered in that month.`;
     }
   }
 }
@@ -493,6 +514,7 @@ function mdpSyncActions() {
 function mdpPlanHtml(line) {
   const labels = (line.slices || []).map((slice) => mdpMonthKeyLabel(slice.plan_month));
   const flags = [
+    line.delivered ? '<span class="mdp-flag mdp-flag--delivered">Delivered</span>' : '',
     line.over_allocated ? '<span class="mdp-flag mdp-flag--over">Over</span>' : '',
     line.no_longer_open ? '<span class="mdp-flag mdp-flag--closed">Closed</span>' : '',
   ].join('');
@@ -536,6 +558,7 @@ function mdpRenderTable() {
         ${mdpTd('material_in_date', mdpEscape(mdpFormatDate(line.material_in_date)))}
         ${mdpTd('due_date', mdpEscape(mdpFormatDate(line.due_date)))}
         ${mdpTd('coway_edd', mdpEscape(mdpFormatDate(line.coway_edd)))}
+        ${mdpTd('delivery_date', mdpEscape(mdpFormatDate(line.delivery_date)))}
         ${mdpTd('week', mdpEscape(line.week || '-'))}
       </tr>
     `;
@@ -735,7 +758,7 @@ function mdpExportCsv() {
   const headers = [
     'plan_month', 'sales_order_no', 'process_sheet_no', 'part_no', 'part_desc',
     'open_qty', 'allocated_qty', 'left_qty', 'unit_cost', 'exch_rate', 'amount',
-    'status', 'material_need_date', 'material_in_date', 'due_date', 'coway_edd', 'week',
+    'status', 'material_need_date', 'material_in_date', 'due_date', 'coway_edd', 'delivery_date', 'week',
   ].filter((key) => key === 'exch_rate' || !mdpState.hiddenCols.has(key));
   const rows = [headers.join(',')];
   for (const line of lines) {
@@ -756,6 +779,7 @@ function mdpExportCsv() {
       material_in_date: line.material_in_date || '',
       due_date: line.due_date || '',
       coway_edd: line.coway_edd || '',
+      delivery_date: line.delivery_date || '',
       week: line.week || '',
     };
     rows.push(headers.map((key) => mdpCsvCell(record[key])).join(','));
@@ -769,6 +793,64 @@ function mdpExportCsv() {
   URL.revokeObjectURL(url);
 }
 
+function mdpAssignItem(line) {
+  return {
+    row_id: line.row_id,
+    open_qty: line.open_qty,
+    sales_order_no: line.sales_order_no,
+    source_line_item_no: line.source_line_item_no,
+    pp_voucher_no: line.pp_voucher_no,
+    process_sheet_no: line.process_sheet_no,
+    pp_partial_no: line.pp_partial_no,
+    ps_type: line.ps_type,
+    part_no: line.part_no,
+    part_desc: line.part_desc,
+    unit_cost: line.unit_cost,
+    exch_rate: line.exch_rate,
+    status: line.status,
+    due_date: line.due_date,
+    coway_edd: line.coway_edd,
+    week: line.week,
+  };
+}
+
+function mdpApplyAssigned(saved) {
+  const byId = new Map((saved || []).map((row) => [row.row_id, row]));
+  for (const line of mdpState.data?.lines || []) {
+    const hit = byId.get(line.row_id);
+    if (!hit) continue;
+    const qty = Number(hit.qty) || 0;
+    line.slices = [{
+      plan_month: hit.plan_month,
+      qty,
+      commitment_id: hit.commitment_id,
+    }];
+    line.plan_months = [hit.plan_month];
+    line.allocated_qty = qty;
+    line.left_qty = line.delivered ? 0 : Math.max(0, mdpRoundQty(Number(line.open_qty) - qty));
+    line.plan_month_label = mdpMonthKeyLabel(hit.plan_month);
+    line.amount = mdpMoney(line.unit_cost, line.delivered ? line.open_qty : qty, line.exch_rate);
+  }
+  mdpRender();
+}
+
+function mdpForgetCommitments(ids) {
+  const drop = new Set(ids.map((id) => String(id)));
+  for (const line of mdpState.data?.lines || []) {
+    const slices = (line.slices || []).filter((slice) => !drop.has(String(slice.commitment_id)));
+    if (slices.length === (line.slices || []).length) continue;
+    const allocated = slices.reduce((sum, slice) => sum + (Number(slice.qty) || 0), 0);
+    line.slices = slices;
+    line.plan_months = slices.map((slice) => slice.plan_month);
+    line.allocated_qty = mdpRoundQty(allocated);
+    line.left_qty = line.delivered ? 0 : Math.max(0, mdpRoundQty(Number(line.open_qty) - allocated));
+    line.plan_month_label = slices.map((slice) => mdpMonthKeyLabel(slice.plan_month)).join(' · ');
+    const qty = slices.length ? allocated : Number(line.open_qty) || 0;
+    line.amount = mdpMoney(line.unit_cost, line.delivered ? line.open_qty : qty, line.exch_rate);
+  }
+  mdpRender();
+}
+
 async function mdpAssign() {
   const month = mdp$('mdp-assign-month')?.value || '';
   if (!month) {
@@ -779,21 +861,21 @@ async function mdpAssign() {
   for (const line of mdpSelectedVisible()) {
     if (line.no_longer_open) continue;
     if (Number(line.open_qty) <= MDP_QTY_TOLERANCE) continue;
-    items.push({ row_id: line.row_id });
+    items.push(mdpAssignItem(line));
   }
   if (!items.length) {
-    mdpSetAlert('Nothing open to assign on the selected lines.');
+    mdpSetAlert('Nothing to assign on the selected lines.');
     return;
   }
   mdpState.saving = true;
   mdpSyncActions();
   mdpSetAlert('');
   try {
-    await mdpApi('/api/monthly-delivery-plan/slices', {
+    const saved = await mdpApi('/api/monthly-delivery-plan/slices', {
       method: 'POST',
       body: JSON.stringify({ plan_month: month, whole: true, items }),
     });
-    await mdpLoad();
+    mdpApplyAssigned(saved.assigned);
   } catch (err) {
     mdpSetAlert(err?.message || String(err));
   } finally {
@@ -819,13 +901,13 @@ async function mdpClear() {
   mdpSyncActions();
   mdpSetAlert('');
   try {
-    for (const id of ids) {
-      await mdpApi(`/api/monthly-delivery-plan/slices/${id}`, { method: 'DELETE' });
-    }
-    await mdpLoad();
+    await mdpApi('/api/monthly-delivery-plan/slices/clear', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    });
+    mdpForgetCommitments(ids);
   } catch (err) {
     mdpSetAlert(err?.message || String(err));
-    await mdpLoad();
   } finally {
     mdpState.saving = false;
     mdpSyncActions();
@@ -909,7 +991,7 @@ function mdpBind() {
     if (/^\d{4}-\d{2}$/.test(mdpState.focus)) {
       mdpState.focus = `${mdpState.year}-${mdpState.focus.slice(5)}`;
     }
-    mdpRender();
+    mdpLoad();
   });
   mdp$('mdp-month-nav')?.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-focus]');

@@ -1314,7 +1314,7 @@
       if (jobsLoadError) {
         badge.textContent = 'Load failed';
         badge.classList.remove('mpp-badge--live');
-      } else if (jobsSource === 'process_sheets' || jobsSource === 'frame_agreement') {
+      } else if (jobsSource === 'process_sheets' || jobsSource === 'frame_agreement' || queueHydrated) {
         badge.textContent = 'Live';
         badge.classList.add('mpp-badge--live');
       } else {
@@ -2285,7 +2285,7 @@
       } else if (jobsLoadError) {
         list.innerHTML = `<p class="mpp-ops-empty">${escapeHtml(jobsLoadError)}</p>`;
       } else {
-        list.innerHTML = '<p class="mpp-ops-empty">Loading process sheets…</p>';
+        list.innerHTML = '<p class="mpp-ops-empty">Loading op cards…</p>';
       }
       syncShowCompletedToggle();
       syncFaOnlyToggle();
@@ -2429,7 +2429,7 @@
           <span class="mpp-shift-badge mpp-shift-badge--${escapeHtml(shift)}">${escapeHtml(MPP_SHIFT_META[shift]?.label || shift)}</span>
           <span class="mpp-schedule-stats">${fmtMinutes(metrics.cycleMinutes)}/cycle</span>
           <button type="button" class="btn btn-ghost btn-sm mpp-run-expand-btn" data-action="toggle-cycle-run"
-            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}">Show all…</button>
+            data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}">All</button>
         </header>
         <div class="mpp-schedule-collapsed-strip is-visible" data-action="toggle-cycle-run"
           data-machine-id="${escapeHtml(machineId)}" data-run-key="${escapeHtml(runKey)}" data-run-fp="${escapeHtml(fingerprint)}"
@@ -2799,7 +2799,7 @@
         </header>
         <div class="mpp-machine-lane" data-machine-id="${escapeHtml(machine.id)}" data-drop-lane="1">
           ${boxes}
-          <div class="mpp-lane-drop card"><span>Drop on a cycle to add pallets (1 per drop). Drop here to <strong>start a new cycle</strong> — or continue the last cycle you added to.</span></div>
+          <div class="mpp-lane-drop card"><span>Drop on a card to add a pallet. Drop here to start a cycle.</span></div>
           <div class="mpp-new-cycle-actions">
             <button type="button" class="btn btn-ghost btn-sm mpp-new-box-btn mpp-new-box-btn--day" data-action="new-cycle" data-machine-id="${escapeHtml(machine.id)}" data-shift="day">+ Day cycle</button>
             ${machineSupportsShift(machine, 'night')
@@ -2837,7 +2837,15 @@
       root.innerHTML = '<p class="mpp-lanes-empty">No machine lanes visible — toggle machines above to show queues.</p>';
       return;
     }
+    const scrollTops = {};
+    root.querySelectorAll('.mpp-machine-lane').forEach((el) => {
+      if (el.dataset.machineId) scrollTops[el.dataset.machineId] = el.scrollTop;
+    });
     root.innerHTML = machines.map(renderMachine).join('');
+    root.querySelectorAll('.mpp-machine-lane').forEach((el) => {
+      const top = scrollTops[el.dataset.machineId];
+      if (top) el.scrollTop = top;
+    });
   }
 
   function closeReviewPanel() {

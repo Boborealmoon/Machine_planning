@@ -637,6 +637,170 @@ def _emit_jobs_from_item(
         jobs.append(job)
 
 
+def _erp_maps_from_cached_steps(
+    steps: list[dict[str, Any]],
+) -> tuple[dict[str, float], dict[int, float], dict[str, str], dict[int, str]]:
+    """Qty/status maps from the batch ERP-step cache — no per-sheet query."""
+    from .erp_wo_merge import normalize_op_no_key
+
+    by_op: dict[str, float] = {}
+    by_stage: dict[int, float] = {}
+    status_by_op: dict[str, str] = {}
+    status_by_stage: dict[int, str] = {}
+    for step in steps or []:
+        stage_no = int(step.get("source_stage_no") or 0)
+        op_no = compact_text(step.get("op_no")) or (str(stage_no) if stage_no else "")
+        produced = max(0.0, float(step.get("erp_finished_qty") or 0))
+        status = compact_text(step.get("erp_execution_status") or "")
+        for key in {op_no, normalize_op_no_key(op_no)}:
+            if not key:
+                continue
+            by_op[key] = max(by_op.get(key, 0.0), produced)
+            if status:
+                status_by_op[key] = status
+        if stage_no:
+            by_stage[stage_no] = max(by_stage.get(stage_no, 0.0), produced)
+            if status:
+                status_by_stage[stage_no] = status
+    return by_op, by_stage, status_by_op, status_by_stage
+
+
+def _load_operation_steps_by_bom(con, bom_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    ids = sorted({int(bom_id) for bom_id in bom_ids if int(bom_id or 0) > 0})
+    if not ids:
+        return {}
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT bom_id, op_seq_id, seq_no, op_no, op_type, machine_category,
+                   preferred_machine, cycle_time, setup_time, is_last_op,
+                   source_kind, source_stage_no
+            FROM planner_operation_seq
+            WHERE bom_id = ANY(%s)
+            ORDER BY bom_id, seq_no, op_seq_id
+            """,
+            (ids,),
+        )
+    ):
+        grouped.setdefault(int(row.get("bom_id") or 0), []).append(dict(row))
+    return grouped
+
+
+def _fill_sheet_ops_from_cache(
+    entry: dict[str, Any],
+    step_rows: list[dict[str, Any]],
+    wo_stages: list[dict[str, Any]],
+    ctx: MppIntakeContext,
+) -> dict[str, Any]:
+    """Build catalog ops for one sheet from data already loaded in batch.
+
+    The sidebar helper ``attach_planner_bom_ops_to_catalog_entry`` queries
+    (and sometimes writes) once per process sheet. That is what left the op
+    pool on "Loading process sheets…".
+    """
+    from .catalog import (
+        _apply_catalog_op_qty_cascade,
+        _catalog_op_from_finishing_step,
+        _finalize_catalog_op_execution_status,
+        _planned_qty_for_catalog_op,
+        _queued_machines_for_catalog_op,
+    )
+    from .erp_wo_merge import (
+        erp_accepted_qty_for_op,
+        erp_exec_status_for_op,
+        merge_finishing_steps_into_flow_steps,
+        merge_machining_steps_into_flow_steps,
+        overlay_wo_stages_on_erp_qty_maps,
+    )
+
+    source = compact_text(entry.get("source_ps_id"))
+    partial = int(entry.get("pp_partial_no") or 1)
+    ps_id = compact_text(entry.get("ps_id")) or format_planner_ps_id(source, partial)
+    launch_qty = float(
+        entry.get("display_qty")
+        or entry.get("partial_qty")
+        or entry.get("wo_req_qty")
+        or entry.get("total_qty")
+        or 0
+    )
+    merged_steps = merge_machining_steps_into_flow_steps(list(step_rows or []), wo_stages)
+    erp_steps = ctx.erp_steps_cache.get((source, partial), [])
+    by_op, by_stage, status_by_op, status_by_stage = _erp_maps_from_cached_steps(erp_steps)
+    overlay_wo_stages_on_erp_qty_maps(by_op, by_stage, status_by_op, status_by_stage, wo_stages)
+
+    all_ops: list[dict[str, Any]] = []
+    for row in merged_steps:
+        stored_seq = int(row.get("op_seq_id") or row.get("source_op_seq_id") or 0)
+        stage_no = int(row.get("source_stage_no") or row.get("stage_no") or 0)
+        op_seq_id = stored_seq if stored_seq > 0 else (-stage_no if stage_no else -(len(all_ops) + 1))
+        op_no = row.get("op_no") or ""
+        planned_qty = _planned_qty_for_catalog_op(ctx.planned_qty_by_op, ps_id, op_no, stored_seq)
+        erp_finished_qty = erp_accepted_qty_for_op(
+            by_op,
+            by_stage,
+            op_no=op_no,
+            source_stage_no=stage_no,
+        )
+        remaining_qty = max(0.0, launch_qty - planned_qty - erp_finished_qty)
+        execution_status = erp_exec_status_for_op(
+            status_by_op,
+            status_by_stage,
+            op_no=op_no,
+            source_stage_no=stage_no,
+        )
+        queued_machines = _queued_machines_for_catalog_op(
+            ctx.queued_machines_by_op, ps_id, op_no, stored_seq
+        )
+        all_ops.append(
+            {
+                "source_ps_id": ps_id,
+                "pp_partial_no": partial,
+                "source_op_seq_id": op_seq_id,
+                "source_op_no": op_no,
+                "op_no": op_no,
+                "op_type": row.get("op_type") or "",
+                "seq_no": int(row.get("seq_no") or 0),
+                "source_kind": compact_text(row.get("source_kind") or ""),
+                "source_stage_no": stage_no,
+                "machine_category": row.get("machine_category") or "",
+                "preferred_machine": row.get("preferred_machine") or "",
+                "cycle_time": float(row.get("cycle_time") or 0),
+                "setup_time": float(row.get("setup_time") or 0),
+                "is_last_op": int(row.get("is_last_op") or 0),
+                "job_no": ps_id,
+                "operation_name": f"{op_no or ''} {row.get('op_type') or ''}".strip(),
+                "total_qty": remaining_qty,
+                "required_qty": launch_qty,
+                "planned_qty": planned_qty,
+                "erp_finished_qty": erp_finished_qty,
+                "erp_reject_qty": 0.0,
+                "remaining_qty": remaining_qty,
+                "queued_machines": queued_machines,
+                "is_allocated": planned_qty > 0,
+                "compatible_machine_group": row.get("machine_category") or "",
+                "execution_status": execution_status,
+            }
+        )
+        _finalize_catalog_op_execution_status(all_ops[-1])
+
+    for step in merge_finishing_steps_into_flow_steps([], wo_stages):
+        finishing_op = _catalog_op_from_finishing_step(
+            step,
+            ps_id=ps_id,
+            pp_partial_no=partial,
+            launch_qty=launch_qty,
+        )
+        if finishing_op:
+            all_ops.append(finishing_op)
+
+    entry["all_ops"] = all_ops
+    _merge_erp_into_ops(entry, ctx)
+    manual_map = dict(ctx.manual_qty_by_ps.get(ps_id) or {})
+    _apply_catalog_op_qty_cascade(entry, {ps_id: manual_map} if ps_id else {})
+    return entry
+
+
 def _mpp_jobs_from_process_sheets(
     con,
     fa_keys: set[str],
@@ -644,6 +808,7 @@ def _mpp_jobs_from_process_sheets(
     *,
     fa_only: bool = True,
 ) -> list[dict[str, Any]]:
+    from .erp_wo_merge import mfg_wo_stages_batch
     from .process_sheets import material_in_map_for_planner_ps_ids
 
     sheet_rows = _load_mpp_planner_process_sheet_rows(con, fa_keys, fa_only=fa_only)
@@ -656,10 +821,26 @@ def _mpp_jobs_from_process_sheets(
         entry["material_in"] = bool(material_map.get(pid))
     ctx = _build_intake_context(con, sheet_rows, mpp_codes)
     ctx.fa_mpp_by_part = load_frame_agreement_mpp_lookup(con)
+    steps_by_bom = _load_operation_steps_by_bom(
+        con, [int(row.get("selected_bom_id") or 0) for row in sheet_rows]
+    )
+    partial_keys = [
+        (compact_text(row.get("source_ps_id")), int(row.get("pp_partial_no") or 1))
+        for row in sheet_rows
+        if compact_text(row.get("source_ps_id"))
+    ]
+    wo_by_partial = mfg_wo_stages_batch(con, partial_keys)
     jobs: list[dict[str, Any]] = []
     seen: set[str] = set()
     for entry in sheet_rows:
-        enriched = _enrich_entry_ops(con, dict(entry), ctx)
+        bom_id = int(entry.get("selected_bom_id") or 0)
+        partial_key = (compact_text(entry.get("source_ps_id")), int(entry.get("pp_partial_no") or 1))
+        enriched = _fill_sheet_ops_from_cache(
+            dict(entry),
+            steps_by_bom.get(bom_id, []),
+            wo_by_partial.get(partial_key, []),
+            ctx,
+        )
         _emit_jobs_from_item(enriched, ctx, jobs, seen)
     return jobs
 
@@ -682,10 +863,14 @@ def fetch_mpp_planner_jobs(con, *, fa_only: bool = True) -> list[dict[str, Any]]
     jobs = _mpp_jobs_from_process_sheets(con, fa_keys, mpp_codes, fa_only=fa_only)
     seen = {job["jobId"] for job in jobs}
 
-    # ERP fallback is FA-scoped (INNER JOIN master list); merge for FA gaps.
-    # A timeout here must not discard the process-sheet jobs already loaded.
+    # ERP fallback is a lateral scan of pp_vouchers_cache. It only fills FA
+    # parts that are not already on a planner process sheet. Cap it so a slow
+    # scan cannot pin the op pool on "Loading" for the statement timeout.
+    erp_rows: list[dict[str, Any]] = []
     try:
+        con.execute("SET LOCAL statement_timeout = '8000'")
         erp_rows = _fetch_erp_mpp_job_candidates(con, mpp_machine_codes=mpp_codes)
+        con.execute("SET LOCAL statement_timeout = '45000'")
     except Exception as exc:
         logger.warning("mpp planner ERP job fallback skipped: %s", exc)
         try:

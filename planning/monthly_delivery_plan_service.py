@@ -225,10 +225,79 @@ def build_monthly_delivery_plan(
     }
 
 
+def expand_delivered_lines(
+    orders: list[dict[str, Any]],
+    pricing_by_key: dict[str, dict[str, Any]] | None = None,
+    *,
+    year: int,
+) -> list[dict[str, Any]]:
+    """Completed jobs whose delivered date falls in the given year.
+
+    These have left the outstanding list. The monthly plan still shows them
+    on the month of the delivered date.
+    """
+    from planning.process_sheets import _so_line_pricing_key
+    from .so_outstanding_balance_service import _money, _outstanding_row
+
+    year = int(year)
+    pricing = pricing_by_key or {}
+    lines: list[dict[str, Any]] = []
+    for order in orders:
+        customer = _compact(order.get("customer_name") or order.get("customer_short_name"))
+        so_no = _compact(order.get("sales_order_no"))
+        for pp in order.get("pp_vouchers") or []:
+            if not pp.get("shipped_completed"):
+                continue
+            delivered = _parse_date(pp.get("delivery_date"))
+            if delivered is None or delivered.year != year:
+                continue
+            qty = _to_float(pp.get("pp_qty"))
+            if qty is None or qty <= 0:
+                qty = _to_float(pp.get("qty_shipped")) or _to_float(pp.get("so_det_qty")) or 0.0
+            if qty <= 0:
+                continue
+            line_no = _compact(pp.get("source_line_item_no"))
+            price_row = pricing.get(_so_line_pricing_key(so_no, line_no)) or {}
+            unit = _to_float(pp.get("unit_selling_price"))
+            exch = _to_float(price_row.get("exch_rate"))
+            if unit is None:
+                unit = _to_float(price_row.get("unit_cost"))
+            so_qty = _to_float(pp.get("so_det_qty")) or qty
+            shipped = _to_float(pp.get("qty_shipped")) or qty
+            row = _outstanding_row(
+                customer=customer,
+                so_no=so_no,
+                pp=pp,
+                partial=None,
+                unit=unit,
+                exch=exch,
+                so_qty=float(so_qty),
+                shipped=float(shipped),
+                so_line_value=_money(unit, float(so_qty), exch),
+                pp_qty=float(qty),
+                open_qty=float(qty),
+                line_no=line_no,
+            )
+            row["delivery_date"] = delivered.isoformat()
+            row["delivered"] = True
+            if not row.get("status"):
+                row["status"] = "Delivered"
+            lines.append(row)
+    lines.sort(
+        key=lambda row: (
+            row.get("delivery_date") or "",
+            row.get("sales_order_no") or "",
+            row.get("process_sheet_no") or "",
+        )
+    )
+    return lines
+
+
 # Re-export for route convenience
 __all__ = [
     "build_monthly_delivery_plan",
     "commitment_date",
+    "expand_delivered_lines",
     "expand_delivery_lines",
     "pricing_keys_from_orders",
     "week_label",

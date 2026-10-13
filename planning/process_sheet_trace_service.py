@@ -8,10 +8,12 @@ Live COMAIN path:
   sub-part, and that sub-part has its own pushed material rows on the same
   voucher (``inventory_code`` = the sub-part).
 * ``ic_stk_alloc_vch`` holds the MRP allocation, joined through
-  ``mfg_mps_vch.source_pp_no``.
-* ``ic_inventory_ost_lot.reference_no`` is the batch or heat number. When the
-  same lot exists in more than one location, the reference on the location
-  that still holds the allocation is the primary batch.
+  ``mfg_mps_vch.source_pp_no``. ``mfg_mps_vch.own_inventory_code`` is the
+  sub-part that job belongs to, so a shared material is not copied onto
+  every line.
+* The batch is the reference snapshotted on ``ic_stk_issue_mat_lot`` when the
+  lot was issued to that job. Inventory lot references are only a fallback
+  for material that is allocated and not yet issued.
 """
 from __future__ import annotations
 
@@ -98,19 +100,89 @@ def _lots_by_material(rows: list[dict[str, Any]] | None) -> dict[tuple[str, int]
     return grouped
 
 
-def _alloc_payload(row: dict[str, Any], lots: dict[tuple[str, int], list[dict[str, Any]]]) -> dict[str, Any]:
+def _issued_indexes(
+    rows: list[dict[str, Any]] | None,
+) -> tuple[dict[tuple[str, str, int, str], str], dict[tuple[str, str, int], set[str]]]:
+    """Batch reference written onto the job at issue time."""
+    exact: dict[tuple[str, str, int, str], str] = {}
+    loose: dict[tuple[str, str, int], set[str]] = {}
+    for row in rows or []:
+        ref = compact_text(row.get("reference_no"))
+        if not ref:
+            continue
+        own = _key(row.get("own_inventory_code"))
+        code = _key(row.get("inventory_code"))
+        lot_no = int(parse_number(row.get("lot_no"), 0))
+        mps = compact_text(row.get("mps_voucher_no"))
+        exact.setdefault((own, code, lot_no, mps), ref)
+        loose.setdefault((own, code, lot_no), set()).add(ref)
+    return exact, loose
+
+
+def _issued_batch(
+    row: dict[str, Any],
+    exact: dict[tuple[str, str, int, str], str],
+    loose: dict[tuple[str, str, int], set[str]],
+) -> str:
+    own = _key(row.get("own_inventory_code"))
+    code = _key(row.get("inventory_code"))
     lot_no = int(parse_number(row.get("lot_no"), 0))
+    mps = compact_text(row.get("alloc_to_voucher_no") or row.get("mps_voucher_no"))
+    snapped = exact.get((own, code, lot_no, mps))
+    if snapped:
+        return snapped
+    refs = loose.get((own, code, lot_no)) or set()
+    if len(refs) == 1:
+        return next(iter(refs))
+    return ""
+
+
+def _alloc_payload(
+    row: dict[str, Any],
+    lots: dict[tuple[str, int], list[dict[str, Any]]],
+    exact: dict[tuple[str, str, int, str], str],
+    loose: dict[tuple[str, str, int], set[str]],
+) -> dict[str, Any]:
+    lot_no = int(parse_number(row.get("lot_no"), 0))
+    issued_batch = _issued_batch(row, exact, loose)
     identity = lot_identity(lots.get((_key(row.get("inventory_code")), lot_no), []))
     return {
         "alloc_voucher_no": compact_text(row.get("alloc_voucher_no")),
         "mps_voucher_no": compact_text(row.get("alloc_to_voucher_no")),
+        "work_order_no": compact_text(row.get("wo_voucher_no")),
         "lot_no": lot_no,
-        "batch_no": identity["batch_no"],
-        "other_refs": identity["other_refs"],
+        "batch_no": issued_batch or identity["batch_no"],
+        "other_refs": [],
         "alloc_qty": _qty(row.get("alloc_qty")),
         "remain_qty": _qty(row.get("remain_alloc_qty")),
         "issued_qty": _qty(row.get("issued_alloc_qty")),
     }
+
+
+def _allocations_for_job(
+    allocations: list[dict[str, Any]],
+    material_code: str,
+    job_part: str,
+    fg_key: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Keep the lots assigned to this sub-part's job.
+
+    Returns (rows, shared). ``shared`` is true only when the same material
+    lots could not be tied to one job and are repeated across lines.
+    """
+    code = _key(material_code)
+    candidates = [row for row in allocations if _key(row.get("inventory_code")) == code]
+    if not job_part:
+        return candidates, False
+    owned = [row for row in candidates if _key(row.get("own_inventory_code")) == _key(job_part)]
+    if owned:
+        return owned, False
+    unassigned = [
+        row
+        for row in candidates
+        if not _key(row.get("own_inventory_code")) or _key(row.get("own_inventory_code")) == fg_key
+    ]
+    return unassigned, bool(unassigned)
 
 
 def _material_payload(
@@ -118,22 +190,23 @@ def _material_payload(
     allocations: list[dict[str, Any]],
     lots: dict[tuple[str, int], list[dict[str, Any]]],
     descriptions: dict[str, str],
+    exact: dict[tuple[str, str, int, str], str],
+    loose: dict[tuple[str, str, int], set[str]],
     *,
-    shared: bool,
+    job_part: str,
+    fg_key: str,
+    material_on_other_lines: bool,
 ) -> dict[str, Any]:
     code = compact_text(row.get("material_inventory_code"))
-    matched = [
-        _alloc_payload(item, lots)
-        for item in allocations
-        if _key(item.get("inventory_code")) == _key(code)
-    ]
+    matched_rows, fell_back = _allocations_for_job(allocations, code, job_part, fg_key)
+    matched = [_alloc_payload(item, lots, exact, loose) for item in matched_rows]
     matched.sort(key=lambda item: (item["lot_no"], item["alloc_voucher_no"]))
     return {
         "inventory_code": code,
         "description": descriptions.get(_key(code), ""),
         "bom_code": compact_text(row.get("bom_code")),
         "qty": _qty(row.get("qty")),
-        "shared": shared,
+        "shared": fell_back and material_on_other_lines,
         "allocations": matched,
     }
 
@@ -146,6 +219,7 @@ def build_trace(
     lots: list[dict[str, Any]] | None,
     descriptions: dict[str, str] | None = None,
     bom_desc_by_part: dict[str, str] | None = None,
+    issued_lots: list[dict[str, Any]] | None = None,
     *,
     query: str = "",
     focus_process_sheet: str = "",
@@ -160,6 +234,7 @@ def build_trace(
     fg_key = _key(fg)
     alloc_rows = _dedupe_allocations(allocations)
     lot_groups = _lots_by_material(lots)
+    issued_exact, issued_loose = _issued_indexes(issued_lots)
 
     component_by_line: dict[str, dict[str, Any]] = {}
     component_by_part: dict[str, dict[str, Any]] = {}
@@ -213,7 +288,11 @@ def build_trace(
                 alloc_rows,
                 lot_groups,
                 descriptions,
-                shared=use_counts.get(_key(material.get("material_inventory_code")), 0) > 1,
+                issued_exact,
+                issued_loose,
+                job_part=sub_part,
+                fg_key=fg_key,
+                material_on_other_lines=use_counts.get(_key(material.get("material_inventory_code")), 0) > 1,
             )
             for material in traced
         ]
@@ -305,12 +384,55 @@ SELECT DISTINCT ON (a.alloc_voucher_no, a.inventory_code, a.lot_no)
        a.alloc_qty,
        a.remain_alloc_qty,
        a.issued_alloc_qty,
-       a.alloc_to_voucher_no
+       a.alloc_to_voucher_no,
+       COALESCE(
+           NULLIF(BTRIM(mps.own_inventory_code), ''),
+           NULLIF(BTRIM(w.own_inventory_code), '')
+       ) AS own_inventory_code,
+       COALESCE(NULLIF(BTRIM(mps.wo_voucher_no), ''), w.voucher_no) AS wo_voucher_no
 FROM public.mfg_mps_vch mps
 JOIN public.ic_stk_alloc_vch a
   ON a.alloc_to_voucher_no = mps.mps_voucher_no
+LEFT JOIN public.mfg_wo_vch w
+  ON w.voucher_no = mps.wo_voucher_no
 WHERE UPPER(BTRIM(mps.source_pp_no)) = %s
-ORDER BY a.alloc_voucher_no, a.inventory_code, a.lot_no
+ORDER BY
+    a.alloc_voucher_no,
+    a.inventory_code,
+    a.lot_no,
+    CASE
+        WHEN BTRIM(COALESCE(mps.own_inventory_code, w.own_inventory_code, '')) <> '' THEN 0
+        ELSE 1
+    END
+"""
+
+_ISSUED_SQL = """
+SELECT
+    COALESCE(
+        NULLIF(BTRIM(mps.own_inventory_code), ''),
+        NULLIF(BTRIM(w.own_inventory_code), '')
+    ) AS own_inventory_code,
+    mps.mps_voucher_no,
+    mps.wo_voucher_no,
+    mat.inventory_code,
+    mat_lot.lot_no,
+    mat_lot.reference_no,
+    SUM(mat_lot.qty) AS issued_qty
+FROM public.mfg_mps_vch mps
+JOIN public.mfg_wo_vch w
+  ON w.voucher_no = mps.wo_voucher_no
+JOIN public.ic_stk_issue_vch si
+  ON si.source_voucher_no = mps.wo_voucher_no
+JOIN public.ic_stk_issue_mat mat
+  ON mat.si_voucher_no = si.si_voucher_no
+JOIN public.ic_stk_issue_mat_lot mat_lot
+  ON mat_lot.si_voucher_no = mat.si_voucher_no
+ AND mat_lot.line_item_no = mat.line_item_no
+WHERE UPPER(BTRIM(mps.source_pp_no)) = %s
+  AND si.issue_type = 'M'
+  AND COALESCE(si.status, '') = 'H'
+  AND COALESCE(mat_lot.qty, 0) > 0
+GROUP BY 1, 2, 3, 4, 5, 6
 """
 
 _LOTS_SQL = """
@@ -377,6 +499,7 @@ def trace_process_sheet(process_sheet_no: str) -> dict[str, Any]:
     materials = _query(_MATERIALS_SQL, (_key(pp_no),))
     components = _query(_COMPONENTS_SQL, (_key(pp_no),))
     allocations = _query(_ALLOC_SQL, (_key(pp_no),))
+    issued_lots = _query(_ISSUED_SQL, (_key(pp_no),))
     bom_rows = _query(_BOM_DESC_SQL, (_key(pp_no),))
 
     codes = {_key(header.get("inventory_code"))}
@@ -415,6 +538,7 @@ def trace_process_sheet(process_sheet_no: str) -> dict[str, Any]:
         lots,
         descriptions,
         bom_desc_by_part,
+        issued_lots,
         query=query,
         focus_process_sheet=focus,
     )

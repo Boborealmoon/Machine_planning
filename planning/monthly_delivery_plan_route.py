@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
 from flask import Blueprint, jsonify, render_template, request
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 monthly_delivery_plan_bp = Blueprint("monthly_delivery_plan", __name__)
 
+_LINES_CACHE: dict[int, tuple[float, tuple[list[dict], int]]] = {}
+_LINES_TTL_SEC = 120.0
+
 
 def _parse_year(raw) -> int:
     try:
@@ -32,21 +36,51 @@ def _parse_year(raw) -> int:
     return max(2000, min(2100, value))
 
 
-def _load_outstanding(*, refresh: bool) -> tuple[list[dict], int]:
+def _pricing_keys(orders: list[dict]) -> list[tuple[str, str]]:
+    from .so_outstanding_balance_service import _so_line_pair
+
+    keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for order in orders:
+        so_no = compact_text(order.get("sales_order_no"))
+        for pp in order.get("pp_vouchers") or []:
+            pair = _so_line_pair(so_no, pp.get("source_line_item_no"))
+            if not pair[0] or not pair[1] or pair in seen:
+                continue
+            seen.add(pair)
+            keys.append(pair)
+    return keys
+
+
+def _load_outstanding(*, refresh: bool, year: int) -> tuple[list[dict], int]:
+    from .monthly_delivery_plan_service import expand_delivered_lines
     from .process_sheets import fetch_so_line_pricing_map
     from .sales_orders_route import _fetch_sales_orders, _job_count
     from .so_outstanding_balance_route import _fetch_open_so_lines
-    from .so_outstanding_balance_service import (
-        build_outstanding_balance,
-        pricing_keys_from_orders,
-    )
+    from .so_outstanding_balance_service import build_outstanding_balance
 
-    payload = _fetch_sales_orders(refresh=refresh, active_only=True)
+    cached = _LINES_CACHE.get(year)
+    if not refresh and cached and (time.monotonic() - cached[0]) < _LINES_TTL_SEC:
+        return cached[1]
+
+    payload = _fetch_sales_orders(refresh=refresh, active_only=False)
     orders = list(payload.get("active") or [])
+    complete = list(payload.get("complete") or [])
     open_so_lines = _fetch_open_so_lines(refresh=refresh)
-    pricing = fetch_so_line_pricing_map(pricing_keys_from_orders(orders))
+    # Completed jobs already carry a unit price. Pricing every shipped line made assign wait.
+    pricing = fetch_so_line_pricing_map(_pricing_keys(orders))
     result = build_outstanding_balance(orders, pricing, open_so_lines)
-    return list(result.get("lines") or []), _job_count(orders)
+    lines = list(result.get("lines") or [])
+    seen = {compact_text(line.get("row_id")) for line in lines}
+    for line in expand_delivered_lines(complete, pricing, year=year):
+        row_id = compact_text(line.get("row_id"))
+        if not row_id or row_id in seen:
+            continue
+        seen.add(row_id)
+        lines.append(line)
+    packed = (lines, _job_count(orders))
+    _LINES_CACHE[year] = (time.monotonic(), packed)
+    return packed
 
 
 def _lines_by_id(lines: list[dict]) -> dict[str, dict]:
@@ -66,7 +100,7 @@ def monthly_delivery_plan_page():
 def api_monthly_delivery_plan():
     year = _parse_year(request.args.get("year"))
     try:
-        lines, job_count = _load_outstanding(refresh=_refresh_flag())
+        lines, job_count = _load_outstanding(refresh=_refresh_flag(), year=year)
         with planner_db() as con:
             commitments = load_commitments(con)
         view = build_commitment_view(lines, commitments, year=year)
@@ -94,12 +128,12 @@ def api_add_delivery_slices():
         return jsonify({"ok": False, "error": "Expected a JSON object."}), 400
     plan_month, items = _assignment_items(body)
     try:
-        lines, _job_count = _load_outstanding(refresh=False)
         with planner_db() as con:
             if body.get("whole"):
-                save_assign_month(con, _lines_by_id(lines), plan_month, items)
-            else:
-                save_adds(con, _lines_by_id(lines), plan_month, items)
+                assigned = save_assign_month(con, {}, plan_month, items)
+                return jsonify({"ok": True, "assigned": assigned})
+            lines, _job_count = _load_outstanding(refresh=False, year=date.today().year)
+            save_adds(con, _lines_by_id(lines), plan_month, items)
         return jsonify({"ok": True})
     except AllocationError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -123,7 +157,7 @@ def api_update_delivery_slice(commitment_id: int):
         )
         return jsonify({"ok": False, "error": message}), 400
     try:
-        lines, _job_count = _load_outstanding(refresh=False)
+        lines, _job_count = _load_outstanding(refresh=False, year=date.today().year)
         with planner_db() as con:
             if has_qty:
                 save_qty(con, _lines_by_id(lines), commitment_id, body.get("qty"))
@@ -136,6 +170,26 @@ def api_update_delivery_slice(commitment_id: int):
         return jsonify({"ok": False, "error": str(exc)}), 404
     except Exception as exc:
         logger.exception("update delivery slice failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@monthly_delivery_plan_bp.post("/api/monthly-delivery-plan/slices/clear")
+def api_clear_delivery_slices():
+    body = request.get_json(silent=True) or {}
+    raw_ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"ok": False, "error": "Nothing to clear."}), 400
+    try:
+        ids = [int(item) for item in raw_ids]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Nothing to clear."}), 400
+    try:
+        with planner_db() as con:
+            for commitment_id in ids:
+                delete_commitment(con, commitment_id)
+        return jsonify({"ok": True, "cleared": ids})
+    except Exception as exc:
+        logger.exception("clear delivery slices failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 

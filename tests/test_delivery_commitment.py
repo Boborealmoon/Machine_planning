@@ -7,6 +7,7 @@ from pathlib import Path
 from planning.delivery_commitment_service import (
     AllocationError,
     _sql_statements,
+    _assign_source,
     join_delivery_lines,
     month_totals,
     plan_whole_month_assign,
@@ -173,6 +174,17 @@ class DeliveryCommitmentTests(unittest.TestCase):
         self.assertEqual(same_month.isoformat(), "2026-10-01")
         self.assertEqual(same_qty, 10.0)
         self.assertEqual(kept, [])
+
+    def test_assign_uses_the_qty_already_on_screen(self):
+        source = _assign_source(
+            {"row_id": "SO/1|NPS1|1|10", "open_qty": 6, "part_no": "P-1"},
+            {},
+        )
+        self.assertEqual(source["remaining_qty"], 6)
+        month, qty, drop = plan_whole_month_assign(source, [], "2026-10")
+        self.assertEqual(month.isoformat(), "2026-10-01")
+        self.assertEqual(qty, 6.0)
+        self.assertEqual(drop, [])
 
     def test_migration_sql_has_table_and_indexes(self):
         sql = Path("migrations/add_delivery_commitment.sql").read_text(encoding="utf-8")

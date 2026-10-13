@@ -149,6 +149,9 @@ _REQUIRED_COLUMNS = (
     ("planner_first_article_new_part", "program_due_date"),
     ("planner_first_article_new_part", "gauges_edited"),
     ("planner_first_article_change_log", "change_id"),
+    ("planner_cmm_job", "overall_completed_at"),
+    ("planner_cmm_subtask", "completed_at"),
+    ("planner_cmm_event", "event_id"),
 )
 _tables_ready = False
 _tables_lock = threading.Lock()
@@ -174,6 +177,9 @@ def _schema_complete(con) -> bool:
                          'review_timestamp', 'queue_order', 'program_due_date', 'gauges_edited'
                      ))
                  OR (table_name = 'planner_first_article_change_log' AND column_name = 'change_id')
+                 OR (table_name = 'planner_cmm_job' AND column_name = 'overall_completed_at')
+                 OR (table_name = 'planner_cmm_subtask' AND column_name = 'completed_at')
+                 OR (table_name = 'planner_cmm_event' AND column_name = 'event_id')
               )
             """
         )
@@ -544,6 +550,9 @@ def _migrate_first_article_schema(con) -> None:
             ON public.planner_first_article_change_log (source, LOWER(TRIM(process_sheet_no)), changed_at DESC)
         """
     )
+    from .cmm_queue_service import ensure_cmm_schema
+
+    ensure_cmm_schema(con)
 
 
 def _ps_base(value: Any) -> str:
@@ -3028,8 +3037,11 @@ def reorder_tracker_queue(ordered_ids: list[Any]) -> list[dict[str, int]]:
     ]
 
 
-def reorder_new_part_queue(ordered_sheets: list[Any]) -> list[dict[str, Any]]:
-    """Store the technician queue for active new parts that need a programme."""
+def normalize_programme_queue(ordered_sheets: list[Any] | None) -> list[str]:
+    """Process sheets that belong in the programme queue, in work order.
+
+    An empty list is a valid queue: no job block is waiting for a programme.
+    """
     clean: list[str] = []
     seen: set[str] = set()
     for raw in ordered_sheets or []:
@@ -3039,8 +3051,12 @@ def reorder_new_part_queue(ordered_sheets: list[Any]) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         clean.append(process_sheet_no)
-    if not clean:
-        raise ValueError("process_sheet_nos is required")
+    return clean
+
+
+def reorder_new_part_queue(ordered_sheets: list[Any] | None) -> list[dict[str, Any]]:
+    """Store the programme queue. Sheets left out of the list leave the queue."""
+    clean = normalize_programme_queue(ordered_sheets)
     orders: list[dict[str, Any]] = []
     with planner_db() as con:
         _ensure_tables(con)
@@ -3058,6 +3074,24 @@ def reorder_new_part_queue(ordered_sheets: list[Any]) -> list[dict[str, Any]]:
                 "process_sheet_no": process_sheet_no,
                 "queue_order": index,
             })
+        if clean:
+            con.execute(
+                """
+                UPDATE planner_first_article_new_part
+                SET queue_order = NULL
+                WHERE queue_order IS NOT NULL
+                  AND NOT (UPPER(TRIM(process_sheet_no)) = ANY(%s))
+                """,
+                ([_ps_key(sheet) for sheet in clean],),
+            )
+        else:
+            con.execute(
+                """
+                UPDATE planner_first_article_new_part
+                SET queue_order = NULL
+                WHERE queue_order IS NOT NULL
+                """
+            )
     return orders
 
 
@@ -3800,6 +3834,8 @@ def update_new_part_row(data: dict[str, Any]) -> dict[str, Any]:
         merged["list_scope"] = "history"
     if saved_cnc is not None:
         merged["proposed_cnc"] = list(saved_cnc)
+    else:
+        _apply_saved_proposed_cnc([merged])
     return merged
 
 
