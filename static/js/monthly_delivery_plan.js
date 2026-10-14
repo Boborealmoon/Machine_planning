@@ -1,5 +1,13 @@
 /* Monthly delivery plan — outstanding list, column filters, assign to a month. */
 
+(function stripMdpTokenFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has('mt')) return;
+  params.delete('mt');
+  const qs = params.toString();
+  history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
+})();
+
 const MDP_PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR', 'NOPP'];
 const MDP_PS_DEFAULT = ['APS', 'NPS'];
 const MDP_QTY_TOLERANCE = 0.0001;
@@ -10,6 +18,7 @@ const MDP_CAT_FILTERS = {
   ps_type: { label: 'PS type', value: (row) => mdpBlank(row.ps_type) },
   part_no: { label: 'Part', value: (row) => mdpBlank(row.part_no) },
   status: { label: 'Stage', value: (row) => mdpBlank(row.status) },
+  proposed_cnc: { label: 'Proposed CNC' },
   due_month: { label: 'Due month', value: (row) => mdpDueMonthLabel(row) },
   material_need_month: { label: 'Need month', value: (row) => mdpMonthLabelFromDate(row.material_need_date) },
   material_in_month: { label: 'In month', value: (row) => mdpMonthLabelFromDate(row.material_in_date) },
@@ -32,6 +41,7 @@ const MDP_COLUMNS = [
   { id: 'unit_cost', label: 'U/Cost' },
   { id: 'amount', label: 'Amount' },
   { id: 'status', label: 'Stage' },
+  { id: 'proposed_cnc', label: 'Proposed CNC' },
   { id: 'material_need_date', label: 'Need date' },
   { id: 'material_in_date', label: 'In date' },
   { id: 'due_date', label: 'PO due' },
@@ -57,6 +67,7 @@ const mdpState = {
     ps_type: null,
     part_no: null,
     status: null,
+    proposed_cnc: null,
     due_month: null,
     material_need_month: null,
     material_in_month: null,
@@ -188,8 +199,17 @@ function mdpPlanTokens(row) {
   return tokens;
 }
 
+function mdpProposedCncTokens(row) {
+  const parts = String(row?.proposed_cnc || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length ? parts : ['(Blank)'];
+}
+
 function mdpCatTokens(row, colId) {
   if (colId === 'plan_month') return mdpPlanTokens(row);
+  if (colId === 'proposed_cnc') return mdpProposedCncTokens(row);
   const conf = MDP_CAT_FILTERS[colId];
   return [conf ? conf.value(row) : ''];
 }
@@ -201,7 +221,7 @@ function mdpPsOk(row) {
 function mdpSearchOk(row) {
   const q = mdpState.search.trim().toLowerCase();
   if (!q) return true;
-  const hay = [row.sales_order_no, row.process_sheet_no, row.pp_voucher_no, row.part_no, row.part_desc]
+  const hay = [row.sales_order_no, row.process_sheet_no, row.pp_voucher_no, row.part_no, row.part_desc, row.proposed_cnc]
     .join(' ')
     .toLowerCase();
   return hay.includes(q);
@@ -554,6 +574,7 @@ function mdpRenderTable() {
         ${mdpTd('unit_cost', line.unit_cost == null ? '-' : mdpFormatMoney(line.unit_cost), 'mdp-num')}
         ${mdpTd('amount', mdpFormatMoney(mdpDisplayAmount(line)), 'mdp-num')}
         ${mdpTd('status', mdpEscape(line.status || '-'))}
+        ${mdpTd('proposed_cnc', mdpEscape(line.proposed_cnc || '-'), 'mdp-cnc')}
         ${mdpTd('material_need_date', mdpEscape(mdpFormatDate(line.material_need_date)))}
         ${mdpTd('material_in_date', mdpEscape(mdpFormatDate(line.material_in_date)))}
         ${mdpTd('due_date', mdpEscape(mdpFormatDate(line.due_date)))}
@@ -713,6 +734,11 @@ async function mdpApi(url, options = {}) {
   } catch (_err) {
     data = {};
   }
+  if (res.status === 401) {
+    const next = encodeURIComponent(window.location.pathname || '/monthly-delivery-plan');
+    window.location.href = `/monthly-delivery-plan-gate?next=${next}`;
+    return new Promise(() => {});
+  }
   if (!res.ok || data.ok === false) {
     throw new Error(data.error || `Request failed (${res.status})`);
   }
@@ -758,7 +784,7 @@ function mdpExportCsv() {
   const headers = [
     'plan_month', 'sales_order_no', 'process_sheet_no', 'part_no', 'part_desc',
     'open_qty', 'allocated_qty', 'left_qty', 'unit_cost', 'exch_rate', 'amount',
-    'status', 'material_need_date', 'material_in_date', 'due_date', 'coway_edd', 'delivery_date', 'week',
+    'status', 'proposed_cnc', 'material_need_date', 'material_in_date', 'due_date', 'coway_edd', 'delivery_date', 'week',
   ].filter((key) => key === 'exch_rate' || !mdpState.hiddenCols.has(key));
   const rows = [headers.join(',')];
   for (const line of lines) {
@@ -775,6 +801,7 @@ function mdpExportCsv() {
       exch_rate: line.exch_rate ?? '',
       amount: mdpDisplayAmount(line),
       status: line.status || '',
+      proposed_cnc: line.proposed_cnc || '',
       material_need_date: line.material_need_date || '',
       material_in_date: line.material_in_date || '',
       due_date: line.due_date || '',

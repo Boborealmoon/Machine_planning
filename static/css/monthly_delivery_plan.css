@@ -354,6 +354,12 @@
   font-variant-numeric: tabular-nums;
 }
 
+.mdp-cnc {
+  white-space: normal;
+  min-width: 7rem;
+  max-width: 12rem;
+}
+
 .mdp-desc {
   white-space: normal;
   min-width: 12rem;

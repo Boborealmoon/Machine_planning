@@ -854,6 +854,141 @@ def admin_gate():
     return _render_admin_gate(next_path=next_path)
 
 
+# ── Monthly delivery plan passcode ──────────────────────────────────────────
+# Extra lock on /monthly-delivery-plan and its API. Independent of the planner
+# passcode. Enabled only when MONTHLY_DELIVERY_PLAN_PASSCODE is set in .env.
+MDP_GATE_PATH = "/monthly-delivery-plan-gate"
+MDP_TOKEN_SALT = "monthly-delivery-plan-gate"
+MDP_TOKEN_MAX_AGE = 8 * 3600
+MDP_PAGE_PATH = "/monthly-delivery-plan"
+_MDP_PAGE_PREFIXES = (MDP_PAGE_PATH,)
+_MDP_API_PREFIXES = ("/api/monthly-delivery-plan",)
+
+
+def _mdp_passcode() -> str:
+    return (os.getenv("MONTHLY_DELIVERY_PLAN_PASSCODE") or "").strip()
+
+
+def _mdp_gate_enabled() -> bool:
+    return bool(_mdp_passcode())
+
+
+def _mdp_token_serializer() -> URLSafeTimedSerializer:
+    secret = _mdp_passcode() or app.secret_key
+    return URLSafeTimedSerializer(secret, salt=MDP_TOKEN_SALT)
+
+
+def _issue_mdp_token() -> str:
+    return _mdp_token_serializer().dumps({"v": 1})
+
+
+def _mdp_token_valid(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        payload = _mdp_token_serializer().loads(token, max_age=MDP_TOKEN_MAX_AGE)
+        return isinstance(payload, dict) and payload.get("v") == 1
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def _mdp_request_token() -> str:
+    return (
+        (request.args.get("mt") or "")
+        or (request.headers.get("X-Mdp-Token") or "")
+        or (request.cookies.get("mdp_rt") or "")
+    ).strip()
+
+
+def _set_mdp_token_cookie(response, token: str):
+    response.set_cookie(
+        "mdp_rt",
+        token,
+        max_age=MDP_TOKEN_MAX_AGE,
+        httponly=True,
+        samesite="Lax",
+        secure=bool(request.is_secure),
+        path="/",
+    )
+    return response
+
+
+def _clear_mdp_token_cookie(response):
+    response.delete_cookie("mdp_rt", path="/")
+    return response
+
+
+def _is_mdp_page_path(path: str) -> bool:
+    return _path_has_prefix(path, _MDP_PAGE_PREFIXES)
+
+
+def _is_mdp_api_path(path: str) -> bool:
+    return _path_has_prefix(path, _MDP_API_PREFIXES)
+
+
+def _safe_mdp_next(raw: str) -> str:
+    from urllib.parse import unquote, urlparse
+
+    target = unquote((raw or "").strip())
+    if not target.startswith("/"):
+        return MDP_PAGE_PATH
+    path = (urlparse(target).path or "/").split("?", 1)[0]
+    if _is_mdp_page_path(path):
+        return path.rstrip("/") or MDP_PAGE_PATH
+    return MDP_PAGE_PATH
+
+
+def _render_mdp_gate(error=None, next_path=MDP_PAGE_PATH, status=200, disabled=False):
+    html = render_template(
+        "site_gate.html",
+        error=error,
+        next_path=next_path,
+        gate_action=url_for("monthly_delivery_plan_gate"),
+        gate_disabled=disabled,
+        gate_title="Monthly delivery plan locked",
+        gate_message="Enter the passcode to open the monthly delivery plan.",
+        gate_env_var="MONTHLY_DELIVERY_PLAN_PASSCODE",
+    )
+    return (html, status) if status != 200 else html
+
+
+@app.before_request
+def _require_mdp_passcode():
+    if not _mdp_gate_enabled():
+        return None
+    path = request.path or "/"
+    if not _is_mdp_page_path(path) and not _is_mdp_api_path(path):
+        return None
+    if _mdp_token_valid(_mdp_request_token()):
+        return None
+    if _is_mdp_api_path(path):
+        resp = jsonify({"error": "Monthly delivery plan locked."})
+        resp.status_code = 401
+        return _clear_mdp_token_cookie(resp)
+    resp = redirect(url_for("monthly_delivery_plan_gate", next=path))
+    return _clear_mdp_token_cookie(resp)
+
+
+@app.route(MDP_GATE_PATH, methods=["GET", "POST"], endpoint="monthly_delivery_plan_gate")
+def monthly_delivery_plan_gate():
+    next_path = _safe_mdp_next(request.values.get("next"))
+
+    if not _mdp_gate_enabled():
+        return _render_mdp_gate(next_path=next_path, disabled=True)
+
+    if request.method == "POST":
+        entered = (request.form.get("passcode") or "").strip()
+        passcode = _mdp_passcode()
+        if passcode and secrets.compare_digest(entered, passcode):
+            token = _issue_mdp_token()
+            next_path = _safe_mdp_next(request.form.get("next"))
+            resp = redirect(f"{next_path}?mt={quote(token, safe='')}")
+            return _set_mdp_token_cookie(resp, token)
+        return _render_mdp_gate(error="Invalid passcode.", next_path=next_path, status=401)
+
+    return _render_mdp_gate(next_path=next_path)
+
+
 def _scheduler_asset_version() -> str:
     """Cache-bust token for planner JS — changes when scheduler scripts change."""
     override = (os.getenv("SCHEDULER_ASSET_VERSION") or "").strip()

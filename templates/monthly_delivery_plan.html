@@ -2,7 +2,7 @@
 {% block title %}Monthly Delivery Plan{% endblock %}
 {% block main_class %}app-main--mdp{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261013c">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261014b">
 {% endblock %}
 {% block content %}
 <div class="mdp-page">
@@ -133,6 +133,15 @@
                 </button>
               </span>
             </th>
+            <th data-sort="proposed_cnc" data-col="proposed_cnc" class="mdp-th-filterable" title="Same Proposed CNC as S/O Management">
+              <span class="mdp-th-inner">
+                <span>Proposed CNC</span>
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="proposed_cnc" title="Filter proposed CNC" aria-label="Filter proposed CNC">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
+                  <span class="mdp-filter-badge" hidden></span>
+                </button>
+              </span>
+            </th>
             <th data-sort="material_need_date" data-col="material_need_date" class="mdp-th-filterable">
               <span class="mdp-th-inner">
                 <span>Need date</span>
@@ -174,5 +183,5 @@
 <div id="mdp-col-filter-popover" class="mdp-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261013c"></script>
+<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261014b"></script>
 {% endblock %}

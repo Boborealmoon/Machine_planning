@@ -31,6 +31,7 @@ _LINE_FIELDS = (
     "part_no",
     "part_desc",
     "status",
+    "proposed_cnc",
     "due_date",
     "coway_edd",
     "week",

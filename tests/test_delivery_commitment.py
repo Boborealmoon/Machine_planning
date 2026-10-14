@@ -36,6 +36,7 @@ def _line(**overrides):
         "week": "Week 45",
         "material_need_date": "2026-07-20",
         "material_in_date": "2026-08-01",
+        "proposed_cnc": "CNC 20, CNC 22",
     }
     row.update(overrides)
     return row
@@ -94,6 +95,7 @@ class DeliveryCommitmentTests(unittest.TestCase):
         self.assertEqual(row["amount"], 300.0)
         self.assertEqual(row["material_need_date"], "2026-07-20")
         self.assertEqual(row["material_in_date"], "2026-08-01")
+        self.assertEqual(row["proposed_cnc"], "CNC 20, CNC 22")
 
         september_totals = month_totals(joined, "2026-09")
         self.assertEqual(september_totals["line_count"], 1)
