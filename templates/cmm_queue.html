@@ -3,7 +3,7 @@
 {% block body_class %}cmm-view{% endblock %}
 {% block main_class %}app-main--cmm-queue{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-cmm-view-20261013">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-cmm-view-20261014">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -11,7 +11,7 @@
     <div class="fa-header-text">
       <p class="fa-kicker">Views</p>
       <h1 class="fa-title">CMM Queue</h1>
-      <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Add a process sheet, then set programmes, jigs, and completion.</p>
+      <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Jobs waiting in the programme queue.</p>
     </div>
     <div class="fa-header-actions">
       <button type="button" class="fa-btn fa-btn--ghost" id="fa-export-excel" title="Download the current list as Excel">Export Excel</button>
@@ -52,21 +52,7 @@
   <div id="fa-alert" class="fa-alert" hidden></div>
 
   <div id="fa-panel-cmm" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-cmm">
-    <section class="fa-toolbar" aria-label="Add a process sheet to the CMM queue">
-      <div class="fa-toolbar-group fa-toolbar-group--add">
-        <div class="fa-typeahead">
-          <label class="fa-add-label" for="fa-cmm-add">Add process sheet</label>
-          <input id="fa-cmm-add" class="fa-search-input" type="search"
-                 placeholder="PS no or part no..."
-                 autocomplete="off" aria-autocomplete="list" aria-expanded="false"
-                 aria-controls="fa-cmm-add-results">
-          <div id="fa-cmm-add-results" class="fa-typeahead-results" role="listbox" hidden></div>
-        </div>
-        <button type="button" class="fa-btn fa-btn--primary" id="fa-cmm-add-btn"
-                title="Add the process sheet typed above to the CMM queue">CMM</button>
-      </div>
-      <p class="fa-add-status" id="fa-cmm-status" aria-live="polite"></p>
-    </section>
+    <p class="fa-add-status" id="fa-cmm-status" aria-live="polite"></p>
     <div class="fa-cmm-split">
       <section class="fa-cmm-queue" aria-label="CMM queue">
         <header class="fa-cmm-queue-head">
@@ -78,7 +64,7 @@
                  placeholder="PS, part, or status..." autocomplete="off">
         </label>
         <div id="fa-cmm-queue-list" class="fa-cmm-queue-list" role="listbox" aria-label="CMM jobs"></div>
-        <p id="fa-cmm-queue-empty" class="fa-empty">No active CMM jobs. Type a process sheet and press CMM.</p>
+        <p id="fa-cmm-queue-empty" class="fa-empty">Nothing in the programme queue.</p>
       </section>
       <section class="fa-cmm-workspace" id="fa-cmm-workspace" aria-label="CMM job workspace">
         <p id="fa-cmm-workspace-empty" class="fa-empty">Select a job to set programmes, jigs, and completion.</p>
@@ -122,5 +108,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-cmm-view-20261013"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-cmm-view-20261014"></script>
 {% endblock %}

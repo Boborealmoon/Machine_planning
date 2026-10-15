@@ -10,12 +10,15 @@ from planning.cmm_queue_service import (
     CMM_HISTORY_SQL,
     CMM_METRICS_SQL,
     CMM_QUEUE_SQL,
+    PROGRAMME_QUEUE_SQL,
     CmmError,
     completion_block_reason,
     only_completed_jobs,
     only_open_jobs,
+    order_open_cmm_jobs,
     parse_programme_count,
     plan_programme_change,
+    sheets_missing_from_cmm,
     subtask_complete_error,
 )
 
@@ -84,6 +87,8 @@ class CmmRuleTests(unittest.TestCase):
         self.assertNotIn("PENDING", CMM_HISTORY_SQL)
         self.assertIn("j.status IN ('PENDING', 'IN_PROGRESS')", CMM_QUEUE_SQL)
         self.assertNotIn("planner_first_article_new_part", CMM_QUEUE_SQL)
+        self.assertIn("planner_first_article_new_part", PROGRAMME_QUEUE_SQL)
+        self.assertIn("queue_order IS NOT NULL", PROGRAMME_QUEUE_SQL)
         self.assertIn("status = 'COMPLETED'", CMM_METRICS_SQL)
         self.assertEqual(
             only_completed_jobs([
@@ -102,6 +107,29 @@ class CmmRuleTests(unittest.TestCase):
             ["IN_PROGRESS", "PENDING"],
         )
 
+    def test_programme_queue_opens_missing_sheets_in_queue_order(self):
+        sheets = [
+            {"process_sheet_no": "NPS26-0344", "queue_order": 1},
+            {"process_sheet_no": "nps26-9038", "queue_order": 2},
+            {"process_sheet_no": "NPS26-8158", "queue_order": 3},
+        ]
+        open_jobs = [
+            {"cmm_job_id": 9, "process_sheet_no": "NPS26-0344", "status": "IN_PROGRESS"},
+            {"cmm_job_id": 4, "process_sheet_no": "NPS-EXTRA", "status": "PENDING"},
+        ]
+        missing = sheets_missing_from_cmm(sheets, open_jobs, {"NPS26-8158"})
+        self.assertEqual([sheet["process_sheet_no"] for sheet in missing], ["nps26-9038"])
+        ordered = order_open_cmm_jobs(sheets, open_jobs + [
+            {"cmm_job_id": 10, "process_sheet_no": "NPS26-9038", "status": "PENDING"},
+        ])
+        self.assertEqual(
+            [job["process_sheet_no"] for job in ordered],
+            ["NPS26-0344", "NPS26-9038"],
+        )
+        self.assertEqual(ordered[0]["queue_order"], 1)
+        self.assertEqual(ordered[1]["queue_order"], 2)
+        self.assertEqual(order_open_cmm_jobs([], open_jobs), [])
+
 
 class CmmRouteTests(unittest.TestCase):
     def setUp(self):
@@ -118,10 +146,18 @@ class CmmRouteTests(unittest.TestCase):
         self.assertIn("CMM Queue", html)
         self.assertIn('href="/cmm-queue"', html)
         self.assertIn("id=\"fa-panel-cmm\"", html)
-        self.assertIn("id=\"fa-cmm-add-btn\"", html)
-        self.assertIn(">CMM</button>", html)
+        self.assertNotIn("id=\"fa-cmm-add-btn\"", html)
+        self.assertNotIn(">CMM</button>", html)
+        self.assertIn("Nothing in the programme queue.", html)
         self.assertIn("id=\"fa-cmm-metrics\"", html)
         self.assertIn("id=\"fa-tab-cmm-history\"", html)
+
+    def test_queue_page_skips_planner_passcode(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "secret-pass", "ADMIN_PASSCODE": "secret-pass"}):
+            response = self.client.get("/cmm-queue")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("CMM Queue", response.get_data(as_text=True))
+        self.assertNotIn("Access required", response.get_data(as_text=True))
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "static", "css", "first_article.css"), encoding="utf-8") as handle:
             css = handle.read()

@@ -177,7 +177,8 @@ body.qaqc-view {
 }
 
 .fq-nav-row[hidden],
-.fq-assignee-board[hidden] {
+.fq-assignee-board[hidden],
+.fq-cmm-host[hidden] {
   display: none !important;
 }
 
@@ -213,11 +214,18 @@ body.qaqc-view {
 }
 
 .fq-nav-group--stages {
-  flex: 1 1 auto;
+  flex: 1 1 280px;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   flex-wrap: nowrap;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
+}
+
+.fq-nav-group--queue-tools {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .fq-nav-group--assignees {
@@ -1265,6 +1273,35 @@ body.qaqc-view {
   max-width: 220px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Embedded CMM queue ─────────────────────────────────── */
+
+.fq-cmm-host.fa-page {
+  min-height: calc(100dvh - 220px);
+  height: calc(100dvh - 190px);
+  gap: 12px;
+}
+
+.fq-cmm-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fq-cmm-bar .fa-subtitle {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+.fq-cmm-host .fa-cmm-split {
+  min-height: 420px;
+}
+
+.fq-cmm-host .fa-cmm-queue,
+.fq-cmm-host .fa-cmm-workspace {
+  max-height: calc(100dvh - 340px);
 }
 
 /* ── Material inspection screen ─────────────────────────── */

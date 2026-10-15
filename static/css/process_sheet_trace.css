@@ -168,14 +168,21 @@ body.pst-view .app-main--process-sheet-trace {
 .pst-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   font-size: 0.88rem;
 }
 
+.pst-col-material { width: 28%; }
+.pst-col-qty { width: 9%; }
+.pst-col-batch { width: 16%; }
+.pst-col-job { width: 16%; }
+.pst-col-status { width: 13%; }
+
 .pst-table th,
 .pst-table td {
-  padding: 0.55rem 0.7rem;
+  padding: 0.55rem 0.65rem;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
   border-bottom: 1px solid #eef2f7;
 }
 
@@ -194,7 +201,8 @@ body.pst-view .app-main--process-sheet-trace {
 
 .pst-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.84rem;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
 }
 
 .pst-desc {

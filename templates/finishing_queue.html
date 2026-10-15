@@ -6,7 +6,7 @@
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon-qaqc.svg') }}" />
 {% endblock %}
 
-{% block body_class %}qaqc-view{% endblock %}
+{% block body_class %}qaqc-view cmm-embedded{% endblock %}
 
 {% block main_class %}app-main--finishing-queue{% endblock %}
 
@@ -14,6 +14,7 @@
 <meta name="referrer" content="no-referrer" />
 <meta name="robots" content="noindex, nofollow, noarchive" />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v={{ fq_asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v={{ fq_asset_version }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/qaqc.css') }}?v={{ fq_asset_version }}">
 {% endblock %}
 
@@ -43,18 +44,14 @@
     <div class="fq-nav-row">
       <div class="fq-nav-group" role="tablist" aria-label="Screen mode" data-fq-i18n-aria="screen_aria">
         <button type="button" class="fq-chip is-active" data-fq-screen="queue" role="tab" aria-selected="true" data-fq-i18n="screen_queue">Queue</button>
-        <button type="button" class="fq-chip" data-fq-screen="assignments" role="tab" aria-selected="false" data-fq-i18n="screen_assignments">By assignee</button>
         <button type="button" class="fq-chip" data-fq-screen="material_issue" role="tab" aria-selected="false">
           <span data-fq-i18n="screen_material_issue">Mat issue &amp; assy</span> <span class="fq-chip-count" id="fq-count-material_issue" hidden>0</span>
         </button>
-        <button type="button" class="fq-chip" data-fq-screen="anticipated_material" role="tab" aria-selected="false">
-          <span data-fq-i18n="screen_anticipated_material">Anticipated material</span> <span class="fq-chip-count" id="fq-count-anticipated_material" hidden>0</span>
+        <button type="button" class="fq-chip" data-fq-screen="materials" role="tab" aria-selected="false">
+          <span data-fq-i18n="screen_materials">Materials</span> <span class="fq-chip-count" id="fq-count-materials" hidden>0</span>
         </button>
-        <button type="button" class="fq-chip" data-fq-screen="material_inspection" role="tab" aria-selected="false">
-          <span data-fq-i18n="screen_material_inspection">Material inspection</span> <span class="fq-chip-count" id="fq-count-material_inspection" hidden>0</span>
-        </button>
-        <button type="button" class="fq-chip" data-fq-screen="qc_queue" role="tab" aria-selected="false">
-          <span data-fq-i18n="screen_qc_queue">QC queue</span> <span class="fq-chip-count" id="fq-count-qc_queue" hidden>0</span>
+        <button type="button" class="fq-chip" data-fq-screen="cmm" role="tab" aria-selected="false">
+          <span data-fq-i18n="screen_cmm">CMM</span> <span class="fq-chip-count" id="fq-count-cmm" hidden>0</span>
         </button>
       </div>
       <div class="fq-nav-group fq-nav-group--ps-types" role="group" aria-label="PS type filter" data-fq-i18n-aria="ps_type_aria">
@@ -67,7 +64,7 @@
         <button type="button" class="fq-chip" data-fq-ps-type="TEMP" aria-pressed="false" data-fq-i18n="temp">Temp</button>
       </div>
     </div>
-    <div class="fq-nav-row">
+    <div class="fq-nav-row" id="fq-queue-subnav">
       <div class="fq-nav-group fq-nav-group--stages" id="fq-stage-filter-wrap" role="tablist" aria-label="Finishing stage" data-fq-i18n-aria="stage_aria">
         <button type="button" class="fq-chip" data-fq-stage="all" role="tab" aria-selected="false">
           <span data-fq-i18n="stage_all">Overall</span> <span class="fq-chip-count" id="fq-count-all" hidden>0</span>
@@ -83,6 +80,22 @@
         </button>
         <button type="button" class="fq-chip" data-fq-stage="engraving_packing" role="tab" aria-selected="false">
           <span data-fq-i18n="stage_engraving_packing">Pack &amp; engrave</span> <span class="fq-chip-count" id="fq-count-engraving_packing" hidden>0</span>
+        </button>
+      </div>
+      <div class="fq-nav-group fq-nav-group--queue-tools" role="tablist" aria-label="Queue views" data-fq-i18n-aria="queue_tools_aria">
+        <button type="button" class="fq-chip" data-fq-queue-view="assignments" role="tab" aria-selected="false" data-fq-i18n="screen_assignments">By assignee</button>
+        <button type="button" class="fq-chip" data-fq-queue-view="qc_queue" role="tab" aria-selected="false">
+          <span data-fq-i18n="screen_erp_qc">ERP QC</span> <span class="fq-chip-count" id="fq-count-qc_queue" hidden>0</span>
+        </button>
+      </div>
+    </div>
+    <div class="fq-nav-row" id="fq-materials-subnav" hidden>
+      <div class="fq-nav-group" role="tablist" aria-label="Material views" data-fq-i18n-aria="materials_aria">
+        <button type="button" class="fq-chip is-active" data-fq-material="anticipated_material" role="tab" aria-selected="true">
+          <span data-fq-i18n="screen_anticipated_material">Anticipated material</span> <span class="fq-chip-count" id="fq-count-anticipated_material" hidden>0</span>
+        </button>
+        <button type="button" class="fq-chip" data-fq-material="material_inspection" role="tab" aria-selected="false">
+          <span data-fq-i18n="screen_material_inspection">Material inspection</span> <span class="fq-chip-count" id="fq-count-material_inspection" hidden>0</span>
         </button>
       </div>
     </div>
@@ -298,6 +311,92 @@
         </thead>
         <tbody id="fq-qcq-table-body"></tbody>
       </table>
+    </div>
+  </div>
+
+  <div id="fq-cmm-host" class="fa-page fq-cmm-host" hidden>
+    <div class="fq-cmm-bar">
+      <p class="fa-subtitle" id="fa-subtitle" aria-live="polite">Jobs waiting in the programme queue.</p>
+      <button type="button" class="fa-btn fa-btn--ghost" id="fa-export-excel" title="Download the current list as Excel">Export Excel</button>
+      <button type="button" class="fa-btn fa-btn--primary" id="fa-refresh" hidden>Refresh</button>
+    </div>
+    <div id="fa-alert" class="fa-alert" hidden></div>
+    <section class="fa-cmm-metrics" id="fa-cmm-metrics" aria-label="CMM completion">
+      <div class="fa-cmm-metric">
+        <span class="fa-cmm-metric-value" id="fa-cmm-completed-today">—</span>
+        <span class="fa-cmm-metric-label">Jobs completed today</span>
+      </div>
+      <div class="fa-cmm-metric">
+        <span class="fa-cmm-metric-value" id="fa-cmm-avg-time">—</span>
+        <span class="fa-cmm-metric-label">Average time per process sheet</span>
+      </div>
+      <div class="fa-cmm-metric">
+        <span class="fa-cmm-metric-value" id="fa-cmm-completed-count">—</span>
+        <span class="fa-cmm-metric-label">Completed CMM jobs</span>
+      </div>
+    </section>
+    <div class="fa-tabs" role="tablist" aria-label="CMM views">
+      <button type="button" class="fa-tab is-active" id="fa-tab-cmm" data-fa-tab="cmm" role="tab" aria-selected="true" aria-controls="fa-panel-cmm">
+        Queue <span class="fa-tab-count" id="fa-cmm-queue-count">0</span>
+      </button>
+      <button type="button" class="fa-tab" id="fa-tab-cmm-history" data-fa-tab="cmm-history" role="tab" aria-selected="false" aria-controls="fa-panel-cmm-history">
+        History <span class="fa-tab-count" id="fa-cmm-history-count" hidden>0</span>
+      </button>
+    </div>
+    <div id="fa-loading" class="fa-loading" hidden>
+      <div class="fa-spinner" aria-hidden="true"></div>
+      <span data-fa-loading-label>Loading the CMM queue...</span>
+    </div>
+    <div id="fa-panel-cmm" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-cmm">
+      <p class="fa-add-status" id="fa-cmm-status" aria-live="polite"></p>
+      <div class="fa-cmm-split">
+        <section class="fa-cmm-queue" aria-label="CMM queue">
+          <header class="fa-cmm-queue-head">
+            <h2 class="fa-cmm-queue-title">Active jobs</h2>
+          </header>
+          <label class="fa-filter-wrap fa-cmm-filter">
+            <span class="fa-add-label">Filter</span>
+            <input id="fa-cmm-filter" class="fa-search-input" type="search" placeholder="PS, part, or status..." autocomplete="off">
+          </label>
+          <div id="fa-cmm-queue-list" class="fa-cmm-queue-list" role="listbox" aria-label="CMM jobs"></div>
+          <p id="fa-cmm-queue-empty" class="fa-empty">Nothing in the programme queue.</p>
+        </section>
+        <section class="fa-cmm-workspace" id="fa-cmm-workspace" aria-label="CMM job workspace">
+          <p id="fa-cmm-workspace-empty" class="fa-empty">Select a job to set programmes, jigs, and completion.</p>
+          <div id="fa-cmm-workspace-body" hidden></div>
+        </section>
+      </div>
+    </div>
+    <div id="fa-panel-cmm-history" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-cmm-history" hidden>
+      <section class="fa-toolbar" aria-label="Filter CMM history">
+        <div class="fa-toolbar-group fa-toolbar-group--filter">
+          <label class="fa-filter-wrap">
+            <span class="fa-add-label">Filter</span>
+            <input id="fa-cmm-history-filter" class="fa-search-input" type="search" placeholder="Search completed CMM jobs..." autocomplete="off">
+          </label>
+        </div>
+        <p class="fa-add-status">Completed CMM jobs only. Open queue jobs stay on the Queue tab.</p>
+      </section>
+      <div id="fa-cmm-history-host" class="fa-table-card" hidden>
+        <div class="fa-table-scroll">
+          <table class="fa-table" id="fa-cmm-history-table">
+            <thead>
+              <tr>
+                <th class="fa-col-ps">PS</th>
+                <th>Part</th>
+                <th>Description</th>
+                <th>Completed</th>
+                <th>Duration</th>
+                <th>Programmes</th>
+                <th>Jigs / fixtures</th>
+                <th>Jigs ready</th>
+              </tr>
+            </thead>
+            <tbody id="fa-cmm-history-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <p id="fa-cmm-history-empty" class="fa-empty" hidden>No completed CMM jobs yet. When a technician marks a process sheet complete, it appears here with every programme timestamp.</p>
     </div>
   </div>
 
@@ -1105,5 +1204,6 @@
   if (typeof window.fqBindLocaleToggle === 'function') window.fqBindLocaleToggle();
 </script>
 <script src="{{ url_for('static', filename='js/finishing_queue.js') }}?v={{ fq_asset_version }}" onload="window.fqOnMainScriptLoad && window.fqOnMainScriptLoad()" onerror="window.fqScriptLoadFailed && window.fqScriptLoadFailed()"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v={{ fq_asset_version }}"></script>
 {% endblock %}
 

@@ -22,9 +22,37 @@ if (typeof escapeHtml !== 'function') {
   };
 }
 
-function fqHideLoading() {
+function fqShowLoading(message) {
   const loading = document.getElementById('fq-loading');
-  if (loading) loading.hidden = true;
+  if (!loading) return;
+  const label = loading.querySelector('span');
+  if (label) {
+    if (!loading.dataset.defaultLabel) loading.dataset.defaultLabel = label.textContent;
+    if (message) label.textContent = message;
+  }
+  loading.hidden = false;
+}
+
+function fqLoadingOwnedByOtherScreen() {
+  if (typeof fqIsQcQueueScreen === 'function' && fqIsQcQueueScreen() && fqState.qcq.loading) {
+    const waitingOutstanding = !fqState.qcq.outstandingLoaded;
+    const waitingHistorical = fqState.qcq.view === 'historical' && !fqState.qcq.historicalLoaded;
+    if (waitingOutstanding || waitingHistorical) return true;
+  }
+  if (typeof fqIsMaterialInspectionScreen === 'function' && fqIsMaterialInspectionScreen()
+      && fqState.mi.loading && !fqState.mi.loaded) return true;
+  if (typeof fqIsAnticipatedMaterialScreen === 'function' && fqIsAnticipatedMaterialScreen()
+      && fqState.am.loading && !fqState.am.loaded) return true;
+  return false;
+}
+
+function fqHideLoading() {
+  if (fqLoadingOwnedByOtherScreen()) return;
+  const loading = document.getElementById('fq-loading');
+  if (!loading) return;
+  loading.hidden = true;
+  const label = loading.querySelector('span');
+  if (label && loading.dataset.defaultLabel) label.textContent = loading.dataset.defaultLabel;
 }
 
 function fqShowLoadError(message) {
@@ -39,6 +67,7 @@ function fqShowLoadError(message) {
   document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
   document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
   document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-cmm-host')?.setAttribute('hidden', '');
 }
 
 const FQ_TABLE_COL_COUNT = 12;
@@ -54,6 +83,7 @@ const fqState = {
   inspectorBusy: false,
   assignmentCounts: {},
   screen: 'queue',
+  materialScreen: 'anticipated_material',
   stage: 'final_inspection',
   assignee: 'all',
   hideDone: false,
@@ -87,9 +117,13 @@ const fqState = {
     historical: [],
     loaded: false,
     loading: false,
+    outstandingLoaded: false,
+    historicalLoaded: false,
     error: '',
     cachedAt: '',
     totalCount: 0,
+    pendingRefresh: false,
+    pendingHistorical: false,
   },
   am: {
     items: [],
@@ -414,6 +448,18 @@ function fqIsQcQueueScreen() {
 
 function fqIsAnticipatedMaterialScreen() {
   return fqState.screen === 'anticipated_material';
+}
+
+function fqIsCmmScreen() {
+  return fqState.screen === 'cmm';
+}
+
+function fqIsQueueFamily() {
+  return fqState.screen === 'queue' || fqState.screen === 'assignments' || fqState.screen === 'qc_queue';
+}
+
+function fqIsMaterialsFamily() {
+  return fqState.screen === 'anticipated_material' || fqState.screen === 'material_inspection';
 }
 
 function fqIsQueueTableVisible() {
@@ -1119,12 +1165,14 @@ function fqUpdateNavCounts() {
   fqSetNavCount('fq-count-packing', stageCounts.packing);
   fqSetNavCount('fq-count-engraving_packing', stageCounts.engraving_packing);
   fqSetNavCount('fq-count-material_issue', fqMaterialIssueItemsMatchingPsTypes().length);
-  fqSetNavCount('fq-count-anticipated_material', fqAnticipatedItemsMatchingPsTypes().length);
+  const anticipatedCount = fqAnticipatedItemsMatchingPsTypes().length;
+  fqSetNavCount('fq-count-anticipated_material', anticipatedCount);
 
   const miOutstanding = (fqState.mi.outstanding || []).length;
   const miReady = (fqState.mi.ready || []).length;
   const miHistorical = (fqState.mi.historical || []).length;
   fqSetNavCount('fq-count-material_inspection', miOutstanding);
+  fqSetNavCount('fq-count-materials', anticipatedCount + miOutstanding);
   fqSetNavCount('fq-count-mi-outstanding', miOutstanding);
   fqSetNavCount('fq-count-mi-ready', miReady);
   fqSetNavCount('fq-count-mi-historical', miHistorical);
@@ -2160,22 +2208,24 @@ function fqRenderQcQueueTable() {
   document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
   document.getElementById('fq-am-table-wrap')?.setAttribute('hidden', '');
 
-  fqHideLoading();
-
   if (!wrap || !tbody || !empty) {
     fqShowLoadError('QC queue table markup is missing from the page — hard refresh or restart the app.');
     return;
   }
 
-  if (fqState.qcq.loading && !fqState.qcq.loaded) {
+  const waitingOnHistorical = fqState.qcq.view === 'historical' && !fqState.qcq.historicalLoaded;
+  const waitingOnOutstanding = !fqState.qcq.outstandingLoaded;
+  if ((waitingOnHistorical || waitingOnOutstanding) && !fqState.qcq.error) {
     wrap.hidden = true;
-    empty.hidden = false;
-    if (emptyText) emptyText.textContent = (typeof fqT === 'function') ? fqT('loading_qcq') : 'Loading ERP QC queue…';
-    if (stats) stats.textContent = '';
+    empty.hidden = true;
+    if (stats) stats.textContent = (typeof fqT === 'function') ? fqT('loading_short') : 'Loading…';
     if (meta) meta.hidden = true;
+    fqShowLoading((typeof fqT === 'function') ? fqT('loading_qcq') : 'Loading ERP QC queue…');
     fqUpdateNavCounts();
     return;
   }
+
+  fqHideLoading();
 
   if (fqState.qcq.error) {
     wrap.hidden = true;
@@ -2225,9 +2275,10 @@ function fqRenderQcQueueTable() {
     const h = (fqState.qcq.historical || []).length;
     const segO = fqQcqRowsMatchingSegments(fqState.qcq.outstanding || []).length;
     const segH = fqQcqRowsMatchingSegments(fqState.qcq.historical || []).length;
-    const segmentNote = (segO !== o || segH !== h)
+    let segmentNote = (segO !== o || segH !== h)
       ? ` · ${fqQcqSegmentLabel()}`
       : '';
+    if (!fqState.qcq.historicalLoaded) segmentNote += ' · history loading';
     stats.textContent = ((typeof fqT === 'function')
       ? fqT('stats_qcq', { view: viewLabel, n: filtered.length, o: segO, h: segH, total: fqState.qcq.totalCount || o + h })
       : `${viewLabel}: ${filtered.length} shown · ${segO} O · ${segH} H · ${fqState.qcq.totalCount || o + h} total ERP records`) + segmentNote;
@@ -2258,32 +2309,90 @@ function fqQcqApplyRows(payload) {
   fqState.qcq.cachedAt = payload.cached_at || '';
 }
 
-async function fqLoadQcQueue({ refresh = false } = {}) {
-  if (fqState.qcq.loading) return;
+async function fqFetchQcBucket(status, refresh) {
+  const params = new URLSearchParams();
+  params.set('status', status);
+  if (refresh) params.set('refresh', '1');
+  return fqFetchJson(`${fqQcqApiUrl()}?${params}`, { timeoutMs: 120000 });
+}
+
+async function fqLoadQcQueue({ refresh = false, historical = false } = {}) {
+  if (fqState.qcq.loading) {
+    if (refresh) fqState.qcq.pendingRefresh = true;
+    if (historical) fqState.qcq.pendingHistorical = true;
+    return;
+  }
+  const needOutstanding = refresh || !fqState.qcq.outstandingLoaded;
+  const needHistorical = historical && (refresh || !fqState.qcq.historicalLoaded);
+  if (!needOutstanding && !needHistorical) return;
+
   fqState.qcq.loading = true;
   fqState.qcq.error = '';
+  if (refresh) {
+    fqState.qcq.outstandingLoaded = false;
+    if (historical) fqState.qcq.historicalLoaded = false;
+    fqState.qcq.loaded = false;
+  }
   if (fqIsQcQueueScreen()) fqRenderQcQueueTable();
   try {
-    const params = new URLSearchParams();
-    if (refresh) params.set('refresh', '1');
-    const qs = params.toString();
-    const url = qs ? `${fqQcqApiUrl()}?${qs}` : fqQcqApiUrl();
-    const payload = await fqFetchJson(url, { timeoutMs: 120000 });
-    fqQcqApplyRows(payload);
-    fqState.qcq.loaded = true;
+    if (needOutstanding) {
+      const outstanding = await fqFetchQcBucket('O', refresh);
+      fqState.qcq.outstanding = Array.isArray(outstanding.outstanding) ? outstanding.outstanding : [];
+      fqState.qcq.outstandingLoaded = true;
+      fqState.qcq.loaded = true;
+      fqState.qcq.cachedAt = outstanding.cached_at || fqState.qcq.cachedAt;
+      fqState.qcq.totalCount = fqState.qcq.outstanding.length + (fqState.qcq.historical || []).length;
+      fqUpdateNavCounts();
+      if (fqIsQcQueueScreen() && !(needHistorical && fqState.qcq.view === 'historical')) {
+        fqState.qcq.loading = false;
+        fqRenderQcQueueTable();
+        fqState.qcq.loading = true;
+      }
+    }
+    if (needHistorical) {
+      const historicalPayload = await fqFetchQcBucket('H', refresh);
+      fqState.qcq.historical = Array.isArray(historicalPayload.historical) ? historicalPayload.historical : [];
+      fqState.qcq.historicalLoaded = true;
+      fqState.qcq.cachedAt = historicalPayload.cached_at || fqState.qcq.cachedAt;
+      fqState.qcq.totalCount = fqState.qcq.outstanding.length + fqState.qcq.historical.length;
+    }
   } catch (err) {
-    fqState.qcq.error = `Failed to load QC queue: ${err.message || err}`;
+    const message = `Failed to load QC queue: ${err.message || err}`;
+    if (!fqState.qcq.outstandingLoaded) fqState.qcq.error = message;
+    else if (needHistorical && !fqState.qcq.historicalLoaded) {
+      fqState.qcq.historicalLoaded = true;
+      if (fqState.qcq.view === 'historical') fqState.qcq.error = message;
+    }
   } finally {
     fqState.qcq.loading = false;
     fqUpdateNavCounts();
-    if (fqIsQcQueueScreen()) {
-      fqRenderQcQueueTable();
+    if (fqIsQcQueueScreen()) fqRenderQcQueueTable();
+    const againRefresh = fqState.qcq.pendingRefresh;
+    const againHistorical = fqState.qcq.pendingHistorical;
+    fqState.qcq.pendingRefresh = false;
+    fqState.qcq.pendingHistorical = false;
+    if (againRefresh || againHistorical) {
+      void fqLoadQcQueue({ refresh: againRefresh, historical: againHistorical || againRefresh });
     }
+  }
+}
+
+function fqEnsureQcQueueLoaded() {
+  const needHistorical = fqState.qcq.view === 'historical' || fqIsQcQueueScreen();
+  if (fqState.qcq.loading) {
+    if (needHistorical) fqState.qcq.pendingHistorical = true;
+    return;
+  }
+  if (!fqState.qcq.outstandingLoaded || (needHistorical && !fqState.qcq.historicalLoaded)) {
+    void fqLoadQcQueue({ historical: needHistorical });
   }
 }
 
 function fqSetQcqView(view) {
   fqState.qcq.view = view === 'historical' ? 'historical' : 'outstanding';
+  if (fqState.qcq.view === 'historical' && !fqState.qcq.historicalLoaded) {
+    fqEnsureQcQueueLoaded();
+  }
   fqRenderQcQueueTable();
 }
 
@@ -2603,12 +2712,17 @@ function fqUpdateScreenChrome() {
   const miMode = screen === 'material_inspection';
   const qcqMode = screen === 'qc_queue';
   const amMode = screen === 'anticipated_material';
+  const cmmMode = screen === 'cmm';
+  const queueFamily = queueMode || assignMode || qcqMode;
 
+  document.getElementById('fq-queue-subnav')?.toggleAttribute('hidden', !queueFamily);
+  document.getElementById('fq-materials-subnav')?.toggleAttribute('hidden', !(amMode || miMode));
+  document.getElementById('fq-cmm-host')?.toggleAttribute('hidden', !cmmMode);
   document.getElementById('fq-stage-filter-wrap')?.classList.toggle('is-hidden', !queueMode);
-  document.querySelector('.fq-nav-group--ps-types')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode);
-  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode || amMode);
+  document.querySelector('.fq-nav-group--ps-types')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode || cmmMode);
+  document.getElementById('fq-hide-done')?.classList.toggle('is-hidden', miaMode || miMode || qcqMode || amMode || cmmMode);
   // QC team is shared with material inspection assignment, so keep it available there.
-  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode || qcqMode || amMode);
+  document.getElementById('fq-manage-inspectors')?.classList.toggle('is-hidden', miaMode || qcqMode || amMode || cmmMode);
   const miToolbar = document.getElementById('fq-mi-toolbar');
   if (miToolbar) miToolbar.hidden = !miMode;
   const qcqToolbar = document.getElementById('fq-qcq-toolbar');
@@ -2626,13 +2740,28 @@ function fqUpdateScreenChrome() {
   }
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
-    const active = btn.dataset.fqStage === fqState.stage;
+    const active = queueMode && btn.dataset.fqStage === fqState.stage;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  document.querySelectorAll('[data-fq-queue-view]').forEach((btn) => {
+    const active = btn.dataset.fqQueueView === screen;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  document.querySelectorAll('[data-fq-material]').forEach((btn) => {
+    const active = btn.dataset.fqMaterial === screen;
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
 
   document.querySelectorAll('[data-fq-screen]').forEach((btn) => {
-    const active = btn.dataset.fqScreen === screen;
+    const key = btn.dataset.fqScreen;
+    const active = (key === 'queue' && queueFamily)
+      || (key === 'materials' && (amMode || miMode))
+      || key === screen;
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
@@ -2641,7 +2770,7 @@ function fqUpdateScreenChrome() {
   tableWrap?.classList.toggle('fq-table-card--assignments', assignMode);
   tableWrap?.classList.toggle('fq-table-card--queue', queueMode);
   tableWrap?.classList.toggle('fq-table-card--assignee-filtered', assignMode && fqState.assignee !== 'all');
-  if ((miaMode || miMode || qcqMode || amMode) && tableWrap) tableWrap.hidden = true;
+  if ((miaMode || miMode || qcqMode || amMode || cmmMode) && tableWrap) tableWrap.hidden = true;
 
   const miaWrap = document.getElementById('fq-mia-table-wrap');
   if (miaWrap && !miaMode) miaWrap.hidden = true;
@@ -2660,7 +2789,29 @@ function fqUpdateScreenChrome() {
   fqSyncPushedColumnLabel();
 }
 
+function fqRenderCmmScreen() {
+  fqUpdateScreenChrome();
+  fqHideLoading();
+  document.getElementById('fq-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mia-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-mi-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-am-table-wrap')?.setAttribute('hidden', '');
+  document.getElementById('fq-qcq-table-wrap')?.setAttribute('hidden', '');
+  const empty = document.getElementById('fq-empty');
+  if (empty) empty.hidden = true;
+  const stats = document.getElementById('fq-stats');
+  if (stats) stats.textContent = '';
+  const meta = document.getElementById('fq-meta');
+  if (meta) meta.hidden = true;
+  const host = document.getElementById('fq-cmm-host');
+  if (host) host.hidden = false;
+}
+
 function fqRenderTable() {
+  if (fqIsCmmScreen()) {
+    fqRenderCmmScreen();
+    return;
+  }
   if (fqIsAnticipatedMaterialScreen()) {
     fqRenderAnticipatedMaterialTable();
     return;
@@ -2866,8 +3017,8 @@ async function fqSyncWoStatus() {
 }
 
 async function fqLoad({ refresh = false, syncErp = null } = {}) {
-  const loading = document.getElementById('fq-loading');
-  if (loading) loading.hidden = false;
+  const showSpinner = fqIsQueueTableVisible() || fqIsMaterialIssueScreen();
+  if (showSpinner) fqShowLoading();
   const empty = document.getElementById('fq-empty');
   if (empty) empty.hidden = true;
   // ERP WO sync only when explicitly requested (Refresh button). Page load must not
@@ -2897,8 +3048,22 @@ async function fqLoad({ refresh = false, syncErp = null } = {}) {
 
 window.fqLoad = fqLoad;
 
+function fqRememberMaterialScreen(screen) {
+  if (screen === 'anticipated_material' || screen === 'material_inspection') {
+    fqState.materialScreen = screen;
+  }
+}
+
+function fqOpenScreen(screen) {
+  const next = screen || 'queue';
+  if (next === 'materials') return fqState.materialScreen || 'anticipated_material';
+  if (next === 'queue' && fqIsQueueFamily() && fqState.screen !== 'queue') return 'queue';
+  return next;
+}
+
 function fqSetScreen(screen) {
-  fqState.screen = screen || 'queue';
+  fqState.screen = fqOpenScreen(screen);
+  fqRememberMaterialScreen(fqState.screen);
   if (fqState.screen === 'assignments') {
     if (!fqState.assignee) fqState.assignee = 'all';
   } else {
@@ -2909,6 +3074,7 @@ function fqSetScreen(screen) {
     }
   }
   fqCloseDetail();
+  if (fqState.screen === 'qc_queue') fqEnsureQcQueueLoaded();
   fqRenderTable();
   fqUpdateNavCounts();
   if (fqState.screen === 'material_issue' && !(fqState.materialIssueItems || []).length) {
@@ -2919,9 +3085,6 @@ function fqSetScreen(screen) {
   }
   if (fqState.screen === 'material_inspection' && !fqState.mi.loaded && !fqState.mi.loading) {
     void fqLoadMaterialInspection({ refresh: true });
-  }
-  if (fqState.screen === 'qc_queue' && !fqState.qcq.loaded && !fqState.qcq.loading) {
-    void fqLoadQcQueue({ refresh: true });
   }
 }
 
@@ -2946,10 +3109,14 @@ function fqInitScreenFromUrl() {
   const tab = params.get('tab');
   let screen = null;
   if (tab === 'material_issue') screen = 'material_issue';
+  else if (tab === 'materials') screen = 'anticipated_material';
   else if (tab === 'anticipated_material') screen = 'anticipated_material';
   else if (tab === 'material_inspection') screen = 'material_inspection';
   else if (tab === 'qc_queue') screen = 'qc_queue';
+  else if (tab === 'assignments') screen = 'assignments';
+  else if (tab === 'cmm') screen = 'cmm';
   if (!screen) return;
+  fqRememberMaterialScreen(screen);
   // Apply tab chrome only — page init owns the cache-busting fetch so we don't
   // double-start loads (and so refreshCurrent always returns a real Promise).
   fqState.screen = screen;
@@ -2971,6 +3138,10 @@ window.fqSetScreen = fqSetScreen;
 
 function fqSetStage(stage) {
   fqState.stage = stage;
+  if (fqState.screen !== 'queue') {
+    fqSetScreen('queue');
+    return;
+  }
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
     const active = btn.dataset.fqStage === stage;
     btn.classList.toggle('is-active', active);
@@ -3134,8 +3305,12 @@ function fqBindEvents() {
         return;
       }
       if (fqIsQcQueueScreen()) {
-        await fqLoadQcQueue({ refresh: true });
+        await fqLoadQcQueue({ refresh: true, historical: true });
         fqToast((typeof fqT === 'function') ? fqT('toast_qcq_refreshed') : 'QC queue refreshed from ERP', 'success');
+        return;
+      }
+      if (fqIsCmmScreen()) {
+        document.getElementById('fa-refresh')?.click();
         return;
       }
       await fqLoad({ refresh: true });
@@ -3147,6 +3322,17 @@ function fqBindEvents() {
 
   document.querySelectorAll('[data-fq-screen]').forEach((btn) => {
     btn.addEventListener('click', () => fqSetScreen(btn.dataset.fqScreen || 'queue'));
+  });
+
+  document.querySelectorAll('[data-fq-queue-view]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const view = btn.dataset.fqQueueView || 'queue';
+      fqSetScreen(fqState.screen === view ? 'queue' : view);
+    });
+  });
+
+  document.querySelectorAll('[data-fq-material]').forEach((btn) => {
+    btn.addEventListener('click', () => fqSetScreen(btn.dataset.fqMaterial || 'anticipated_material'));
   });
 
   document.querySelectorAll('[data-fq-stage]').forEach((btn) => {
@@ -3296,7 +3482,8 @@ function fqInit() {
       const refreshCurrent = () => {
         if (fqIsAnticipatedMaterialScreen()) return fqLoadAnticipatedMaterial({ refresh: true });
         if (fqIsMaterialInspectionScreen()) return fqLoadMaterialInspection({ refresh: !hasBootItems });
-        if (fqIsQcQueueScreen()) return fqLoadQcQueue({ refresh: true });
+        if (fqIsQcQueueScreen()) return fqLoadQcQueue({ refresh: false, historical: true });
+        if (fqIsCmmScreen()) return Promise.resolve();
         // Warm bootstrap → cheap cache hit. Cold start → rebuild from DB without ERP.
         return fqLoad({ refresh: !hasBootItems, syncErp: false });
       };
@@ -3309,6 +3496,9 @@ function fqInit() {
         }
         if (!fqIsAnticipatedMaterialScreen() && !fqState.am.loaded && !fqState.am.loading) {
           void fqLoadAnticipatedMaterial({ refresh: true });
+        }
+        if (!fqIsQcQueueScreen() && !fqState.qcq.outstandingLoaded && !fqState.qcq.loading) {
+          void fqLoadQcQueue({ refresh: false, historical: false });
         }
       });
     }

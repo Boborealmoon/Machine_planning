@@ -1,11 +1,12 @@
 """CMM technician queue.
 
-Active jobs and completed history are separate queries.
-History reads planner_cmm_job rows with status = COMPLETED only.
-It does not read NEW parts or the programme queue.
+The active list is the programme queue: every process sheet waiting there
+gets an open CMM job. Completed history stays a separate query and does not
+read NEW parts.
 """
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
@@ -15,6 +16,8 @@ from psycopg2.extras import Json
 from .helpers import one, planner_db, rows
 from .staged_erp import serialize_row
 from .utils import compact_text
+
+logger = logging.getLogger(__name__)
 
 MAX_PROGRAMMES = 50
 CMM_HISTORY_LIMIT = 500
@@ -27,6 +30,14 @@ _JOB_COLUMNS = """
     j.status, j.jig_requirements, j.jigs_ready, j.jigs_ready_at,
     j.programme_count, j.created_at, j.updated_at, j.started_at,
     j.overall_completed_at, j.completed_by
+"""
+
+# Programme queue, in the same work order as QA Review.
+PROGRAMME_QUEUE_SQL = """
+SELECT process_sheet_no, queue_order
+FROM public.planner_first_article_new_part
+WHERE queue_order IS NOT NULL
+ORDER BY queue_order, process_sheet_no
 """
 
 # Open jobs only. Completed rows stay out of this query.
@@ -282,6 +293,64 @@ def subtask_complete_error(*, job_status: str, completed_at: Any, requested: boo
     return None
 
 
+def _sheet_key(value: Any) -> str:
+    return compact_text(value).upper()
+
+
+def sheets_missing_from_cmm(
+    programme_sheets: list[dict[str, Any]],
+    open_jobs: list[dict[str, Any]],
+    completed_keys: set[str],
+) -> list[dict[str, Any]]:
+    """Programme-queue sheets that still need an open CMM job.
+
+    A sheet that already has an open job, or whose latest CMM job is
+    complete, is left alone.
+    """
+    open_keys = {_sheet_key(job.get("process_sheet_no")) for job in open_jobs}
+    missing: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sheet in programme_sheets or []:
+        key = _sheet_key(sheet.get("process_sheet_no"))
+        if not key or key in seen or key in open_keys or key in completed_keys:
+            continue
+        seen.add(key)
+        missing.append(sheet)
+    return missing
+
+
+def order_open_cmm_jobs(
+    programme_sheets: list[dict[str, Any]],
+    open_jobs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Open CMM jobs that are still in the programme queue, in that order.
+
+    A sheet removed from the programme queue leaves this list. Its CMM row
+    stays, so putting the sheet back keeps programmes and jig notes.
+    """
+    by_key: dict[str, dict[str, Any]] = {}
+    for job in open_jobs or []:
+        key = _sheet_key(job.get("process_sheet_no"))
+        if key and key not in by_key:
+            by_key[key] = job
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sheet in programme_sheets or []:
+        key = _sheet_key(sheet.get("process_sheet_no"))
+        job = by_key.get(key)
+        if not key or not job or key in seen:
+            continue
+        seen.add(key)
+        placed = dict(job)
+        order = sheet.get("queue_order")
+        try:
+            placed["queue_order"] = int(order) if order not in (None, "") else None
+        except (TypeError, ValueError):
+            placed["queue_order"] = None
+        ordered.append(placed)
+    return ordered
+
+
 def only_open_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [job for job in jobs if job.get("status") in OPEN_CMM_STATUSES]
 
@@ -290,11 +359,173 @@ def only_completed_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [job for job in jobs if job.get("status") == "COMPLETED"]
 
 
+def _rollback_to(con, savepoint: str) -> None:
+    try:
+        con.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+    except Exception:
+        logger.exception("cmm savepoint rollback failed")
+
+
+def _programme_sheets(con) -> list[dict[str, Any]]:
+    con.execute("SAVEPOINT cmm_programme_queue")
+    try:
+        fetched = rows(con.execute(PROGRAMME_QUEUE_SQL))
+    except Exception:
+        logger.exception("cmm programme queue lookup failed")
+        _rollback_to(con, "cmm_programme_queue")
+        return []
+    con.execute("RELEASE SAVEPOINT cmm_programme_queue")
+    return fetched or []
+
+
+def _completed_sheet_keys(con) -> set[str]:
+    fetched = rows(
+        con.execute(
+            """
+            SELECT LOWER(BTRIM(process_sheet_no)) AS ps_key
+            FROM public.planner_cmm_job
+            WHERE status = 'COMPLETED'
+            """
+        )
+    )
+    return {compact_text(row.get("ps_key")).upper() for row in fetched if row.get("ps_key")}
+
+
+def _part_details(con, process_sheets: list[str]) -> dict[str, dict[str, str]]:
+    wanted = sorted({_sheet_key(sheet) for sheet in process_sheets if _sheet_key(sheet)})
+    if not wanted:
+        return {}
+    details: dict[str, dict[str, str]] = {}
+    con.execute("SAVEPOINT cmm_part_lookup")
+    try:
+        cached = rows(
+            con.execute(
+                """
+                SELECT
+                    UPPER(TRIM(split_part(ps_id, '::', 1))) AS ps_key,
+                    MAX(part_no) AS part_no,
+                    MAX(description) AS part_description
+                FROM pp_vouchers_cache
+                WHERE UPPER(TRIM(split_part(ps_id, '::', 1))) = ANY(%s)
+                GROUP BY UPPER(TRIM(split_part(ps_id, '::', 1)))
+                """,
+                (wanted,),
+            )
+        )
+        for row in cached or []:
+            key = _sheet_key(row.get("ps_key"))
+            if not key:
+                continue
+            details[key] = {
+                "part_no": compact_text(row.get("part_no"))[:80],
+                "part_description": compact_text(row.get("part_description"))[:240],
+            }
+        missing = [key for key in wanted if not details.get(key, {}).get("part_no")]
+        if missing:
+            info = rows(
+                con.execute(
+                    """
+                    SELECT
+                        UPPER(TRIM(process_sheet_no)) AS ps_key,
+                        MAX(inventory_code) AS part_no
+                    FROM mfg_process_sheet_info
+                    WHERE UPPER(TRIM(process_sheet_no)) = ANY(%s)
+                    GROUP BY UPPER(TRIM(process_sheet_no))
+                    """,
+                    (missing,),
+                )
+            )
+            for row in info or []:
+                key = _sheet_key(row.get("ps_key"))
+                part_no = compact_text(row.get("part_no"))[:80]
+                if not key or not part_no:
+                    continue
+                current = details.setdefault(key, {"part_no": "", "part_description": ""})
+                if not current["part_no"]:
+                    current["part_no"] = part_no
+        codes = sorted({
+            item["part_no"]
+            for item in details.values()
+            if item.get("part_no") and not item.get("part_description")
+        })
+        if codes:
+            described = rows(
+                con.execute(
+                    """
+                    SELECT inventory_code, main_desc
+                    FROM part_desc
+                    WHERE inventory_code = ANY(%s)
+                    """,
+                    (codes,),
+                )
+            )
+            by_code = {
+                compact_text(row.get("inventory_code")): compact_text(row.get("main_desc"))[:240]
+                for row in described or []
+                if compact_text(row.get("inventory_code"))
+            }
+            for item in details.values():
+                if not item.get("part_description"):
+                    item["part_description"] = by_code.get(item.get("part_no") or "", "")
+    except Exception:
+        logger.exception("cmm part lookup failed")
+        _rollback_to(con, "cmm_part_lookup")
+        return {}
+    con.execute("RELEASE SAVEPOINT cmm_part_lookup")
+    return details
+
+
+def _open_missing_programme_jobs(con, sheets: list[dict[str, Any]]) -> None:
+    if not sheets:
+        return
+    open_rows = rows(con.execute(CMM_QUEUE_SQL))
+    missing = sheets_missing_from_cmm(sheets, open_rows, _completed_sheet_keys(con))
+    if not missing:
+        return
+    details = _part_details(con, [sheet.get("process_sheet_no") for sheet in missing])
+    for sheet in missing:
+        process_sheet_no = compact_text(sheet.get("process_sheet_no"))
+        if not process_sheet_no:
+            continue
+        part = details.get(_sheet_key(process_sheet_no), {})
+        con.execute("SAVEPOINT cmm_open_sheet")
+        try:
+            created = one(
+                con.execute(
+                    """
+                    INSERT INTO public.planner_cmm_job (
+                        process_sheet_no, part_no, part_description, status
+                    )
+                    VALUES (%s, %s, %s, 'PENDING')
+                    RETURNING cmm_job_id
+                    """,
+                    (
+                        process_sheet_no,
+                        part.get("part_no") or "",
+                        part.get("part_description") or "",
+                    ),
+                )
+            )
+            _event(
+                con,
+                int(created["cmm_job_id"]),
+                "job_created",
+                {"process_sheet_no": process_sheet_no, "source": "programme_queue"},
+                "",
+            )
+            con.execute("RELEASE SAVEPOINT cmm_open_sheet")
+        except UniqueViolation:
+            _rollback_to(con, "cmm_open_sheet")
+
+
 def list_cmm_queue() -> list[dict[str, Any]]:
     with planner_db() as con:
         _prepare(con)
+        sheets = _programme_sheets(con)
+        _open_missing_programme_jobs(con, sheets)
         fetched = rows(con.execute(CMM_QUEUE_SQL))
-    return only_open_jobs([_present_job(row) for row in fetched])
+        jobs = only_open_jobs([_present_job(row) for row in fetched])
+    return order_open_cmm_jobs(sheets, jobs)
 
 
 def list_cmm_history() -> list[dict[str, Any]]:

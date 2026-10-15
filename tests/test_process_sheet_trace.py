@@ -83,6 +83,9 @@ def test_simple_sheet_traces_the_pushed_material_to_its_batch():
     assert material["allocations"][0]["batch_no"] == "M/03992/25"
     assert material["allocations"][0]["lot_no"] == 1
     assert material["allocations"][0]["remain_qty"] == 384
+    assert material["required_qty"] == 384
+    assert payload["header"]["sales_order_no"] == "SO/2600001"
+    assert payload["header"]["sales_order_line"] == "1"
 
 
 def test_special_bom_lists_each_sub_part_line_and_marks_a_shared_material():
@@ -345,6 +348,85 @@ def test_shared_material_keeps_only_the_batch_issued_to_that_job():
     assert line_a["allocations"][0]["work_order_no"] == "MFG-A"
     assert [row["lot_no"] for row in line_c["allocations"]] == [12]
     assert line_c["allocations"][0]["work_order_no"] == "MFG-C"
+
+
+def test_issued_qty_follows_the_stock_issue_and_required_follows_the_bom():
+    payload = build_trace(
+        {"pp_voucher_no": "N26-[SR]22", "inventory_code": "PARENT", "pp_qty": 2, "source_voucher_no": "Direct PP", "source_line_item_no": 0},
+        [
+            {
+                "inventory_code": "PARENT",
+                "line_item_no": 4,
+                "material_inventory_code": "SUB-PIN",
+                "qty": 4,
+                "in_house_production": "Y",
+            },
+            {
+                "inventory_code": "SUB-PIN",
+                "stage_no": 1,
+                "line_item_no": 1,
+                "material_inventory_code": "SUS316L*6_D25.4",
+                "qty": 20,
+                "bom_code": "SMP-MAT-01_REV00",
+            },
+            {
+                "inventory_code": "SUB-PIN",
+                "stage_no": 6,
+                "line_item_no": 1,
+                "material_inventory_code": "SUS316L*6_D25.4",
+                "qty": 20,
+                "bom_code": "MFG00200RW",
+            },
+        ],
+        [
+            {"process_sheet_no": "N26-[SR]22-4", "inventory_code": "SUB-PIN", "component_line_item_no": "4", "type": "COMP"},
+        ],
+        [
+            {
+                "alloc_voucher_no": "IC03058ISA",
+                "inventory_code": "SUS316L*6_D25.4",
+                "lot_no": 3,
+                "alloc_qty": 160,
+                "remain_alloc_qty": 0,
+                "issued_alloc_qty": 160,
+                "alloc_to_voucher_no": "M052707MPS",
+                "own_inventory_code": "SUB-PIN",
+                "wo_voucher_no": "MFG62006WO",
+            }
+        ],
+        [
+            {
+                "inventory_code": "SUS316L*6_D25.4",
+                "lot_no": 3,
+                "reference_no": "M/04400/26",
+                "allocation_qty": 1000,
+                "remaining_qty": 1330,
+            }
+        ],
+        issued_lots=[
+            {
+                "own_inventory_code": "SUB-PIN",
+                "mps_voucher_no": "M052707MPS",
+                "inventory_code": "SUS316L*6_D25.4",
+                "lot_no": 3,
+                "reference_no": "M/04371/26",
+                "issued_qty": 500,
+            }
+        ],
+    )
+
+    assert payload["header"]["sales_order_no"] == ""
+    assert payload["header"]["source_voucher_no"] == "Direct PP"
+    assert payload["header"]["source_line"] == ""
+    materials = payload["lines"][0]["materials"]
+    assert len(materials) == 1
+    assert materials[0]["bom_code"] == "SMP-MAT-01_REV00"
+    assert materials[0]["qty"] == 20
+    assert materials[0]["required_qty"] == 160
+    alloc = materials[0]["allocations"][0]
+    assert alloc["batch_no"] == "M/04371/26"
+    assert alloc["issued_qty"] == 500
+    assert alloc["alloc_qty"] == 160
 
 
 def test_trace_page_and_api():

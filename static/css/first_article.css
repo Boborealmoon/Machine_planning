@@ -33,7 +33,8 @@ body.cmm-view .app-main--cmm-queue {
 }
 
 body.cmm-view .fa-page {
-  min-height: calc(100dvh - 48px);
+  height: calc(100dvh - 48px);
+  min-height: 0;
 }
 
 .fa-page {
@@ -2896,11 +2897,16 @@ body.so-material-modal-open {
   width: 108px;
 }
 
+#fa-cmm-status {
+  flex: 0 0 auto;
+}
+
 .fa-cmm-split {
   display: flex;
   align-items: stretch;
   gap: 10px;
-  min-height: 460px;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .fa-cmm-queue {
@@ -2909,7 +2915,8 @@ body.so-material-modal-open {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: calc(100dvh - 250px);
+  min-height: 0;
+  overflow: hidden;
   padding: 10px;
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -2930,7 +2937,12 @@ body.so-material-modal-open {
   color: #0f172a;
 }
 
-.fa-cmm-filter {
+.fa-cmm-queue .fa-cmm-filter {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+  width: 100%;
   max-width: none;
 }
 
@@ -2938,6 +2950,7 @@ body.so-material-modal-open {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
 }
@@ -2993,10 +3006,10 @@ body.so-material-modal-open {
 .fa-cmm-workspace {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: calc(100dvh - 250px);
   overflow: auto;
   padding: 14px 16px;
   background: #fff;
@@ -3118,6 +3131,6 @@ body.so-material-modal-open {
   .fa-cmm-workspace {
     width: 100%;
     flex-basis: auto;
-    max-height: none;
+    max-height: 70dvh;
   }
 }

@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 qc_quality_queue_bp = Blueprint("qc_quality_queue", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 11
-_cache: tuple[float, int, list[dict[str, Any]]] | None = None
+_CACHE_VERSION = 12
+_cache: dict[str, tuple[float, int, list[dict[str, Any]]]] = {}
 
 # Link chain:
 #   qc_quality_inspection.source_job_assignment_seq -> qc_job_assignment.job_assignment_seq_no
@@ -141,25 +141,36 @@ ORDER BY h.inspection_voucher_no ASC, jl.lot_seq_no ASC NULLS LAST, a.allocation
 
 def invalidate_qc_quality_queue_cache() -> None:
     global _cache
-    _cache = None
+    _cache = {}
     from .erp_route_cache import invalidate_prefix
 
     invalidate_prefix("qc_quality_queue:")
 
 
-def _fetch_qc_quality_queue(*, refresh: bool = False) -> list[dict[str, Any]]:
+def _queue_sql(status: str | None) -> str:
+    if status in {"O", "H"}:
+        return _QC_QUALITY_QUEUE_SQL.replace(
+            "WHERE h.type = 'M'",
+            f"WHERE h.type = 'M'\n  AND h.status = '{status}'",
+        )
+    return _QC_QUALITY_QUEUE_SQL
+
+
+def _fetch_qc_quality_queue(*, refresh: bool = False, status: str | None = None) -> list[dict[str, Any]]:
     global _cache
+    key = status or "ALL"
     now = time.time()
+    cached = _cache.get(key)
     if (
         not refresh
-        and _cache
-        and _cache[1] == _CACHE_VERSION
-        and now - _cache[0] < _CACHE_TTL_SEC
+        and cached
+        and cached[1] == _CACHE_VERSION
+        and now - cached[0] < _CACHE_TTL_SEC
     ):
-        return _cache[2]
+        return cached[2]
 
-    rows = fetch_rows(_QC_QUALITY_QUEUE_SQL, domain="qc_quality_queue")
-    _cache = (now, _CACHE_VERSION, rows)
+    rows = fetch_rows(_queue_sql(status), domain="qc_quality_queue")
+    _cache[key] = (now, _CACHE_VERSION, rows)
     return rows
 
 
@@ -178,9 +189,12 @@ def _split_by_status(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any
 @qc_quality_queue_bp.get("/api/qc-quality-queue")
 def api_qc_quality_queue():
     refresh = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes"}
+    status = compact_text(request.args.get("status")).upper()
+    if status not in {"O", "H"}:
+        status = ""
 
     try:
-        rows = _fetch_qc_quality_queue(refresh=refresh)
+        rows = _fetch_qc_quality_queue(refresh=refresh, status=status or None)
     except Exception as exc:
         logger.exception("qc quality queue ERP query failed")
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
@@ -194,7 +208,8 @@ def api_qc_quality_queue():
             attach_deburr_qc_pushes_to_rows(con, rows)
     except Exception:
         logger.exception("qc quality queue deburr push attach failed")
-    cached_at = _cache[0] if _cache else time.time()
+    cache_key = status or "ALL"
+    cached_at = _cache[cache_key][0] if cache_key in _cache else time.time()
 
     return jsonify(
         {

@@ -102,21 +102,48 @@ def _lots_by_material(rows: list[dict[str, Any]] | None) -> dict[tuple[str, int]
 
 def _issued_indexes(
     rows: list[dict[str, Any]] | None,
-) -> tuple[dict[tuple[str, str, int, str], str], dict[tuple[str, str, int], set[str]]]:
-    """Batch reference written onto the job at issue time."""
+) -> tuple[
+    dict[tuple[str, str, int, str], str],
+    dict[tuple[str, str, int], set[str]],
+    dict[tuple[str, str, int, str], float],
+    dict[tuple[str, str, int], float],
+]:
+    """Batch reference and quantity written onto the job at issue time.
+
+    Quantity is the stock-issue lot quantity, which is the length or count the
+    store actually handed to the job. The allocation's issued quantity is only
+    the MRP requirement and is not used here.
+    """
     exact: dict[tuple[str, str, int, str], str] = {}
     loose: dict[tuple[str, str, int], set[str]] = {}
+    exact_qty: dict[tuple[str, str, int, str], float] = {}
+    loose_qty: dict[tuple[str, str, int], float] = {}
     for row in rows or []:
         ref = compact_text(row.get("reference_no"))
-        if not ref:
+        qty = parse_number(row.get("issued_qty"), 0)
+        if not ref and qty <= 0:
             continue
         own = _key(row.get("own_inventory_code"))
         code = _key(row.get("inventory_code"))
         lot_no = int(parse_number(row.get("lot_no"), 0))
         mps = compact_text(row.get("mps_voucher_no"))
-        exact.setdefault((own, code, lot_no, mps), ref)
-        loose.setdefault((own, code, lot_no), set()).add(ref)
-    return exact, loose
+        exact_key = (own, code, lot_no, mps)
+        loose_key = (own, code, lot_no)
+        if ref:
+            exact.setdefault(exact_key, ref)
+            loose.setdefault(loose_key, set()).add(ref)
+        if qty > 0:
+            exact_qty[exact_key] = exact_qty.get(exact_key, 0) + qty
+            loose_qty[loose_key] = loose_qty.get(loose_key, 0) + qty
+    return exact, loose, exact_qty, loose_qty
+
+
+def _issue_keys(row: dict[str, Any]) -> tuple[tuple[str, str, int, str], tuple[str, str, int]]:
+    own = _key(row.get("own_inventory_code"))
+    code = _key(row.get("inventory_code"))
+    lot_no = int(parse_number(row.get("lot_no"), 0))
+    mps = compact_text(row.get("alloc_to_voucher_no") or row.get("mps_voucher_no"))
+    return (own, code, lot_no, mps), (own, code, lot_no)
 
 
 def _issued_batch(
@@ -124,17 +151,29 @@ def _issued_batch(
     exact: dict[tuple[str, str, int, str], str],
     loose: dict[tuple[str, str, int], set[str]],
 ) -> str:
-    own = _key(row.get("own_inventory_code"))
-    code = _key(row.get("inventory_code"))
-    lot_no = int(parse_number(row.get("lot_no"), 0))
-    mps = compact_text(row.get("alloc_to_voucher_no") or row.get("mps_voucher_no"))
-    snapped = exact.get((own, code, lot_no, mps))
+    exact_key, loose_key = _issue_keys(row)
+    snapped = exact.get(exact_key)
     if snapped:
         return snapped
-    refs = loose.get((own, code, lot_no)) or set()
+    refs = loose.get(loose_key) or set()
     if len(refs) == 1:
         return next(iter(refs))
     return ""
+
+
+def _issued_qty(
+    row: dict[str, Any],
+    exact_qty: dict[tuple[str, str, int, str], float],
+    loose_qty: dict[tuple[str, str, int], float],
+    loose: dict[tuple[str, str, int], set[str]],
+) -> float | None:
+    exact_key, loose_key = _issue_keys(row)
+    if exact_key in exact_qty:
+        return exact_qty[exact_key]
+    refs = loose.get(loose_key) or set()
+    if len(refs) == 1 and loose_key in loose_qty:
+        return loose_qty[loose_key]
+    return None
 
 
 def _alloc_payload(
@@ -142,9 +181,12 @@ def _alloc_payload(
     lots: dict[tuple[str, int], list[dict[str, Any]]],
     exact: dict[tuple[str, str, int, str], str],
     loose: dict[tuple[str, str, int], set[str]],
+    exact_qty: dict[tuple[str, str, int, str], float],
+    loose_qty: dict[tuple[str, str, int], float],
 ) -> dict[str, Any]:
     lot_no = int(parse_number(row.get("lot_no"), 0))
     issued_batch = _issued_batch(row, exact, loose)
+    issued_qty = _issued_qty(row, exact_qty, loose_qty, loose)
     identity = lot_identity(lots.get((_key(row.get("inventory_code")), lot_no), []))
     return {
         "alloc_voucher_no": compact_text(row.get("alloc_voucher_no")),
@@ -155,8 +197,47 @@ def _alloc_payload(
         "other_refs": [],
         "alloc_qty": _qty(row.get("alloc_qty")),
         "remain_qty": _qty(row.get("remain_alloc_qty")),
-        "issued_qty": _qty(row.get("issued_alloc_qty")),
+        "issued_qty": _qty(issued_qty) if issued_qty is not None else _qty(row.get("issued_alloc_qty")),
     }
+
+
+def _required_qty(material_qty: Any, sub_part_qty: Any, sheet_qty: Any, *, per_sub_part: bool) -> float | int | None:
+    """BOM quantity extended to the process-sheet quantity.
+
+    A sub-part material quantity is per one sub-part. Multiply by how many of
+    that sub-part the parent uses, then by the process-sheet quantity.
+    """
+    qty = _qty(material_qty)
+    if qty is None:
+        return None
+    total = float(qty)
+    if per_sub_part and sub_part_qty not in (None, ""):
+        total *= float(sub_part_qty)
+    if sheet_qty not in (None, ""):
+        total *= float(sheet_qty)
+    return _qty(total)
+
+
+def _collapse_materials(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per material. Later stages often repeat the same requirement."""
+    best: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    passthrough: list[dict[str, Any]] = []
+    for row in rows:
+        code = _key(row.get("material_inventory_code"))
+        if not code:
+            passthrough.append(row)
+            continue
+        current = best.get(code)
+        if current is None:
+            best[code] = row
+            order.append(code)
+            continue
+        stage = parse_number(row.get("stage_no"), 0)
+        current_stage = parse_number(current.get("stage_no"), 0)
+        if stage < current_stage:
+            best[code] = row
+    return passthrough + [best[code] for code in order]
 
 
 def _allocations_for_job(
@@ -192,20 +273,29 @@ def _material_payload(
     descriptions: dict[str, str],
     exact: dict[tuple[str, str, int, str], str],
     loose: dict[tuple[str, str, int], set[str]],
+    exact_qty: dict[tuple[str, str, int, str], float],
+    loose_qty: dict[tuple[str, str, int], float],
     *,
     job_part: str,
     fg_key: str,
     material_on_other_lines: bool,
+    sub_part_qty: Any = None,
+    sheet_qty: Any = None,
+    per_sub_part: bool = False,
 ) -> dict[str, Any]:
     code = compact_text(row.get("material_inventory_code"))
     matched_rows, fell_back = _allocations_for_job(allocations, code, job_part, fg_key)
-    matched = [_alloc_payload(item, lots, exact, loose) for item in matched_rows]
+    matched = [
+        _alloc_payload(item, lots, exact, loose, exact_qty, loose_qty) for item in matched_rows
+    ]
     matched.sort(key=lambda item: (item["lot_no"], item["alloc_voucher_no"]))
+    qty = _qty(row.get("qty"))
     return {
         "inventory_code": code,
         "description": descriptions.get(_key(code), ""),
         "bom_code": compact_text(row.get("bom_code")),
-        "qty": _qty(row.get("qty")),
+        "qty": qty,
+        "required_qty": _required_qty(qty, sub_part_qty, sheet_qty, per_sub_part=per_sub_part),
         "shared": fell_back and material_on_other_lines,
         "allocations": matched,
     }
@@ -234,7 +324,8 @@ def build_trace(
     fg_key = _key(fg)
     alloc_rows = _dedupe_allocations(allocations)
     lot_groups = _lots_by_material(lots)
-    issued_exact, issued_loose = _issued_indexes(issued_lots)
+    issued_exact, issued_loose, issued_exact_qty, issued_loose_qty = _issued_indexes(issued_lots)
+    sheet_qty = _qty(header.get("pp_qty"))
 
     component_by_line: dict[str, dict[str, Any]] = {}
     component_by_part: dict[str, dict[str, Any]] = {}
@@ -270,7 +361,7 @@ def build_trace(
         sub_key = _key(row.get("material_inventory_code"))
         children = nested.get(sub_key) or []
         is_sub_part = bool(children) or sub_key in component_by_part
-        traced = children if children else [row]
+        traced = _collapse_materials(children if children else [row])
         planned.append((row, traced, is_sub_part and bool(children or component_by_part.get(sub_key))))
         for material in traced:
             code = _key(material.get("material_inventory_code"))
@@ -290,9 +381,14 @@ def build_trace(
                 descriptions,
                 issued_exact,
                 issued_loose,
+                issued_exact_qty,
+                issued_loose_qty,
                 job_part=sub_part,
                 fg_key=fg_key,
                 material_on_other_lines=use_counts.get(_key(material.get("material_inventory_code")), 0) > 1,
+                sub_part_qty=_qty(row.get("qty")) if is_sub_part else None,
+                sheet_qty=sheet_qty,
+                per_sub_part=is_sub_part,
             )
             for material in traced
         ]
@@ -323,6 +419,11 @@ def build_trace(
     lines.sort(key=lambda line: (parse_number(line.get("line_no"), 0), line.get("sub_part") or ""))
     special = any(compact_text(line.get("sub_part")) for line in lines) or len(lines) > 1
     bom_desc = compact_text(header.get("bom_desc")) or bom_desc_by_part.get(fg_key, "")
+    source_no = compact_text(header.get("source_voucher_no"))
+    source_line = _line_no(header.get("source_line_item_no"))
+    if source_line == "0":
+        source_line = ""
+    is_sales_order = source_no.upper().startswith("SO")
     return {
         "found": True,
         "query": compact_text(query) or compact_text(header.get("pp_voucher_no")),
@@ -338,8 +439,10 @@ def build_trace(
             "bom_desc": bom_desc,
             "qty": _qty(header.get("pp_qty")),
             "status": compact_text(header.get("status")),
-            "sales_order_no": compact_text(header.get("source_voucher_no")),
-            "sales_order_line": _line_no(header.get("source_line_item_no")),
+            "sales_order_no": source_no if is_sales_order else "",
+            "sales_order_line": source_line if is_sales_order else "",
+            "source_voucher_no": source_no,
+            "source_line": source_line,
             "customer_code": compact_text(header.get("customer_code")),
         },
         "lines": lines,
@@ -361,7 +464,7 @@ WHERE UPPER(BTRIM(pp_voucher_no)) = %s
 """
 
 _MATERIALS_SQL = """
-SELECT pp_partial_no, inventory_code, bom_code, line_item_no,
+SELECT pp_partial_no, inventory_code, bom_code, stage_no, line_item_no,
        material_inventory_code, qty, in_house_production, selected_bom_code
 FROM public.mfg_pp_partial_bom_stage_mat
 WHERE UPPER(BTRIM(pp_voucher_no)) = %s

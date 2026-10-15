@@ -38,13 +38,24 @@
 
   function batchCell(row) {
     const batch = String(row.batch_no || "").trim();
+    if (!batch) return '<span class="pst-empty">—</span>';
+    return '<span class="pst-code">' + escapeHtml(batch) + "</span>";
+  }
+
+  function jobCell(row) {
     const job = String(row.work_order_no || "").trim();
-    if (!batch && !job) return '<span class="pst-empty">—</span>';
-    let html = batch
-      ? '<span class="pst-code">' + escapeHtml(batch) + "</span>"
+    const voucher = String(row.alloc_voucher_no || "").trim();
+    if (!job && !voucher) return '<span class="pst-empty">—</span>';
+    let html = job
+      ? '<span class="pst-code">' + escapeHtml(job) + "</span>"
       : '<span class="pst-empty">—</span>';
-    if (job) html += '<span class="pst-desc">Job ' + escapeHtml(job) + "</span>";
+    if (voucher) html += '<span class="pst-desc">' + escapeHtml(voucher) + "</span>";
     return html;
+  }
+
+  function statusCell(row) {
+    const state = allocState(row);
+    return '<span class="pst-pill pst-pill--' + state.kind + '">' + escapeHtml(state.label) + "</span>";
   }
 
   function materialRows(materials) {
@@ -66,31 +77,26 @@
           "<tr>" +
             "<td>" + identity + "</td>" +
             '<td class="pst-num">' + qtyText(material.qty) + "</td>" +
-            '<td class="pst-num pst-empty">—</td>' +
+            '<td class="pst-num">' + qtyText(material.required_qty) + "</td>" +
+            '<td><span class="pst-empty">—</span></td>' +
+            '<td><span class="pst-empty">—</span></td>' +
+            '<td class="pst-num"><span class="pst-empty">—</span></td>' +
             '<td><span class="pst-pill pst-pill--none">No allocation</span></td>' +
-            '<td class="pst-num">—</td>' +
-            '<td class="pst-num">—</td>' +
-            '<td class="pst-num">—</td>' +
             "</tr>"
         );
         return;
       }
       allocs.forEach((alloc, index) => {
-        const state = allocState(alloc);
+        const issued = Number(alloc.issued_qty || 0);
         rows.push(
           "<tr>" +
             "<td>" + (index === 0 ? identity : "") + "</td>" +
             '<td class="pst-num">' + (index === 0 ? qtyText(material.qty) : "") + "</td>" +
-            '<td class="pst-num">' + escapeHtml(alloc.lot_no) + "</td>" +
-            "<td>" + batchCell(alloc) +
-              ' <span class="pst-pill pst-pill--' + state.kind + '">' + escapeHtml(state.label) + "</span>" +
-              (alloc.alloc_voucher_no
-                ? '<span class="pst-desc">' + escapeHtml(alloc.alloc_voucher_no) + "</span>"
-                : "") +
-            "</td>" +
-            '<td class="pst-num">' + qtyText(alloc.alloc_qty) + "</td>" +
-            '<td class="pst-num">' + qtyText(alloc.remain_qty) + "</td>" +
-            '<td class="pst-num">' + qtyText(alloc.issued_qty) + "</td>" +
+            '<td class="pst-num">' + (index === 0 ? qtyText(material.required_qty) : "") + "</td>" +
+            "<td>" + batchCell(alloc) + "</td>" +
+            "<td>" + jobCell(alloc) + "</td>" +
+            '<td class="pst-num">' + (issued > 0 ? qtyText(alloc.issued_qty) : '<span class="pst-empty">—</span>') + "</td>" +
+            "<td>" + statusCell(alloc) + "</td>" +
             "</tr>"
         );
       });
@@ -101,14 +107,23 @@
   function tableHtml(materials) {
     return (
       '<div class="pst-table-wrap"><table class="pst-table">' +
+      "<colgroup>" +
+      '<col class="pst-col-material">' +
+      '<col class="pst-col-qty">' +
+      '<col class="pst-col-qty">' +
+      '<col class="pst-col-batch">' +
+      '<col class="pst-col-job">' +
+      '<col class="pst-col-qty">' +
+      '<col class="pst-col-status">' +
+      "</colgroup>" +
       "<thead><tr>" +
-      "<th>Inventory code</th>" +
+      "<th>Material</th>" +
       '<th class="pst-num">BOM qty</th>' +
-      '<th class="pst-num">Lot</th>' +
+      '<th class="pst-num">Required</th>' +
       "<th>Batch / heat</th>" +
-      '<th class="pst-num">Allocated</th>' +
-      '<th class="pst-num">Remaining</th>' +
+      "<th>Job</th>" +
       '<th class="pst-num">Issued</th>' +
+      "<th>Status</th>" +
       "</tr></thead><tbody>" +
       materialRows(materials) +
       "</tbody></table></div>"
@@ -146,12 +161,16 @@
       });
     });
 
+    const salesOrder = [header.sales_order_no, header.sales_order_line].filter(Boolean).join(" / ");
+    const source = [header.source_voucher_no, header.source_line].filter(Boolean).join(" / ");
     const stats = [
       ["Process sheet", header.process_sheet_no],
       ["Part", header.part_no, header.part_desc],
       ["Pushed BOM", header.bom_code, header.bom_desc],
       ["Qty", header.qty == null ? "" : String(header.qty)],
-      ["Sales order", [header.sales_order_no, header.sales_order_line].filter(Boolean).join(" / ")],
+      salesOrder
+        ? ["Sales order", salesOrder]
+        : ["Source", source],
     ];
 
     let html = '<div class="pst-summary">';

@@ -103,8 +103,6 @@
       history: [],
       historyLoaded: false,
       historyFilter: '',
-      addHits: [],
-      addTimer: 0,
     },
     searchHits: [],
     searchTimer: 0,
@@ -1979,7 +1977,7 @@
     if (neu) neu.hidden = next !== 'new';
     if (hist) hist.hidden = next !== 'history';
     if (cmmHist) cmmHist.hidden = next !== 'cmm-history';
-    if (persistHash !== false) {
+    if (persistHash !== false && !document.body.classList.contains('cmm-embedded')) {
       let hash = '#flagged';
       if (next === 'new') hash = '#new';
       else if (next === 'history') hash = '#history';
@@ -4416,8 +4414,8 @@
     }
     const shown = filteredCmmQueue().length;
     subtitle.textContent = state.cmm.queue.length
-      ? `${shown} active CMM job${shown === 1 ? '' : 's'}.`
-      : 'No active CMM jobs. Type a process sheet and press CMM.';
+      ? `${shown} job${shown === 1 ? '' : 's'} in the programme queue.`
+      : 'Nothing in the programme queue.';
   }
 
   function renderCmmMetrics(metrics) {
@@ -4445,10 +4443,11 @@
     const done = Number(job.programme_done || 0);
     const total = Number(job.programme_total || job.programme_count || 0);
     const part = job.part_description || job.part_no || '\u2014';
+    const place = job.queue_order ? String(job.queue_order) : '';
     return `
       <button type="button" class="fa-cmm-job${selected ? ' is-selected' : ''}" role="option"
               aria-selected="${selected ? 'true' : 'false'}" data-cmm-open="${escapeHtml(job.cmm_job_id)}">
-        <span class="fa-cmm-job-id">Job ${escapeHtml(job.cmm_job_id)}</span>
+        <span class="fa-cmm-job-id">${place ? escapeHtml(place) : 'Job ' + escapeHtml(job.cmm_job_id)}</span>
         <span class="fa-cmm-job-ps">${escapeHtml(job.process_sheet_no || '\u2014')}</span>
         <span class="fa-cmm-job-part">${escapeHtml(part)}</span>
         <span class="fa-cmm-job-meta">${escapeHtml(cmmStatusLabel(job.status))} \u00b7 ${done}/${total} programmes</span>
@@ -4462,6 +4461,11 @@
     const empty = $('fa-cmm-queue-empty');
     const count = $('fa-cmm-queue-count');
     if (count) count.textContent = String(state.cmm.queue.length);
+    const embeddedCount = $('fq-count-cmm');
+    if (embeddedCount) {
+      embeddedCount.textContent = String(state.cmm.queue.length);
+      embeddedCount.hidden = !state.cmm.queue.length;
+    }
     if (list) {
       const scroll = list.scrollTop;
       list.innerHTML = jobs.map(cmmQueueItemHtml).join('');
@@ -4472,7 +4476,7 @@
       if (!state.cmm.queue.length) {
         empty.hidden = false;
         empty.textContent = state.cmm.queueLoaded
-          ? 'No active CMM jobs. Type a process sheet and press CMM.'
+          ? 'Nothing in the programme queue.'
           : 'Loading the CMM queue...';
       } else if (!jobs.length) {
         empty.hidden = false;
@@ -4609,6 +4613,11 @@
       } else {
         const count = $('fa-cmm-queue-count');
         if (count) count.textContent = String(state.cmm.queue.length);
+        const embeddedCount = $('fq-count-cmm');
+        if (embeddedCount) {
+          embeddedCount.textContent = String(state.cmm.queue.length);
+          embeddedCount.hidden = !state.cmm.queue.length;
+        }
       }
     } catch (err) {
       if (token !== state.cmm.queueToken) return;
@@ -4648,130 +4657,6 @@
     renderCmmQueue();
     renderCmmWorkspace();
     loadCmmJob(state.cmm.selectedId);
-  }
-
-  function hideCmmAdd() {
-    const list = $('fa-cmm-add-results');
-    if (!list) return;
-    list.hidden = true;
-    list.innerHTML = '';
-    $('fa-cmm-add')?.setAttribute('aria-expanded', 'false');
-  }
-
-  function renderCmmAddHits(hits, status) {
-    const list = $('fa-cmm-add-results');
-    if (!list) return;
-    list.hidden = false;
-    $('fa-cmm-add')?.setAttribute('aria-expanded', 'true');
-    if (status) {
-      list.innerHTML = `<div class="fa-typeahead-status">${escapeHtml(status)}</div>`;
-      return;
-    }
-    if (!hits.length) {
-      const query = String($('fa-cmm-add')?.value || '').trim();
-      state.cmm.addHits = query ? [{
-        process_sheet_no: query,
-        part_no: '',
-        part_description: '',
-        flag_anyway: true,
-      }] : [];
-      if (!query) {
-        list.innerHTML = '<div class="fa-typeahead-status">No matching process sheet.</div>';
-        return;
-      }
-      hits = state.cmm.addHits;
-    }
-    list.innerHTML = hits.map((hit, index) => {
-      const desc = [hit.part_no, hit.part_description].filter(Boolean).join(' | ');
-      return `
-        <button type="button" class="fa-typeahead-item${index === 0 ? ' is-active' : ''}"
-                role="option" data-index="${index}">
-          <span class="fa-typeahead-main">
-            <span class="fa-typeahead-code">${escapeHtml(hit.process_sheet_no || hit.pp_voucher_no)}</span>
-            <span class="fa-typeahead-desc">${escapeHtml(desc || (hit.flag_anyway ? 'Not listed in S/O management' : 'No description'))}</span>
-          </span>
-          <span class="fa-typeahead-action">CMM</span>
-        </button>
-      `;
-    }).join('');
-  }
-
-  async function runCmmAddSearch(query) {
-    const needle = String(query || '').trim();
-    if (needle.length < 2) {
-      hideCmmAdd();
-      return;
-    }
-    renderCmmAddHits([], 'Searching...');
-    try {
-      const data = await api(`${API.search}?q=${encodeURIComponent(needle)}`);
-      if (String($('fa-cmm-add')?.value || '').trim() !== needle) return;
-      state.cmm.addHits = data.rows || [];
-      renderCmmAddHits(state.cmm.addHits);
-    } catch (err) {
-      renderCmmAddHits([], err.message || 'Search failed');
-    }
-  }
-
-  async function addCmmSheet(hit) {
-    const ps = String(hit?.process_sheet_no || hit?.pp_voucher_no || '').trim();
-    if (!ps) {
-      setCmmStatus('Type a process sheet number first.', 'error');
-      return;
-    }
-    const btn = $('fa-cmm-add-btn');
-    if (btn) btn.disabled = true;
-    try {
-      const data = await api(API.cmmJobs, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          process_sheet_no: ps,
-          part_no: hit.part_no || '',
-          part_description: hit.part_description || '',
-        }),
-      });
-      const input = $('fa-cmm-add');
-      if (input) input.value = '';
-      hideCmmAdd();
-      await focusCmmJob(data.job);
-      setCmmStatus(`Added ${ps} to the CMM queue.`, 'saved');
-    } catch (err) {
-      const existingId = err.payload && err.payload.cmm_job_id;
-      if (err.status === 409 && existingId) {
-        const input = $('fa-cmm-add');
-        if (input) input.value = '';
-        hideCmmAdd();
-        await focusCmmJob({ cmm_job_id: existingId, process_sheet_no: ps });
-        setCmmStatus(err.message || 'This process sheet is already in the CMM queue.', 'error');
-        return;
-      }
-      setCmmStatus(err.message || 'Could not add this process sheet.', 'error');
-    } finally {
-      if ($('fa-cmm-add-btn')) $('fa-cmm-add-btn').disabled = false;
-    }
-  }
-
-  function addTypedCmm() {
-    const processSheetNo = String($('fa-cmm-add')?.value || '').trim();
-    const exact = state.cmm.addHits.find((hit) => {
-      const ps = String(hit?.process_sheet_no || hit?.pp_voucher_no || '').trim();
-      return ps.toUpperCase() === processSheetNo.toUpperCase();
-    });
-    addCmmSheet(exact || { process_sheet_no: processSheetNo });
-  }
-
-  async function focusCmmJob(job) {
-    state.cmm.selectedId = Number(job.cmm_job_id);
-    state.cmm.job = job && job.subtasks ? job : null;
-    if (job && job.status !== 'COMPLETED') syncCmmQueueJob(job);
-    if (state.tab !== 'cmm') setTab('cmm');
-    else {
-      renderCmmQueue();
-      renderCmmWorkspace();
-    }
-    await loadCmmJob(state.cmm.selectedId);
-    await loadCmmQueue();
   }
 
   async function generateCmmProgrammes() {
@@ -4988,25 +4873,6 @@
   }
 
   function bindCmm() {
-    $('fa-cmm-add')?.addEventListener('input', (event) => {
-      clearTimeout(state.cmm.addTimer);
-      const value = event.target.value || '';
-      state.cmm.addTimer = setTimeout(() => runCmmAddSearch(value), 220);
-    });
-    $('fa-cmm-add')?.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') hideCmmAdd();
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        addTypedCmm();
-      }
-    });
-    $('fa-cmm-add-results')?.addEventListener('click', (event) => {
-      const item = event.target.closest('.fa-typeahead-item');
-      if (!item) return;
-      const hit = state.cmm.addHits[Number(item.getAttribute('data-index'))];
-      addCmmSheet(hit);
-    });
-    $('fa-cmm-add-btn')?.addEventListener('click', () => addTypedCmm());
     $('fa-panel-cmm')?.addEventListener('click', (event) => {
       const open = event.target.closest('[data-cmm-open]');
       if (open) {
@@ -5472,7 +5338,6 @@
       if (e.target.closest('.fa-typeahead')) return;
       hideSearch();
       hideExceptionSearch();
-      hideCmmAdd();
     });
 
     $('fa-table-body')?.addEventListener('change', async (e) => {
@@ -5719,13 +5584,14 @@
 
   const bootHash = String(window.location.hash || '').toLowerCase();
   const cmmStandalone = document.body.classList.contains('cmm-view');
-  if (!cmmStandalone && (bootHash === '#cmm' || bootHash === '#cmm-history')) {
+  const cmmEmbedded = document.body.classList.contains('cmm-embedded');
+  if (!cmmStandalone && !cmmEmbedded && (bootHash === '#cmm' || bootHash === '#cmm-history')) {
     window.location.replace(bootHash === '#cmm-history' ? '/cmm-queue#history' : '/cmm-queue');
     return;
   }
   bind();
   syncExportButton();
-  if (cmmStandalone) {
+  if (cmmStandalone || cmmEmbedded) {
     if (bootHash === '#history' || bootHash === '#cmm-history') {
       setTab('cmm-history', { persistHash: false });
     } else {

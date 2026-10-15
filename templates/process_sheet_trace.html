@@ -3,15 +3,15 @@
 {% block body_class %}pst-view{% endblock %}
 {% block main_class %}app-main--process-sheet-trace{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ps-trace-20261013">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/process_sheet_trace.css') }}?v=ps-trace-20261013">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ps-trace-20261014">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/process_sheet_trace.css') }}?v=ps-trace-20261014">
 {% endblock %}
 {% block content %}
 <div class="mi-page pst-page" data-initial-ps="{{ initial_ps }}">
   <div class="mi-header">
     <div>
       <h1 class="mi-title">Process sheet trace</h1>
-      <p class="mi-subtitle">Look up a process sheet and follow each line’s pushed BOM to the batch issued on that job. Special BOMs list each sub-part on its own line.</p>
+      <p class="mi-subtitle">Look up a process sheet and follow each line’s pushed BOM to the batch the store issued. Required is the BOM extended by the job quantity. Issued is the quantity on the material issue.</p>
     </div>
   </div>
 
@@ -26,5 +26,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheet_trace.js') }}?v=ps-trace-20261013"></script>
+<script src="{{ url_for('static', filename='js/process_sheet_trace.js') }}?v=ps-trace-20261014"></script>
 {% endblock %}

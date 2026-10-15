@@ -336,6 +336,7 @@ _SHIFT_MGMT_PUBLIC_PATHS = frozenset(
 )
 _PPS_PUBLIC_PATHS = frozenset({PPS_PATH.lower(), "/pps"})
 _ACCOUNTS_PUBLIC_PATHS = frozenset({ACCOUNTS_PATH.lower(), "/accounts"})
+_CMM_QUEUE_PUBLIC_PATHS = frozenset({"/cmm-queue"})
 
 
 def _is_gate_public_path(path: str) -> bool:
@@ -369,6 +370,9 @@ def _is_gate_public_path(path: str) -> bool:
     if normalized in _PPS_PUBLIC_PATHS:
         return True
     if normalized in _ACCOUNTS_PUBLIC_PATHS:
+        return True
+    # CMM technicians open this from the shop floor, same as QAQC and the driver view.
+    if normalized in _CMM_QUEUE_PUBLIC_PATHS:
         return True
     # Admin Hub uses ADMIN_PASSCODE when set; otherwise stays under the planner gate.
     if _admin_gate_enabled() and normalized in _ADMIN_PUBLIC_PATHS:
