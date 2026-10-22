@@ -61,17 +61,25 @@ try {
     Add-Content -Path $DayLog -Value $header -Encoding utf8
     Add-Content -Path $RunLog -Value $header -Encoding utf8
 
+    # Redirect to a file instead of piping through Tee-Object. With
+    # ErrorActionPreference=Stop, a python warning on stderr becomes a
+    # terminating NativeCommandError and kills the sync before the failure
+    # is written. A pipe also replaces $LASTEXITCODE with Tee-Object's code.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & $VenvPython -u (Join-Path $RepoRoot "scripts\run_pp_staging_sync.py") `
         --log-file $DayLog `
-        --json-log $JsonLog 2>&1 | Tee-Object -FilePath $RunLog -Append
+        --json-log $JsonLog >> $RunLog 2>&1
+    $pyExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
 
-    if ($LASTEXITCODE -ne 0) {
-        $fail = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERP sync FAILED (exit $LASTEXITCODE)"
+    if ($pyExit -ne 0) {
+        $fail = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERP sync FAILED (exit $pyExit)"
         Write-Host $fail
         Add-Content -Path $DayLog -Value $fail -Encoding utf8
         Add-Content -Path $RunLog -Value $fail -Encoding utf8
         Update-LatestLog -SourcePath $RunLog
-        exit $LASTEXITCODE
+        exit $pyExit
     }
 
     $ok = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] ERP sync OK - json: $JsonLog"

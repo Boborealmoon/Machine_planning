@@ -3,22 +3,26 @@
 {% block body_class %}pst-view{% endblock %}
 {% block main_class %}app-main--process-sheet-trace{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ps-trace-20261014">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/process_sheet_trace.css') }}?v=ps-trace-20261014">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=ps-trace-20261021b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/process_sheet_trace.css') }}?v=ps-trace-20261021b">
 {% endblock %}
 {% block content %}
 <div class="mi-page pst-page" data-initial-ps="{{ initial_ps }}">
   <div class="mi-header">
     <div>
       <h1 class="mi-title">Process sheet trace</h1>
-      <p class="mi-subtitle">Look up a process sheet and follow each line’s pushed BOM to the batch the store issued. Required is the BOM extended by the job quantity. Issued is the quantity on the material issue.</p>
+      <p class="mi-subtitle">Look up a process sheet and follow each line’s pushed BOM to the batch the store issued. Required is the BOM extended by the job quantity. Issued is the quantity on the material issue. Print sheet builds the Coway process sheet, including lot level, lot reference, heat, source PO, source voucher, and lot description.</p>
     </div>
   </div>
 
   <form class="pst-search card" id="pst-form">
     <label class="pst-search-label" for="pst-input">Process sheet no.</label>
-    <input id="pst-input" class="pst-input" type="search" name="ps" placeholder="NPS26-0321 or NPS26-0321-2" autocomplete="off" value="{{ initial_ps }}" required>
+    <div class="pst-input-wrap">
+      <input id="pst-input" class="pst-input" type="search" name="ps" placeholder="NPS26-0321 or NPS26-0321-2" autocomplete="off" spellcheck="false" value="{{ initial_ps }}" required role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="pst-suggest">
+      <div id="pst-suggest" class="pst-suggest" hidden role="listbox"></div>
+    </div>
     <button type="submit" class="btn btn-sm pst-submit" id="pst-submit">Trace</button>
+    <button type="button" class="btn btn-sm pst-print" id="pst-print">Print sheet</button>
   </form>
 
   <p class="pst-status" id="pst-status" role="status"></p>
@@ -26,5 +30,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/process_sheet_trace.js') }}?v=ps-trace-20261014"></script>
+<script src="{{ url_for('static', filename='js/process_sheet_trace.js') }}?v=ps-trace-20261021b"></script>
 {% endblock %}

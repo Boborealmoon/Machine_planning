@@ -63,7 +63,7 @@ _PP_PARTIAL_DETAIL_COLS = [
 ]
 
 _SO_ORDER_HEADER_SQL = """
-SELECT
+SELECT DISTINCT ON (v.sales_order_no)
     v.sales_order_no,
     v.status,
     v.voucher_status,
@@ -92,7 +92,9 @@ SELECT
 FROM public.so_order_view v
 LEFT JOIN public.so_order_ost_hdr h ON h.sales_order_no = v.sales_order_no
 WHERE v.sales_order_no LIKE 'SO/%%'
-ORDER BY v.sales_order_no
+ORDER BY v.sales_order_no,
+         h.posted_datetime DESC NULLS LAST,
+         v.last_updated_datetime DESC NULLS LAST
 """
 _SO_ORDER_HEADER_COLS = [
     "sales_order_no", "status", "voucher_status", "order_date", "customer_code",
@@ -104,7 +106,7 @@ _SO_ORDER_HEADER_COLS = [
 ]
 
 _SO_ORDER_LINE_SQL = """
-SELECT
+SELECT DISTINCT ON (det.sales_order_no, regexp_replace(det.line_item_no::TEXT, '\\.0+$', ''))
     det.sales_order_no,
     regexp_replace(det.line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
     det.inventory_code,
@@ -133,7 +135,9 @@ LEFT JOIN (
     GROUP BY sales_order_no
 ) rev ON rev.sales_order_no = det.sales_order_no
 WHERE det.sales_order_no LIKE 'SO/%%'
-ORDER BY det.sales_order_no, line_item_no
+ORDER BY det.sales_order_no,
+         regexp_replace(det.line_item_no::TEXT, '\\.0+$', ''),
+         ost.posted_datetime DESC NULLS LAST
 """
 _SO_ORDER_LINE_COLS = [
     "sales_order_no", "line_item_no", "inventory_code", "line_item_description", "qty",
@@ -166,7 +170,12 @@ _SO_ORDER_POSTED_COLS = [
 ]
 
 _LG_OUT_SHIPMENT_SQL = """
-SELECT
+SELECT DISTINCT ON (
+    d.shipment_voucher_no,
+    COALESCE(d.invoice_line_item_no::TEXT, ''),
+    d.source_voucher_no,
+    regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', '')
+)
     d.source_voucher_no AS sales_order_no,
     regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', '') AS line_item_no,
     d.shipment_voucher_no,
@@ -207,7 +216,12 @@ LEFT JOIN (
 ) rev ON rev.sales_order_no = d.source_voucher_no
 WHERE d.source_voucher_no LIKE 'SO/%%'
   AND NOT (d.status = 'History' AND COALESCE(d.qty_issued, 0) = 0)
-ORDER BY shipment_datetime DESC NULLS LAST
+ORDER BY d.shipment_voucher_no,
+         COALESCE(d.invoice_line_item_no::TEXT, ''),
+         d.source_voucher_no,
+         regexp_replace(d.source_voucher_line_item_no::TEXT, '\\.0+$', ''),
+         hdr.posted_datetime DESC NULLS LAST,
+         so_det.required_shipment_date DESC NULLS LAST
 """
 _LG_OUT_SHIPMENT_COLS = [
     "sales_order_no", "line_item_no", "shipment_voucher_no", "invoice_line_item_no",

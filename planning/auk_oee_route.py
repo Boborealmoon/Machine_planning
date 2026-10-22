@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import requests
 from flask import Blueprint, jsonify, render_template, request
 
@@ -22,9 +24,11 @@ from .auk_oee_service import (
     parse_range_from_request,
     validate_pareto_dashboard,
 )
-from .floor_plan_service import floor_layout_payload
+from .floor_plan_service import FLOOR_LOW_UTIL_PCT, fetch_floor_current_jobs, floor_layout_payload
+from .helpers import planner_db
 
 auk_oee_bp = Blueprint("auk_oee", __name__)
+logger = logging.getLogger(__name__)
 
 
 @auk_oee_bp.get("/auk-oee")
@@ -107,6 +111,25 @@ def api_auk_oee_calendar():
         return jsonify({"error": str(exc), "configured": True}), 502
     except Exception as exc:
         return jsonify({"error": str(exc), "configured": True}), 500
+
+
+@auk_oee_bp.get("/api/auk-oee/floor-jobs")
+def api_auk_oee_floor_jobs():
+    """First queued job on each floor machine, plus material, tooling, and program."""
+    try:
+        with planner_db() as con:
+            payload = fetch_floor_current_jobs(con)
+        return jsonify(payload)
+    except Exception:
+        logger.exception("floor current jobs failed")
+        return jsonify(
+            {
+                "ok": False,
+                "jobs": [],
+                "by_cnc": {},
+                "low_utilisation_pct": FLOOR_LOW_UTIL_PCT,
+            }
+        )
 
 
 @auk_oee_bp.get("/api/auk-oee/history")

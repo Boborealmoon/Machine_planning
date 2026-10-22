@@ -91,6 +91,9 @@ class MonthlyDeliveryPlanGateTests(unittest.TestCase):
                 "planning.monthly_delivery_plan_route.load_commitments",
                 return_value=[],
             ), patch(
+                "planning.monthly_delivery_plan_route.load_okay_row_ids",
+                return_value=set(),
+            ), patch(
                 "planning.monthly_delivery_plan_route.build_commitment_view",
                 return_value={"lines": []},
             ):

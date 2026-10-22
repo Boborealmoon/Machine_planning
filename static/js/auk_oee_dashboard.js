@@ -6,8 +6,15 @@
   const alertEl = document.getElementById('auk-oee-alert');
   const fromEl = document.getElementById('auk-oee-from');
   const toEl = document.getElementById('auk-oee-to');
+  const fromFieldEl = document.getElementById('auk-oee-from-field');
+  const toFieldEl = document.getElementById('auk-oee-to-field');
+  const shiftPickEl = document.getElementById('auk-oee-shift-pick');
+  const shiftDateEl = document.getElementById('auk-oee-shift-date');
+  const shiftPmEl = document.getElementById('auk-oee-shift-pm');
+  const shiftAmLabelEl = document.getElementById('auk-oee-shift-am-label');
+  const shiftPmLabelEl = document.getElementById('auk-oee-shift-pm-label');
   const refreshBtn = document.getElementById('auk-oee-refresh');
-  const presetButtons = Array.from(document.querySelectorAll('.auk-oee-preset'));
+  const presetButtons = Array.from(document.querySelectorAll('.auk-oee-preset[data-preset]'));
 
   const LIVE_REFRESH_MS = 60 * 1000;
   let activePreset = 'day';
@@ -33,6 +40,7 @@
   const subtitleEl = document.getElementById('auk-oee-subtitle');
   const viewButtons = Array.from(document.querySelectorAll('[data-view]'));
   let viewMode = 'cards';
+  let dashboardLoadSeq = 0;
 
   const PRESET_LABELS = {
     day: '1 day',
@@ -572,11 +580,92 @@
     return d;
   }
 
+  function dateInputValue(date) {
+    return [
+      date.getFullYear(),
+      pad2(date.getMonth() + 1),
+      pad2(date.getDate()),
+    ].join('-');
+  }
+
+  function addDaysToDateInput(value, days) {
+    const parts = String(value || '').split('-').map(Number);
+    if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return '';
+    const dt = new Date(parts[0], parts[1] - 1, parts[2]);
+    dt.setDate(dt.getDate() + days);
+    return dateInputValue(dt);
+  }
+
+  function defaultCustomShift(now = new Date()) {
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    const night = minutes >= (19 * 60 + 30) || minutes < (9 * 60);
+    const date = new Date(now);
+    if (night && minutes < (9 * 60)) date.setDate(date.getDate() - 1);
+    return { pm: night, date: dateInputValue(date) };
+  }
+
+  function updateShiftToggleLabels() {
+    const pm = Boolean(shiftPmEl && shiftPmEl.checked);
+    if (shiftAmLabelEl) shiftAmLabelEl.classList.toggle('is-active', !pm);
+    if (shiftPmLabelEl) shiftPmLabelEl.classList.toggle('is-active', pm);
+  }
+
+  function updateCustomShiftVisibility() {
+    const custom = activePreset === 'custom';
+    if (shiftPickEl) shiftPickEl.hidden = !custom;
+    if (fromFieldEl) fromFieldEl.hidden = custom;
+    if (toFieldEl) toFieldEl.hidden = custom;
+  }
+
+  function ensureCustomShiftDefaults() {
+    if (!shiftDateEl || shiftDateEl.value) {
+      updateShiftToggleLabels();
+      return;
+    }
+    const defaults = defaultCustomShift();
+    shiftDateEl.value = defaults.date;
+    if (shiftPmEl) shiftPmEl.checked = defaults.pm;
+    updateShiftToggleLabels();
+  }
+
+  function customShiftBounds(now = floorToMinute(new Date())) {
+    const date = shiftDateEl ? shiftDateEl.value : '';
+    if (!date) return { error: 'Pick a shift date.' };
+    const pm = Boolean(shiftPmEl && shiftPmEl.checked);
+    const from = pm ? `${date}T19:30` : `${date}T08:30`;
+    const toDate = pm ? addDaysToDateInput(date, 1) : date;
+    const to = pm ? `${toDate}T09:00` : `${date}T20:00`;
+    const fromDt = new Date(from);
+    const toDt = new Date(to);
+    if (Number.isNaN(fromDt.getTime()) || Number.isNaN(toDt.getTime())) {
+      return { error: 'Pick a shift date.' };
+    }
+    if (fromDt > now) {
+      return {
+        error: pm
+          ? 'Night shift starts at 7:30pm on the selected date.'
+          : 'Morning shift starts at 8:30am on the selected date.',
+      };
+    }
+    const toValue = toDt > now ? toLocalInputValue(now.toISOString()) : to;
+    if (new Date(toValue) <= fromDt) {
+      return {
+        error: pm
+          ? 'Night shift has only just started. Try again in a minute.'
+          : 'Morning shift has only just started. Try again in a minute.',
+      };
+    }
+    return { from, to: toValue, pm };
+  }
+
   function setActivePreset(preset) {
     activePreset = preset || 'shift';
     presetButtons.forEach((btn) => {
       btn.classList.toggle('is-active', btn.dataset.preset === activePreset);
     });
+    if (activePreset === 'custom') ensureCustomShiftDefaults();
+    updateCustomShiftVisibility();
+    updateShiftToggleLabels();
   }
 
   function clampToIso(iso) {
@@ -590,10 +679,17 @@
     if (activePreset !== 'custom') {
       params.set('preset', activePreset);
     } else {
-      const fromIso = localInputToIso(fromEl.value);
-      const toIso = clampToIso(localInputToIso(toEl.value));
-      if (fromIso) params.set('from', fromIso);
-      if (toIso) params.set('to', toIso);
+      const bounds = customShiftBounds();
+      if (bounds.from && bounds.to) {
+        const fromIso = localInputToIso(bounds.from);
+        const toIso = clampToIso(localInputToIso(bounds.to));
+        if (fromIso) params.set('from', fromIso);
+        if (toIso) params.set('to', toIso);
+        syncingRange = true;
+        fromEl.value = bounds.from;
+        toEl.value = bounds.to;
+        syncingRange = false;
+      }
     }
     params.set('res_x', '15');
     params.set('res_period', 'minutes');
@@ -838,7 +934,9 @@
   const FLOOR_TILE_INSET = 0.025;
   const FLOOR_MAX_HEIGHT = 760;
   const CARDS_SUBTITLE = 'Live factory dashboard · refreshes every minute · drag the board to match the floor';
-  const FLOOR_SUBTITLE = 'Shop layout with live OEE on each machine. Click a tile for the timeline.';
+  const FLOOR_SUBTITLE = 'Shop layout. Each machine shows utilisation, OEE, and the first job in its queue.';
+  let floorJobs = { available: false, byCnc: {}, lowPct: 40 };
+  let floorJobsSeq = 0;
   const CALENDAR_SUBTITLE = 'Daily OEE by machine. Click a name for that range’s timeline.';
 
   function readSavedView() {
@@ -897,9 +995,90 @@
 
   function floorTileSizeClass(machine) {
     const classes = [];
-    if (Number(machine.w) < Number(machine.h) * 0.85) classes.push('auk-floor-tile--narrow');
-    if (Math.min(Number(machine.w), Number(machine.h)) <= 0.85) classes.push('auk-floor-tile--small');
+    const w = Number(machine.w);
+    const h = Number(machine.h);
+    if (w < h * 0.85) classes.push('auk-floor-tile--narrow');
+    if (Math.min(w, h) <= 0.85) classes.push('auk-floor-tile--small');
+    if (w * h >= 1.8) classes.push('auk-floor-tile--roomy');
+    if (h >= 1.4) classes.push('auk-floor-tile--tall');
+    if (w <= 0.7) classes.push('auk-floor-tile--thin');
     return classes.join(' ');
+  }
+
+  function lowCutoff() {
+    const limit = Number(floorJobs.lowPct);
+    return Number.isFinite(limit) ? limit : 40;
+  }
+
+  function lowCallouts(card) {
+    const cutoff = lowCutoff();
+    const reasons = [];
+    const loading = Number(card && card.loading_pct);
+    const oee = Number(card && card.oee_pct);
+    if (Number.isFinite(loading) && loading < cutoff) reasons.push(`Utilisation under ${cutoff}%`);
+    if (Number.isFinite(oee) && oee < cutoff) reasons.push(`OEE under ${cutoff}%`);
+    return reasons;
+  }
+
+  function floorJobFor(cncNumber) {
+    if (!floorJobs.available) return undefined;
+    const key = String(cncNumber);
+    return floorJobs.byCnc[key] || floorJobs.byCnc[cncNumber] || null;
+  }
+
+  function renderFloorMeter(label, value, compact) {
+    const n = Number(value);
+    const known = Number.isFinite(n);
+    const pct = known ? Math.max(0, Math.min(100, n)) : 0;
+    const tone = known ? metricTone(n) : 'muted';
+    const text = compact ? fmtPctShort(value) : fmtFloorPct(value);
+    return `
+      <span class="auk-floor-meter">
+        <span class="auk-floor-meter__k">${label}</span>
+        <strong class="auk-floor-meter__v is-${tone}">${text}</strong>
+        <span class="auk-floor-meter__track" aria-hidden="true">
+          <span class="auk-floor-meter__fill is-${tone}" style="width:${pct}%"></span>
+        </span>
+      </span>
+    `;
+  }
+
+  function renderFloorFlag(ready, short, word, title) {
+    const state = ready ? 'is-yes' : 'is-no';
+    const mark = ready ? '✓' : '×';
+    return `
+      <span class="auk-floor-flag ${state}" title="${escapeHtml(title)}">
+        <span class="auk-floor-flag__mark" aria-hidden="true">${mark}</span>
+        <span class="auk-floor-flag__short">${short}</span>
+        <span class="auk-floor-flag__long">${word}</span>
+      </span>
+    `;
+  }
+
+  function renderFloorJob(job) {
+    if (job === undefined) return '';
+    if (!job) {
+      return '<span class="auk-floor-tile__job auk-floor-tile__job--empty">No job</span>';
+    }
+    const sub = job.sub ? `<em>${escapeHtml(job.sub)}</em>` : '';
+    const detail = [
+      job.part_no ? `Part ${job.part_no}` : '',
+      job.process_sheet ? `PS ${job.process_sheet}` : '',
+      job.op_no ? `Op ${job.op_no}` : '',
+      job.operation_name || '',
+    ].filter(Boolean).join(' · ');
+    return `<span class="auk-floor-tile__job" title="${escapeHtml(detail)}"><strong>${escapeHtml(job.label || 'Job')}</strong>${sub}</span>`;
+  }
+
+  function renderFloorFlags(job) {
+    if (!job) return '';
+    return `
+      <span class="auk-floor-tile__flags">
+        ${renderFloorFlag(job.material_in, 'M', 'Mat', job.material_in ? 'Material in' : 'No material')}
+        ${renderFloorFlag(job.tooling_ready, 'T', 'Tool', job.tooling_ready ? 'Tooling ready' : 'No tooling')}
+        ${renderFloorFlag(job.program_ready, 'P', 'Prog', job.program_ready ? 'Program ready' : 'No program')}
+      </span>
+    `;
   }
 
   function sizeFloorCanvas() {
@@ -938,12 +1117,31 @@
         <article class="auk-floor-group">
           <span class="auk-floor-group__label">${escapeHtml(group.label)} <em>${escapeHtml(subtitle)}</em></span>
           <strong class="auk-floor-group__value">${fmtFloorPct(avg)}</strong>
+          <span class="auk-floor-group__metric">avg OEE</span>
           <div class="auk-floor-group__track" aria-hidden="true">
             <span class="auk-floor-group__fill auk-floor-group__fill--${tone}" style="width:${width}%"></span>
           </div>
         </article>
       `;
     }).join('');
+  }
+
+  function renderFloorReadinessKey() {
+    const limit = Number(floorJobs.lowPct) || 40;
+    return `
+      <span class="auk-floor-legend__item">
+        <span class="auk-floor-alert-sample" aria-hidden="true">!</span>
+        Under ${limit}%
+      </span>
+      <span class="auk-floor-legend__item">
+        <span class="auk-floor-flag auk-floor-flag--legend is-yes" title="Ready"><span class="auk-floor-flag__mark">✓</span><span class="auk-floor-flag__long">Mat</span></span>
+        in / ready
+      </span>
+      <span class="auk-floor-legend__item">
+        <span class="auk-floor-flag auk-floor-flag--legend is-no" title="Missing"><span class="auk-floor-flag__mark">×</span><span class="auk-floor-flag__long">Mat</span></span>
+        missing
+      </span>
+    `;
   }
 
   function renderFloorLegend(layoutSource) {
@@ -960,38 +1158,61 @@
   function renderFloorTiles(layoutSource, byCnc) {
     const colors = layoutSource.layout_colors || {};
     const bounds = floorBounds(layoutSource);
-    const lowIds = new Set(liveNotices().filter((notice) => notice.triggered).map((notice) => Number(notice.equipment_id)));
+    const limit = lowCutoff();
     return (layoutSource.machines || []).map((machine) => {
       const card = byCnc.get(Number(machine.cnc_number)) || null;
       const oee = card ? card.oee_pct : null;
+      const loading = card ? card.loading_pct : null;
       const fill = colors[machine.color] || '#ccc';
       const equipmentId = card && card.equipment_id != null ? Number(card.equipment_id) : null;
       const tag = equipmentId != null ? 'button' : 'div';
       const selected = equipmentId != null && equipmentId === Number(detailEquipmentId) ? ' is-selected' : '';
-      const low = equipmentId != null && lowIds.has(equipmentId) ? ' is-low' : '';
+      const reasons = lowCallouts(card);
+      const low = reasons.length ? ' is-low-util' : '';
       const missing = card ? '' : ' is-missing';
+      const sizeClass = floorTileSizeClass(machine);
+      const compact = sizeClass.indexOf('auk-floor-tile--tall') < 0;
+      const job = floorJobFor(machine.cnc_number);
       const subtitle = machine.subtitle ? `<span class="auk-floor-tile__sub">${escapeHtml(machine.subtitle)}</span>` : '';
+      const jobBits = [];
+      if (job) {
+        jobBits.push(job.label || 'Job');
+        jobBits.push(job.material_in ? 'material in' : 'no material');
+        jobBits.push(job.tooling_ready ? 'tooling ready' : 'no tooling');
+        jobBits.push(job.program_ready ? 'program ready' : 'no program');
+      } else if (job === null) {
+        jobBits.push('no job in queue');
+      }
       const title = [
         machine.machine_no,
         card && card.machine_type ? card.machine_type : '',
+        `utilisation ${fmtFloorPct(loading)}`,
         `OEE ${fmtFloorPct(oee)}`,
-        card ? `loading ${fmtFloorPct(card.loading_pct)}` : 'no live OEE',
+        reasons.join(' · '),
+        ...jobBits,
       ].filter(Boolean).join(' · ');
       const idAttr = equipmentId != null ? ` data-equipment-id="${equipmentId}"` : '';
-      const bar = Number.isFinite(Number(oee))
-        ? `<span class="auk-floor-tile__bar" style="width:${Math.max(0, Math.min(100, Number(oee)))}%"></span>`
+      const alert = low
+        ? `<span class="auk-floor-tile__alert" title="${escapeHtml(reasons.join(' · '))}">!</span>`
         : '';
+      const foot = job === undefined
+        ? ''
+        : `<span class="auk-floor-tile__foot">${renderFloorJob(job)}${renderFloorFlags(job)}</span>`;
       return `
         <${tag}${tag === 'button' ? ' type="button"' : ''}
-          class="auk-floor-tile ${floorTileSizeClass(machine)}${selected}${low}${missing}"
+          class="auk-floor-tile ${sizeClass}${selected}${low}${missing}"
           style="${floorTileStyle(machine, bounds)};background:${escapeHtml(fill)}"
           title="${escapeHtml(title)}"
           aria-label="${escapeHtml(title)}"${idAttr}
         >
+          ${alert}
           <span class="auk-floor-tile__no">${escapeHtml(machine.label)}</span>
           ${subtitle}
-          <span class="auk-floor-tile__util">${fmtFloorPct(oee)}</span>
-          ${bar}
+          <span class="auk-floor-tile__meters">
+            ${renderFloorMeter(compact ? 'U' : 'Util', loading, compact)}
+            ${renderFloorMeter(compact ? 'O' : 'OEE', oee, compact)}
+          </span>
+          ${foot}
         </${tag}>
       `;
     }).join('');
@@ -1035,11 +1256,11 @@
     floorEl.innerHTML = `
       <div class="auk-floor-groups">${renderFloorGroups(layoutSource, byCnc)}</div>
       <section class="auk-floor-panel">
-        <div class="auk-floor-legend">${renderFloorLegend(layoutSource)}</div>
+        <div class="auk-floor-legend">${renderFloorLegend(layoutSource)}${renderFloorReadinessKey()}</div>
         <div class="auk-floor-stage">
           <div class="auk-floor-canvas" aria-label="Factory floor plan with live OEE">${renderFloorTiles(layoutSource, byCnc)}</div>
         </div>
-        <p class="auk-floor-hint">Colours are the shop layout. The number on each machine is live OEE for the selected range.</p>
+        <p class="auk-floor-hint">Colours are the shop layout. Utilisation and OEE are for the selected range. The job is the first one in that machine’s queue. A red ! means utilisation or OEE is under ${lowCutoff()}%.</p>
       </section>
       ${renderFloorExtras(layoutSource, byCnc)}
     `;
@@ -1599,6 +1820,11 @@
 
   function renderLowBanner() {
     if (!lowEl) return;
+    if (viewMode === 'floor') {
+      lowEl.hidden = true;
+      lowEl.innerHTML = '';
+      return;
+    }
     const notices = liveNotices().sort((a, b) => {
       if (Boolean(a.triggered) !== Boolean(b.triggered)) return a.triggered ? -1 : 1;
       return (Number(b.minutes) || 0) - (Number(a.minutes) || 0)
@@ -1966,20 +2192,57 @@
     renderCanvas();
   }
 
+  async function loadFloorJobs() {
+    const seq = ++floorJobsSeq;
+    try {
+      const res = await fetch('/api/auk-oee/floor-jobs');
+      const data = await res.json();
+      if (seq !== floorJobsSeq) return;
+      if (!res.ok || data.ok === false) {
+        floorJobs = { available: false, byCnc: {}, lowPct: Number(data.low_utilisation_pct) || 40 };
+        return;
+      }
+      floorJobs = {
+        available: true,
+        byCnc: data.by_cnc || {},
+        lowPct: Number(data.low_utilisation_pct) || 40,
+      };
+    } catch (_err) {
+      if (seq !== floorJobsSeq) return;
+      floorJobs = { available: false, byCnc: {}, lowPct: 40 };
+    }
+  }
+
   async function loadDashboard() {
+    const jobsPromise = loadFloorJobs();
     if (!config.configured) {
+      await jobsPromise;
       setLoading(false);
       showAlert('Set AUK_ACCESS_TOKEN in .env, then restart the app.');
+      if (viewMode === 'floor') renderFloor();
       return;
     }
 
+    if (activePreset === 'custom') {
+      const bounds = customShiftBounds();
+      if (bounds.error) {
+        if (refreshTimer) clearInterval(refreshTimer);
+        setLoading(false);
+        showAlert(bounds.error);
+        return;
+      }
+    }
+
+    const seq = ++dashboardLoadSeq;
     setLoading(true);
     showAlert('');
 
     try {
       const res = await fetch(`/api/auk-oee/dashboard?${currentQuery()}`);
+      if (seq !== dashboardLoadSeq) return;
       const contentType = res.headers.get('content-type') || '';
       const raw = await res.text();
+      if (seq !== dashboardLoadSeq) return;
 
       if (!contentType.includes('application/json') || raw.trim().startsWith('<')) {
         throw new Error(
@@ -1993,8 +2256,10 @@
       if (!res.ok) {
         throw new Error(data.error || parseApiError(raw, res.status));
       }
+      if (seq !== dashboardLoadSeq) return;
       dashboardData = data;
-      await loadHistory();
+      await Promise.all([loadHistory(), jobsPromise]);
+      if (seq !== dashboardLoadSeq) return;
       if (!layout) {
         const saved = await loadSavedLayout();
         layout = saved ? cloneLayout(saved) : null;
@@ -2013,7 +2278,9 @@
       }
       syncRangeInputs(data.from, data.to);
 
-      const presetLabel = PRESET_LABELS[data.range_preset] || PRESET_LABELS.custom;
+      const presetLabel = data.range_preset === 'custom'
+        ? (shiftPmEl && shiftPmEl.checked ? 'Custom · PM' : 'Custom · AM')
+        : (PRESET_LABELS[data.range_preset] || PRESET_LABELS.custom);
       const toDt = new Date(data.to || '');
       const toIsLive = Number.isFinite(toDt.getTime())
         && toDt >= new Date(Date.now() - 3 * 60 * 1000);
@@ -2029,9 +2296,11 @@
       else if (data.asset_error_count > 0) showAlert(`${data.asset_error_count} machine(s) returned no OEE for this range.`);
       else showAlert('');
     } catch (err) {
+      if (seq !== dashboardLoadSeq) return;
       if (!hasLoadedOnce) gridEl.hidden = true;
       showAlert(err.message || 'Failed to load OEE dashboard');
     } finally {
+      if (seq !== dashboardLoadSeq) return;
       setLoading(false);
       if (refreshToastEl) {
         window.setTimeout(() => {
@@ -2043,26 +2312,65 @@
     }
   }
 
+  function applyCustomShift() {
+    setActivePreset('custom');
+    const bounds = customShiftBounds();
+    if (bounds.error) {
+      showAlert(bounds.error);
+      return;
+    }
+    showAlert('');
+    scheduleRefresh();
+    loadDashboard();
+  }
+
   presetButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       const preset = btn.dataset.preset || 'shift';
+      if (preset === 'custom') {
+        applyCustomShift();
+        return;
+      }
       setActivePreset(preset);
       scheduleRefresh();
       loadDashboard();
     });
   });
 
-  fromEl.addEventListener('change', () => {
-    if (!syncingRange) {
-      setActivePreset('custom');
-      scheduleRefresh();
+  if (shiftDateEl) {
+    shiftDateEl.addEventListener('change', () => {
+      if (!syncingRange) applyCustomShift();
+    });
+  }
+  if (shiftPmEl) {
+    shiftPmEl.addEventListener('change', () => {
+      if (!syncingRange) applyCustomShift();
+    });
+  }
+
+  function adoptRangeAsShift() {
+    if (!fromEl.value || !shiftDateEl) return;
+    const date = fromEl.value.slice(0, 10);
+    const hour = Number(fromEl.value.slice(11, 13));
+    const minute = Number(fromEl.value.slice(14, 16));
+    if (!date || !Number.isFinite(hour) || !Number.isFinite(minute)) return;
+    const minutes = hour * 60 + minute;
+    shiftDateEl.value = date;
+    if (shiftPmEl) {
+      shiftPmEl.checked = minutes >= (19 * 60 + 30) || minutes < (9 * 60);
     }
+    updateShiftToggleLabels();
+  }
+
+  fromEl.addEventListener('change', () => {
+    if (syncingRange) return;
+    adoptRangeAsShift();
+    applyCustomShift();
   });
   toEl.addEventListener('change', () => {
-    if (!syncingRange) {
-      setActivePreset('custom');
-      scheduleRefresh();
-    }
+    if (syncingRange) return;
+    adoptRangeAsShift();
+    applyCustomShift();
   });
 
   async function loadHistory() {

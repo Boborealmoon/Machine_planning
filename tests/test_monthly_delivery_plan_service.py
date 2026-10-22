@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import unittest
 
+from planning.first_article_service import attach_program_pic_labels, program_pic_label
 from planning.monthly_delivery_plan_service import (
     build_monthly_delivery_plan,
     commitment_date,
@@ -219,6 +220,61 @@ class MonthlyDeliveryPlanTests(unittest.TestCase):
         self.assertTrue(lines[0]["delivered"])
         self.assertEqual(lines[0]["ps_type"], "APS")
         self.assertEqual(lines[0]["remaining_qty"], 4.0)
+
+
+class ProgramPicLabelTests(unittest.TestCase):
+    def setUp(self):
+        self.pics = {
+            4: {"pic_id": 4, "name": "Ananda"},
+            7: {"pic_id": 7, "name": "Chuan Heng"},
+        }
+
+    def _label(self, job, saved=None, flagged_by_ps=None, flagged_by_part=None):
+        return program_pic_label(
+            job,
+            pics_by_id=self.pics,
+            saved_by_ps=saved or {},
+            flagged_by_ps=flagged_by_ps or {},
+            flagged_by_part=flagged_by_part or {},
+        )
+
+    def test_saved_programme_pic_wins_and_joins_names(self):
+        label = self._label(
+            {"process_sheet_no": "nps26-0439::1"},
+            saved={"NPS26-0439": [7, 4]},
+            flagged_by_ps={"NPS26-0439": {"pic_ids": [4]}},
+        )
+        self.assertEqual(label, "Chuan Heng / Ananda")
+
+    def test_empty_save_falls_back_to_tracker_then_unique_part(self):
+        sheet = self._label(
+            {"process_sheet_no": "APS26-0001", "part_no": "BB18"},
+            saved={"APS26-0001": []},
+            flagged_by_ps={"APS26-0001": {"pic_ids": [4], "quote_part_no": "OTHER"}},
+        )
+        self.assertEqual(sheet, "Ananda")
+        part = self._label(
+            {"process_sheet_no": "", "part_no": "bb18-ks"},
+            flagged_by_part={"BB18-KS": [{"pic_ids": [7], "quote_part_no": "BB18-KS"}]},
+        )
+        self.assertEqual(part, "Chuan Heng")
+        ambiguous = self._label(
+            {"part_no": "SHARED"},
+            flagged_by_part={
+                "SHARED": [
+                    {"pic_ids": [4], "quote_part_no": "SHARED"},
+                    {"pic_ids": [7], "quote_part_no": "SHARED"},
+                ],
+            },
+        )
+        self.assertEqual(ambiguous, "")
+
+    def test_attach_skips_database_when_there_are_no_lines(self):
+        class _Con:
+            def execute(self, *_args, **_kwargs):
+                raise AssertionError("no query expected")
+
+        attach_program_pic_labels(_Con(), [])
 
 
 if __name__ == "__main__":

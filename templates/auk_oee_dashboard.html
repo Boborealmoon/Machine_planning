@@ -3,7 +3,7 @@
 {% block body_class %}auk-oee-page{% endblock %}
 {% block main_class %}app-main--planner{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20261008o">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auk_oee_dashboard.css') }}?v=auk-oee-20261021f">
 {% endblock %}
 {% block content %}
 <div class="auk-oee-shell">
@@ -21,11 +21,32 @@
           <button type="button" class="auk-oee-preset" data-preset="last_24h">Last 24 hours</button>
           <button type="button" class="auk-oee-preset" data-preset="custom">Custom</button>
         </div>
-        <label class="auk-oee-field">
+        <div class="auk-oee-shift-pick" id="auk-oee-shift-pick" hidden>
+          <label class="auk-oee-field">
+            <span>Shift date</span>
+            <input type="date" id="auk-oee-shift-date" />
+          </label>
+          <div class="auk-oee-shift-toggle" role="group" aria-label="Morning or night shift">
+            <span class="auk-oee-shift-toggle__side is-active" id="auk-oee-shift-am-label">
+              AM
+              <small>8:30am – 8:00pm</small>
+            </span>
+            <label class="auk-oee-switch">
+              <input type="checkbox" id="auk-oee-shift-pm" />
+              <span class="auk-oee-switch__track" aria-hidden="true"></span>
+              <span class="auk-oee-switch__text">Night shift</span>
+            </label>
+            <span class="auk-oee-shift-toggle__side" id="auk-oee-shift-pm-label">
+              PM
+              <small>7:30pm – 9:00am</small>
+            </span>
+          </div>
+        </div>
+        <label class="auk-oee-field" id="auk-oee-from-field">
           <span>From</span>
           <input type="datetime-local" id="auk-oee-from" />
         </label>
-        <label class="auk-oee-field">
+        <label class="auk-oee-field" id="auk-oee-to-field">
           <span>To</span>
           <input type="datetime-local" id="auk-oee-to" />
         </label>
@@ -95,5 +116,5 @@
     floorLayout: {{ floor_layout | tojson }},
   };
 </script>
-<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20261008o"></script>
+<script src="{{ url_for('static', filename='js/auk_oee_dashboard.js') }}?v=auk-oee-20261021f"></script>
 {% endblock %}

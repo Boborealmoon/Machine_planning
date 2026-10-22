@@ -142,7 +142,16 @@ def _is_lock_timeout(exc: BaseException) -> bool:
 
 # REST delete+insert commits the wipe before inserts finish. Never use it for
 # tables the QAQC queue reads live — a 2-minute partial reload shows wrong WO stages.
-_REST_UNSAFE_STAGING_TABLES = frozenset({"mfg_wo_status", "pp_vouchers_cache"})
+_REST_UNSAFE_STAGING_TABLES = frozenset({
+    "mfg_wo_status",
+    "pp_vouchers_cache",
+    # Duplicate COMAIN keys used to fail the direct reload and then wipe these
+    # tables via REST before the insert aborted. Fail the step instead.
+    "so_detail",
+    "so_order_header",
+    "so_order_line",
+    "lg_out_shipment_line",
+})
 
 
 def _planner_reload(table: str, columns: list, rows: list) -> int:
@@ -224,7 +233,9 @@ def _planner_cache_rebuild() -> int:
     try:
         with conn.cursor() as cur:
             _planner_set_timeout(cur)
-            cur.execute("TRUNCATE public.pp_vouchers_cache")
+            # DELETE, not TRUNCATE: TRUNCATE needs an exclusive lock and fails
+            # while the planner is reading the cache (lock_timeout).
+            cur.execute("DELETE FROM public.pp_vouchers_cache")
             cur.execute(
                 f"""
                 INSERT INTO public.pp_vouchers_cache ({cols})
@@ -816,9 +827,12 @@ def run_part_desc_sync(force: bool = False) -> dict:
 
 
 # ── so_detail staging (sales order line qty from ERP order tables) ───────────
+# A line can exist in both so_order_new_det and so_order_ost_det. DISTINCT ON
+# keeps one row per primary key, preferring the larger qty (same rule as
+# vw_pp_vouchers so_detail_by_line, which uses MAX(qty)).
 
 _SO_DETAIL_SQL = """
-SELECT
+SELECT DISTINCT ON (sales_order_no, line_item_no, inventory_code)
     sales_order_no,
     line_item_no,
     inventory_code,
@@ -861,6 +875,9 @@ FROM (
       AND line_item_no IS NOT NULL
       AND inventory_code IS NOT NULL
 ) so_lines
+ORDER BY sales_order_no, line_item_no, inventory_code,
+         qty DESC NULLS LAST,
+         required_shipment_date DESC NULLS LAST
 """
 _SO_DETAIL_COLS = [
     "sales_order_no", "line_item_no", "inventory_code", "item_code",

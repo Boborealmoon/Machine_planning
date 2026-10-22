@@ -8,6 +8,7 @@ from planning.delivery_commitment_service import (
     AllocationError,
     _sql_statements,
     _assign_source,
+    apply_okay_flags,
     join_delivery_lines,
     month_totals,
     plan_whole_month_assign,
@@ -196,3 +197,15 @@ class DeliveryCommitmentTests(unittest.TestCase):
         self.assertIn("planner_delivery_commitment", text)
         self.assertIn("unique (row_id, plan_month)", text)
         self.assertGreaterEqual(len(statements), 3)
+
+    def test_okay_flag_marks_only_saved_rows(self):
+        lines = [_line(), _line(row_id="SO/2|NPS2|1|20")]
+        apply_okay_flags(lines, {"SO/2|NPS2|1|20", "  "})
+        self.assertFalse(lines[0]["okay"])
+        self.assertTrue(lines[1]["okay"])
+
+    def test_okay_migration_sql(self):
+        sql = Path("migrations/add_delivery_line_okay.sql").read_text(encoding="utf-8")
+        text = "\n".join(_sql_statements(sql)).lower()
+        self.assertIn("planner_delivery_line_okay", text)
+        self.assertIn("primary key", text)

@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 QTY_TOLERANCE = 0.0001
 _SCHEMA_READY = False
 _MIGRATION_PATH = Path(__file__).resolve().parent.parent / "migrations" / "add_delivery_commitment.sql"
+_OKAY_MIGRATION_PATH = Path(__file__).resolve().parent.parent / "migrations" / "add_delivery_line_okay.sql"
 
 _LINE_FIELDS = (
     "row_id",
@@ -154,10 +155,44 @@ def ensure_delivery_commitment_schema(con) -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
-    sql = _MIGRATION_PATH.read_text(encoding="utf-8")
-    for statement in _sql_statements(sql):
-        con.execute(statement)
+    for path in (_MIGRATION_PATH, _OKAY_MIGRATION_PATH):
+        sql = path.read_text(encoding="utf-8")
+        for statement in _sql_statements(sql):
+            con.execute(statement)
     _SCHEMA_READY = True
+
+
+def load_okay_row_ids(con) -> set[str]:
+    ensure_delivery_commitment_schema(con)
+    found = rows(con.execute("SELECT row_id FROM public.planner_delivery_line_okay"))
+    return {_compact(row.get("row_id")) for row in found if _compact(row.get("row_id"))}
+
+
+def apply_okay_flags(lines: list[dict[str, Any]], okay_ids: set[str]) -> None:
+    ids = {_compact(row_id) for row_id in okay_ids}
+    for line in lines:
+        line["okay"] = _compact(line.get("row_id")) in ids
+
+
+def set_line_okay(con, row_id: str, okay: bool) -> None:
+    ensure_delivery_commitment_schema(con)
+    key = _compact(row_id)
+    if not key:
+        raise AllocationError("Missing line.")
+    if okay:
+        con.execute(
+            """
+            INSERT INTO public.planner_delivery_line_okay (row_id, updated_at)
+            VALUES (%s, NOW())
+            ON CONFLICT (row_id) DO UPDATE SET updated_at = NOW()
+            """,
+            (key,),
+        )
+        return
+    con.execute(
+        "DELETE FROM public.planner_delivery_line_okay WHERE row_id = %s",
+        (key,),
+    )
 
 
 def _line_label(line: dict[str, Any] | None) -> str:

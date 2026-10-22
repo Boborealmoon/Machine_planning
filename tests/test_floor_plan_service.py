@@ -9,7 +9,9 @@ import pytest
 
 from planning.floor_plan_service import (
     FLOOR_LAYOUT_MACHINES,
+    FLOOR_LOW_UTIL_PCT,
     capacity_hours_by_machine_code,
+    compose_floor_current_jobs,
     delete_machine_capacity_booking,
     fetch_bookings,
     fetch_floor_plan,
@@ -34,6 +36,59 @@ def test_floor_layout_has_all_fleet_machines():
     }
     codes = {m["machine_no"] for m in FLOOR_LAYOUT_MACHINES}
     assert codes == expected
+
+
+def test_compose_floor_current_job_uses_queue_head_and_readiness():
+    jobs = compose_floor_current_jobs(
+        [
+            {
+                "machine_no": "CNC 38",
+                "planner_ps_id": "NPS26-0142",
+                "process_sheet": "NPS26-0142",
+                "operation_id": 9,
+                "operation_name": "Rough turn",
+                "source_op_no": "20",
+                "queue_position": 1,
+            },
+            {
+                "machine_no": "CNC 38",
+                "planner_ps_id": "NPS26-9999",
+                "process_sheet": "NPS26-9999",
+                "operation_id": 10,
+                "queue_position": 2,
+            },
+            {
+                "machine_no": "CNC 15",
+                "planner_ps_id": "NPS26-0100",
+                "process_sheet": "NPS26-0100",
+                "operation_id": 4,
+                "operation_name": "Mill",
+                "queue_position": 1,
+            },
+        ],
+        material_by_ps={"NPS26-0142": {"material_in": True}, "NPS26-0100": {"material_in": False}},
+        tooling_by_op={9: False},
+        program_by_op={9: True, 4: False},
+        parts_by_ps={"NPS26-0142": {"part_no": "BRACKET-7"}},
+    )
+    by_cnc = {job["cnc_number"]: job for job in jobs}
+    assert set(by_cnc) == {38, 15}
+    head = by_cnc[38]
+    assert head["label"] == "BRACKET-7"
+    assert head["sub"] == "NPS26-0142"
+    assert head["material_in"] is True
+    assert head["tooling_ready"] is False
+    assert head["program_ready"] is True
+    assert head["queue_position"] == 1
+    waiting = by_cnc[15]
+    assert waiting["label"] == "NPS26-0100"
+    assert waiting["material_in"] is False
+    assert waiting["tooling_ready"] is True
+    assert waiting["program_ready"] is False
+
+
+def test_low_utilisation_callout_threshold():
+    assert FLOOR_LOW_UTIL_PCT == 40.0
 
 
 def test_floor_layout_payload_for_oee_view():

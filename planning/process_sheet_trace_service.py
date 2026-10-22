@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .helpers import planner_db, rows
 from .staged_erp import live_query
 from .utils import compact_text, parse_number
 
@@ -589,6 +590,14 @@ def _resolve_sheet(query: str) -> tuple[str, str]:
     return compact_text(parent.get("pp_voucher_no")), ""
 
 
+def resolve_process_sheet(process_sheet_no: str) -> tuple[str, str]:
+    """Return (pp_voucher_no, focus_process_sheet) for a sheet or a line item."""
+    query = _key(process_sheet_no)
+    if not query:
+        return "", ""
+    return _resolve_sheet(query)
+
+
 def trace_process_sheet(process_sheet_no: str) -> dict[str, Any]:
     query = _key(process_sheet_no)
     if not query:
@@ -645,3 +654,94 @@ def trace_process_sheet(process_sheet_no: str) -> dict[str, Any]:
         query=query,
         focus_process_sheet=focus,
     )
+
+
+def _like_prefix(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
+def _suggest_payload(row: dict[str, Any]) -> dict[str, Any] | None:
+    sheet = compact_text(row.get("process_sheet_no")).upper()
+    if not sheet:
+        return None
+    qty = _qty(row.get("total_qty"))
+    return {
+        "process_sheet_no": sheet,
+        "part_no": compact_text(row.get("part_no")),
+        "description": compact_text(row.get("description"))[:160],
+        "qty": qty,
+    }
+
+
+_SUGGEST_PLANNER_SQL = """
+SELECT
+    BTRIM(i.process_sheet_no) AS process_sheet_no,
+    BTRIM(i.pp_voucher_no) AS pp_voucher_no,
+    BTRIM(i.inventory_code) AS part_no,
+    BTRIM(d.main_desc) AS description,
+    i.total_qty
+FROM public.mfg_process_sheet_info i
+LEFT JOIN public.part_desc d
+  ON d.inventory_code = i.inventory_code
+WHERE UPPER(BTRIM(i.process_sheet_no)) LIKE %s ESCAPE '\\'
+   OR REPLACE(UPPER(BTRIM(i.process_sheet_no)), '-', '') LIKE %s ESCAPE '\\'
+ORDER BY
+    CASE WHEN UPPER(BTRIM(i.process_sheet_no)) = %s THEN 0 ELSE 1 END,
+    CASE
+        WHEN UPPER(BTRIM(i.process_sheet_no)) = UPPER(BTRIM(i.pp_voucher_no)) THEN 0
+        ELSE 1
+    END,
+    i.process_sheet_no DESC
+LIMIT %s
+"""
+
+_SUGGEST_LIVE_SQL = """
+SELECT
+    BTRIM(v.process_sheet_no) AS process_sheet_no,
+    BTRIM(v.pp_voucher_no) AS pp_voucher_no,
+    BTRIM(v.inventory_code) AS part_no,
+    BTRIM(COALESCE(v.inventory_main_desc, v.inventory_short_desc)) AS description,
+    v.total_qty
+FROM public.mfg_process_sheet_info_v1_view v
+WHERE UPPER(BTRIM(v.process_sheet_no)) LIKE %s ESCAPE '\\'
+   OR REPLACE(UPPER(BTRIM(v.process_sheet_no)), '-', '') LIKE %s ESCAPE '\\'
+ORDER BY
+    CASE WHEN UPPER(BTRIM(v.process_sheet_no)) = %s THEN 0 ELSE 1 END,
+    CASE
+        WHEN UPPER(BTRIM(v.process_sheet_no)) = UPPER(BTRIM(v.pp_voucher_no)) THEN 0
+        ELSE 1
+    END,
+    v.process_sheet_no DESC
+LIMIT %s
+"""
+
+
+def suggest_trace_sheets(query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+    """Process-sheet numbers matching what the user has typed."""
+    needle = _key(query)
+    compact = needle.replace("-", "").replace(" ", "")
+    if len(compact) < 2:
+        return []
+    cap = max(1, min(int(limit or 10), 12))
+    params = (_like_prefix(needle), _like_prefix(compact), needle, cap)
+    fetched: list[dict[str, Any]] = []
+    try:
+        with planner_db() as con:
+            fetched = rows(con.execute(_SUGGEST_PLANNER_SQL, params))
+    except Exception:
+        fetched = []
+    if not fetched:
+        try:
+            fetched = _query(_SUGGEST_LIVE_SQL, params)
+        except Exception:
+            fetched = []
+    hits: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in fetched:
+        item = _suggest_payload(row)
+        if not item or item["process_sheet_no"] in seen:
+            continue
+        seen.add(item["process_sheet_no"])
+        hits.append(item)
+    return hits

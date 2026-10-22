@@ -437,6 +437,7 @@ def test_trace_page_and_api():
         body = page.get_data(as_text=True)
         assert "Process sheet trace" in body
         assert "pst-view" in body
+        assert "Print sheet" in body
 
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "secret"}):
             public_page = client.get("/process-sheet-trace")
@@ -454,3 +455,176 @@ def test_trace_page_and_api():
 
         blank = client.get("/api/process-sheet-trace")
         assert blank.status_code == 400
+
+
+def test_heat_and_source_po_come_from_the_receipt_text():
+    from planning.process_sheet_document import heat_no_from_text, shape_issue, source_po_no
+
+    assert heat_no_from_text("D114.3 X 35MM\nHEAT 245346\n[NPS26-0321-8]") == "245346"
+    assert heat_no_from_text("HEAT TREATMENT") == ""
+    assert source_po_no("P26/0923", "LG03827PSH") == "P26/0923"
+    assert source_po_no("", "P26/0923") == "P26/0923"
+    assert source_po_no("LG00037ICT", "LG00031TSH") == ""
+    assert source_po_no("", "LG03827PSH") == ""
+
+    shaped = shape_issue(
+        {
+            "inventory_code": "SUS316L*9_D114.3_35.0",
+            "uom_code": "EA",
+            "lot_no": 1,
+            "reference_no": "M/04372/26",
+            "qty": 2,
+            "lot_desc": "ST STL 316S11 iaw EN 10088-3",
+            "source_voucher_no": "LG03827PSH",
+            "source_po_no": "P26/0923",
+            "shipment_desc": "HEAT 245346",
+            "issued_by_name": "Lim Tuck Cheong",
+        }
+    )
+    assert shaped["lot_level"] == "1"
+    assert shaped["lot_reference_no"] == "M/04372/26"
+    assert shaped["heat_no"] == "245346"
+    assert shaped["source_po_no"] == "P26/0923"
+    assert shaped["source_voucher_no"] == "LG03827PSH"
+    assert shaped["lot_description"] == "ST STL 316S11 iaw EN 10088-3"
+    assert shaped["issued_by"] == "Lim Tuck Cheong"
+    assert shaped["qty"] == "2.0"
+
+
+def test_partial_keeps_the_routing_with_the_most_stages():
+    from planning.process_sheet_document import select_partial
+
+    partial, rows = select_partial(
+        [
+            {"pp_partial_no": 2, "stage_no": 1, "stage_desc": "Packing"},
+            {"pp_partial_no": 1, "stage_no": 1, "stage_desc": "Issue"},
+            {"pp_partial_no": 1, "stage_no": 2, "stage_desc": "Turning"},
+        ]
+    )
+    assert partial == 1
+    assert [row["stage_desc"] for row in rows] == ["Issue", "Turning"]
+
+
+def test_process_sheet_pdf_route_returns_the_form():
+    from planning.process_sheet_document import render_process_sheet_pdf
+
+    document = {
+        "pp_no": "N26-[SR]22",
+        "partial_no": 1,
+        "bom_code": "SMP-MAT01-REV00",
+        "finished_goods": "BB14-KS0188-05 REV 04",
+        "description": "R.I.M.S LOCKDOWN MECHANISM",
+        "remarks": "",
+        "printed_at": None,
+        "issues": [
+            {
+                "inventory_code": "SUS316L*9_D114.3_35.0",
+                "qty": "2.0",
+                "uom": "EA",
+                "lot_level": "1",
+                "lot_reference_no": "M/04372/26",
+                "heat_no": "245346",
+                "source_po_no": "P26/0923",
+                "source_voucher_no": "LG03827PSH",
+                "lot_description": "ST STL 316S11",
+                "issued_by": "Lim Tuck Cheong",
+            }
+        ],
+        "wo_materials": [
+            {
+                "wo_no": "MFG67674WO",
+                "item_code": "BB18-KS1219-01 REV 04",
+                "material": "GUIDE PIN RETAINING CLIP",
+                "qty": "4.0",
+                "uom": "EA",
+            }
+        ],
+        "stages": [
+            {
+                "wo_no": "MFG67674WO",
+                "stage_desc": "Material Issue & Assembly",
+                "work_center": "",
+                "machine_no": "",
+                "total_time": "0.00 H",
+                "setup_time": "1.00 M",
+                "cycle_time": "30.00 M",
+                "required_qty": "2.0",
+                "accepted_qty": "0.0",
+                "rejected_qty": "0.0",
+                "start": "",
+                "end": "",
+                "sign_label": "Done By",
+            },
+            {
+                "wo_no": "MFG67675WO",
+                "stage_desc": "Final Inspection",
+                "work_center": "",
+                "machine_no": "",
+                "total_time": "0.00 H",
+                "setup_time": "5.00 M",
+                "cycle_time": "60.00 M",
+                "required_qty": "2.0",
+                "accepted_qty": "0.0",
+                "rejected_qty": "0.0",
+                "start": "",
+                "end": "",
+                "sign_label": "Inspector",
+            },
+        ],
+    }
+    pdf = render_process_sheet_pdf(document)
+    assert pdf.startswith(b"%PDF")
+    assert b"Coway/F009" in pdf
+    assert b"COWAY" not in pdf
+    assert b"Barcode" not in pdf
+    assert b"Material Issue" not in pdf
+    assert b"M/04372/26" in pdf
+    assert b"245346" in pdf
+    assert b"P26/0923" in pdf
+    assert b"LG03827PSH" in pdf
+    assert b"MFG67674WO" in pdf
+
+    client = app.test_client()
+    with patch(
+        "planning.process_sheet_trace_route.load_process_sheet_document",
+        return_value=document,
+    ):
+        response = client.get("/api/process-sheet-trace/document?ps=N26-%5BSR%5D22")
+    assert response.status_code == 200
+    assert response.mimetype == "application/pdf"
+    assert response.data.startswith(b"%PDF")
+    assert "ProcessSheet-" in response.headers["Content-Disposition"]
+
+    missing = client.get("/api/process-sheet-trace/document")
+    assert missing.status_code == 400
+    with patch(
+        "planning.process_sheet_trace_route.load_process_sheet_document",
+        return_value=None,
+    ):
+        not_found = client.get("/api/process-sheet-trace/document?ps=MISSING")
+    assert not_found.status_code == 404
+
+
+def test_suggest_returns_matching_process_sheets():
+    client = app.test_client()
+    short = client.get("/api/process-sheet-trace/suggest?q=N")
+    assert short.status_code == 200
+    assert short.get_json()["suggestions"] == []
+
+    with patch(
+        "planning.process_sheet_trace_route.suggest_trace_sheets",
+        return_value=[
+            {
+                "process_sheet_no": "NPS26-0321",
+                "part_no": "BB14-KS0188-05 REV 04",
+                "description": "R.I.M.S LOCKDOWN MECHANISM",
+                "qty": 30,
+            }
+        ],
+    ):
+        response = client.get("/api/process-sheet-trace/suggest?q=NPS26-032")
+    assert response.status_code == 200
+    hits = response.get_json()["suggestions"]
+    assert hits[0]["process_sheet_no"] == "NPS26-0321"
+    assert hits[0]["part_no"] == "BB14-KS0188-05 REV 04"
+

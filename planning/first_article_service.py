@@ -1495,6 +1495,119 @@ def _pic_display(pics_by_id: dict[int, dict[str, Any]] | None, pic_ids: Any) -> 
     return ", ".join(names)
 
 
+def _safe_pic_ids(raw: Any) -> list[int]:
+    try:
+        return _parse_pic_ids(raw)
+    except ValueError:
+        return []
+
+
+def program_pic_label(
+    job: dict[str, Any] | None,
+    *,
+    pics_by_id: dict[int, dict[str, Any]],
+    saved_by_ps: dict[str, list[int]],
+    flagged_by_ps: dict[str, dict[str, Any]],
+    flagged_by_part: dict[str, list[dict[str, Any]]],
+) -> str:
+    """Programme PIC text for one job, matching the first-article page.
+
+    A saved programme PIC on the process sheet wins. An empty save falls
+    back to the NPI tracker PIC for that sheet, then a unique part match.
+    """
+    item = job or {}
+    key = _ps_key(item.get("process_sheet_no") or item.get("pp_voucher_no"))
+    pic_ids = list(saved_by_ps.get(key) or [])
+    if not pic_ids:
+        flagged = _match_flagged_npi(item, flagged_by_ps, flagged_by_part)
+        pic_ids = _safe_pic_ids((flagged or {}).get("pic_ids"))
+    names = [
+        compact_text(pic.get("name"))
+        for pic in _pics_for_ids(pics_by_id, pic_ids)
+        if compact_text(pic.get("name"))
+    ]
+    return " / ".join(names)
+
+
+def _program_pic_sources(con):
+    pics: dict[int, dict[str, Any]] = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT pic_id, name
+            FROM planner_first_article_pic
+            WHERE active = TRUE
+            """
+        )
+    ) or []:
+        try:
+            pic_id = int(row.get("pic_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        name = compact_text(row.get("name"))
+        if pic_id > 0 and name:
+            pics[pic_id] = {"pic_id": pic_id, "name": name}
+
+    saved_by_ps: dict[str, list[int]] = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT process_sheet_no, program_pic_ids
+            FROM planner_first_article_new_part
+            """
+        )
+    ) or []:
+        key = _ps_key(row.get("process_sheet_no"))
+        if key:
+            saved_by_ps[key] = _safe_pic_ids(row.get("program_pic_ids"))
+
+    flagged_by_ps: dict[str, dict[str, Any]] = {}
+    flagged_by_part: dict[str, list[dict[str, Any]]] = {}
+    for row in rows(
+        con.execute(
+            """
+            SELECT process_sheet_no, pp_voucher_no, pic_ids, quote_part_no
+            FROM planner_first_article
+            """
+        )
+    ) or []:
+        item = dict(row)
+        key = _ps_key(item.get("process_sheet_no") or item.get("pp_voucher_no"))
+        if key:
+            flagged_by_ps[key] = item
+        part = _part_key(item.get("quote_part_no"))
+        if part:
+            flagged_by_part.setdefault(part, []).append(item)
+    return pics, saved_by_ps, flagged_by_ps, flagged_by_part
+
+
+def attach_program_pic_labels(con, lines: list[dict[str, Any]]) -> None:
+    """Set program_pic on each delivery line. A lookup failure leaves it blank."""
+    if not lines:
+        return
+    for line in lines:
+        line["program_pic"] = ""
+    try:
+        con.execute("SAVEPOINT mdp_program_pic")
+        pics, saved_by_ps, flagged_by_ps, flagged_by_part = _program_pic_sources(con)
+        con.execute("RELEASE SAVEPOINT mdp_program_pic")
+    except Exception:
+        logger.exception("programme PIC lookup failed")
+        try:
+            con.execute("ROLLBACK TO SAVEPOINT mdp_program_pic")
+        except Exception:
+            logger.exception("programme PIC savepoint rollback failed")
+        return
+    for line in lines:
+        line["program_pic"] = program_pic_label(
+            line,
+            pics_by_id=pics,
+            saved_by_ps=saved_by_ps,
+            flagged_by_ps=flagged_by_ps,
+            flagged_by_part=flagged_by_part,
+        )
+
+
 def history_field_label(field_name: str) -> str:
     key = compact_text(field_name)
     return _HISTORY_FIELD_LABELS.get(key, key.replace("_", " ").strip() or key)

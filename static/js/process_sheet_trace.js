@@ -2,10 +2,17 @@
   const page = document.querySelector(".pst-page");
   const form = document.getElementById("pst-form");
   const input = document.getElementById("pst-input");
+  const suggestEl = document.getElementById("pst-suggest");
   const submit = document.getElementById("pst-submit");
+  const printBtn = document.getElementById("pst-print");
   const statusEl = document.getElementById("pst-status");
   const resultEl = document.getElementById("pst-result");
   if (!page || !form || !input || !resultEl) return;
+
+  let suggestTimer = null;
+  let suggestToken = 0;
+  let suggestions = [];
+  let suggestIndex = -1;
 
   function escapeHtml(value) {
     return String(value == null ? "" : value)
@@ -294,10 +301,142 @@
     }
   }
 
+  function hideSuggest() {
+    if (!suggestEl) return;
+    suggestEl.hidden = true;
+    suggestEl.innerHTML = "";
+    input.setAttribute("aria-expanded", "false");
+    suggestions = [];
+    suggestIndex = -1;
+  }
+
+  function suggestionMeta(hit) {
+    return [hit.part_no, hit.description, hit.qty == null || hit.qty === "" ? "" : "Qty " + hit.qty]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  function paintSuggest() {
+    if (!suggestEl) return;
+    if (!suggestions.length) {
+      hideSuggest();
+      return;
+    }
+    suggestEl.innerHTML = suggestions
+      .map(function (hit, index) {
+        const meta = suggestionMeta(hit);
+        return (
+          '<button type="button" class="pst-suggest-item' +
+          (index === suggestIndex ? " is-active" : "") +
+          '" role="option" data-index="' +
+          index +
+          '">' +
+          '<span class="pst-suggest-no">' +
+          escapeHtml(hit.process_sheet_no) +
+          "</span>" +
+          (meta ? '<span class="pst-suggest-meta">' + escapeHtml(meta) + "</span>" : "") +
+          "</button>"
+        );
+      })
+      .join("");
+    suggestEl.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  }
+
+  function chooseSuggestion(hit) {
+    if (!hit || !hit.process_sheet_no) return;
+    input.value = hit.process_sheet_no;
+    hideSuggest();
+    trace(hit.process_sheet_no);
+  }
+
+  function moveSuggest(step) {
+    if (!suggestions.length) return;
+    if (suggestIndex < 0) suggestIndex = step > 0 ? 0 : suggestions.length - 1;
+    else suggestIndex = (suggestIndex + step + suggestions.length) % suggestions.length;
+    paintSuggest();
+  }
+
+  async function loadSuggest(query) {
+    const token = ++suggestToken;
+    try {
+      const response = await fetch("/api/process-sheet-trace/suggest?q=" + encodeURIComponent(query));
+      const payload = await response.json();
+      if (token !== suggestToken) return;
+      if (String(input.value || "").trim() !== query) return;
+      suggestions = response.ok && Array.isArray(payload.suggestions) ? payload.suggestions : [];
+      suggestIndex = suggestions.length ? 0 : -1;
+      paintSuggest();
+    } catch (err) {
+      if (token === suggestToken) hideSuggest();
+    }
+  }
+
+  function scheduleSuggest() {
+    const query = String(input.value || "").trim();
+    if (suggestTimer) clearTimeout(suggestTimer);
+    if (query.length < 2) {
+      suggestToken += 1;
+      hideSuggest();
+      return;
+    }
+    suggestTimer = setTimeout(function () {
+      loadSuggest(query);
+    }, 140);
+  }
+
+  if (suggestEl) {
+    suggestEl.addEventListener("mousedown", function (event) {
+      const button = event.target.closest(".pst-suggest-item");
+      if (!button) return;
+      event.preventDefault();
+      chooseSuggestion(suggestions[Number(button.getAttribute("data-index"))]);
+    });
+  }
+
+  input.addEventListener("input", scheduleSuggest);
+  input.addEventListener("keydown", function (event) {
+    if (event.key === "ArrowDown") {
+      if (!suggestions.length) return;
+      event.preventDefault();
+      moveSuggest(1);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      if (!suggestions.length) return;
+      event.preventDefault();
+      moveSuggest(-1);
+      return;
+    }
+    if (event.key === "Escape") {
+      hideSuggest();
+      return;
+    }
+    if (event.key === "Enter" && suggestEl && !suggestEl.hidden && suggestIndex >= 0) {
+      event.preventDefault();
+      chooseSuggestion(suggestions[suggestIndex]);
+    }
+  });
+  input.addEventListener("blur", function () {
+    setTimeout(hideSuggest, 150);
+  });
+
   form.addEventListener("submit", function (event) {
     event.preventDefault();
+    hideSuggest();
     trace(input.value);
   });
+
+  if (printBtn) {
+    printBtn.addEventListener("click", function () {
+      const query = String(input.value || "").trim();
+      if (!query) {
+        setStatus("Enter a process sheet number.", true);
+        return;
+      }
+      window.open("/api/process-sheet-trace/document?ps=" + encodeURIComponent(query), "_blank", "noopener");
+    });
+  }
 
   const initial = String(page.getAttribute("data-initial-ps") || "").trim();
   if (initial) trace(initial);

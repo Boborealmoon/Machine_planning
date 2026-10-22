@@ -9,14 +9,18 @@ from flask import Blueprint, jsonify, render_template, request
 
 from .delivery_commitment_service import (
     AllocationError,
+    apply_okay_flags,
     build_commitment_view,
     delete_commitment,
     load_commitments,
+    load_okay_row_ids,
     save_adds,
     save_assign_month,
     save_move,
     save_qty,
+    set_line_okay,
 )
+from .first_article_service import attach_program_pic_labels
 from .helpers import planner_db
 from .utils import compact_text
 
@@ -103,7 +107,10 @@ def api_monthly_delivery_plan():
         lines, job_count = _load_outstanding(refresh=_refresh_flag(), year=year)
         with planner_db() as con:
             commitments = load_commitments(con)
-        view = build_commitment_view(lines, commitments, year=year)
+            okay_ids = load_okay_row_ids(con)
+            view = build_commitment_view(lines, commitments, year=year)
+            apply_okay_flags(view.get("lines") or [], okay_ids)
+            attach_program_pic_labels(con, view.get("lines") or [])
         view["active_job_count"] = job_count
         return jsonify(view)
     except Exception as exc:
@@ -119,6 +126,26 @@ def _assignment_items(body: dict) -> tuple[object, list[dict]]:
     if not isinstance(items, list):
         items = []
     return plan_month, items
+
+
+@monthly_delivery_plan_bp.post("/api/monthly-delivery-plan/okay")
+def api_set_line_okay():
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "Expected a JSON object."}), 400
+    row_id = compact_text(body.get("row_id"))
+    okay = body.get("okay")
+    if not row_id or not isinstance(okay, bool):
+        return jsonify({"ok": False, "error": "Missing line."}), 400
+    try:
+        with planner_db() as con:
+            set_line_okay(con, row_id, okay)
+        return jsonify({"ok": True, "row_id": row_id, "okay": okay})
+    except AllocationError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("set delivery line okay failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @monthly_delivery_plan_bp.post("/api/monthly-delivery-plan/slices")

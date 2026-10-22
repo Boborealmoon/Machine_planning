@@ -104,7 +104,8 @@ class ErpSyncProgress:
         }
         if result.get("error"):
             entry["error"] = result["error"]
-            status = "FAILED"
+            err = str(result["error"]).splitlines()[0][:300]
+            status = f"FAILED ({err})" if err else "FAILED"
             self._run_status = "failed"
         elif result.get("skipped"):
             entry["skipped"] = True

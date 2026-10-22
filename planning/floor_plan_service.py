@@ -664,6 +664,193 @@ def add_machine_part_tag(
     }
 
 
+FLOOR_LOW_UTIL_PCT = 40.0
+
+
+def _cnc_number_from_machine_no(machine_no: str) -> int | None:
+    digits = "".join(ch for ch in compact_text(machine_no) if ch.isdigit())
+    if not digits:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
+def compose_floor_current_jobs(
+    blocks: list[dict[str, Any]],
+    *,
+    material_by_ps: dict[str, dict[str, Any]] | None = None,
+    tooling_by_op: dict[int, bool] | None = None,
+    program_by_op: dict[int, bool] | None = None,
+    parts_by_ps: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """One current job per machine. Earlier rows win, so pass queue order."""
+    material_by_ps = material_by_ps or {}
+    tooling_by_op = tooling_by_op or {}
+    program_by_op = program_by_op or {}
+    parts_by_ps = parts_by_ps or {}
+    jobs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for block in blocks or []:
+        machine_no = compact_text(block.get("machine_no"))
+        if not machine_no or machine_no.upper() in seen:
+            continue
+        cnc_number = _cnc_number_from_machine_no(machine_no)
+        if cnc_number is None:
+            continue
+        seen.add(machine_no.upper())
+        ps_id = compact_text(block.get("planner_ps_id"))
+        process_sheet = compact_text(block.get("process_sheet")) or ps_id
+        part_no = compact_text((parts_by_ps.get(ps_id) or {}).get("part_no"))
+        operation_name = compact_text(block.get("operation_name"))
+        op_no = compact_text(block.get("source_op_no"))
+        if part_no and process_sheet and part_no.upper() != process_sheet.upper():
+            label = part_no
+            sub = process_sheet
+        elif process_sheet:
+            label = process_sheet
+            sub = operation_name
+        else:
+            label = operation_name or "Job"
+            sub = ""
+        try:
+            op_id = int(block.get("operation_id") or 0)
+        except (TypeError, ValueError):
+            op_id = 0
+        overlay = material_by_ps.get(ps_id) or {}
+        jobs.append(
+            {
+                "cnc_number": cnc_number,
+                "machine_no": machine_no,
+                "process_sheet": process_sheet,
+                "part_no": part_no,
+                "operation_name": operation_name,
+                "op_no": op_no,
+                "label": label,
+                "sub": sub,
+                "material_in": bool(overlay.get("material_in")),
+                "tooling_ready": bool(tooling_by_op.get(op_id, True)) if op_id else True,
+                "program_ready": bool(program_by_op.get(op_id, True)) if op_id else True,
+                "queue_position": int(block.get("queue_position") or 0),
+            }
+        )
+    return jobs
+
+
+def _parts_for_planner_ps(con, planner_ps_ids: list[str]) -> dict[str, dict[str, str]]:
+    ids = [compact_text(pid) for pid in planner_ps_ids if compact_text(pid)]
+    if not ids:
+        return {}
+
+    def _load():
+        return rows(
+            con.execute(
+                """
+                SELECT planner_ps_id, inventory_code
+                FROM public.planner_process_sheet
+                WHERE planner_ps_id = ANY(%s)
+                """,
+                (ids,),
+            )
+        )
+
+    from .helpers import planner_try_savepoint
+
+    query_rows = planner_try_savepoint(con, "floor_job_parts", _load, default=[])
+    out: dict[str, dict[str, str]] = {}
+    for row in query_rows or []:
+        pid = compact_text(row.get("planner_ps_id"))
+        if not pid:
+            continue
+        out[pid] = {"part_no": compact_text(row.get("inventory_code"))}
+    return out
+
+
+def fetch_floor_current_jobs(con) -> dict[str, Any]:
+    """First active queue block on each floor machine, with readiness flags."""
+    from .blocks import attach_block_ps_identity, planner_ps_id_from_block_row
+    from .helpers import planner_try_savepoint
+    from .process_sheets import (
+        material_in_overlay_for_planner_ps_ids,
+        program_map_for_operation_ids,
+        tooling_map_for_operation_ids,
+    )
+    from .shift_management_service import display_ps_id
+
+    machine_nos = [str(item["machine_no"]).upper() for item in FLOOR_LAYOUT_MACHINES]
+    data = rows(
+        con.execute(
+            """
+            SELECT DISTINCT ON (b.machine_id)
+                b.block_id,
+                b.machine_id,
+                b.queue_position,
+                m.machine_no,
+                o.operation_id,
+                o.job_no,
+                o.operation_name,
+                o.source_ps_id,
+                o.source_op_no
+            FROM public.planner_run_block b
+            JOIN public.planner_machines m ON m.machine_id = b.machine_id
+            JOIN public.planner_operation o ON o.operation_id = b.operation_id
+            WHERE b.active IS TRUE
+              AND UPPER(BTRIM(m.machine_no)) = ANY(%s)
+            ORDER BY b.machine_id, b.queue_position, b.block_id
+            """,
+            (machine_nos,),
+        )
+    )
+    blocks: list[dict[str, Any]] = []
+    for row in data:
+        blocks.append(
+            {
+                "block_id": int(row["block_id"]),
+                "machine_id": int(row["machine_id"]),
+                "machine_no": compact_text(row.get("machine_no")),
+                "queue_position": int(row.get("queue_position") or 0),
+                "operation_id": int(row["operation_id"]) if row.get("operation_id") else None,
+                "operation_name": compact_text(row.get("operation_name")),
+                "source_op_no": compact_text(row.get("source_op_no")),
+                "job_no": compact_text(row.get("job_no")),
+                "source_ps_id": compact_text(row.get("source_ps_id")),
+            }
+        )
+
+    def _attach():
+        attach_block_ps_identity(con, blocks)
+        return True
+
+    planner_try_savepoint(con, "floor_job_ps", _attach, default=False)
+    for block in blocks:
+        block["planner_ps_id"] = planner_ps_id_from_block_row(block)
+        block["process_sheet"] = block["planner_ps_id"] or display_ps_id(
+            block.get("source_ps_id"),
+            block.get("job_no"),
+        )
+
+    ps_ids = list(dict.fromkeys(
+        compact_text(block.get("planner_ps_id"))
+        for block in blocks
+        if compact_text(block.get("planner_ps_id"))
+    ))
+    op_ids = [int(block["operation_id"]) for block in blocks if int(block.get("operation_id") or 0) > 0]
+    jobs = compose_floor_current_jobs(
+        blocks,
+        material_by_ps=material_in_overlay_for_planner_ps_ids(con, ps_ids),
+        tooling_by_op=tooling_map_for_operation_ids(con, op_ids),
+        program_by_op=program_map_for_operation_ids(con, op_ids),
+        parts_by_ps=_parts_for_planner_ps(con, ps_ids),
+    )
+    return {
+        "ok": True,
+        "low_utilisation_pct": FLOOR_LOW_UTIL_PCT,
+        "jobs": jobs,
+        "by_cnc": {str(job["cnc_number"]): job for job in jobs},
+    }
+
+
 def delete_machine_part_tag(con, tag_id: int) -> bool:
     ensure_floor_plan_tables(con)
     cur = con.execute(

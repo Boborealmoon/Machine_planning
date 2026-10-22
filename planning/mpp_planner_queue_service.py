@@ -2223,10 +2223,12 @@ def dequeue_done_mpp_block(
     op_row = one(
         con.execute(
             """
-            SELECT co.cycle_op_id, co.cycle_id, c.machine_id, c.group_id
+            SELECT co.cycle_op_id, co.cycle_id, c.machine_id, c.group_id, b.block_id
             FROM planner_mpp_cycle_op co
             JOIN planner_mpp_cycle c ON c.cycle_id = co.cycle_id
+            JOIN planner_run_block b ON b.block_id = co.block_id
             WHERE co.block_id = %s
+            FOR UPDATE OF b
             """,
             (int(block_id),),
         )

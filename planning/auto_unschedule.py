@@ -317,6 +317,7 @@ def unschedule_done_block(con, block_id: int, *, reason: str = "AUTO_DONE", reca
             FROM planner_run_block b
             JOIN planner_operation o ON o.operation_id = b.operation_id
             WHERE b.block_id = %s
+            FOR UPDATE OF b
             """,
             (int(block_id),),
         )
