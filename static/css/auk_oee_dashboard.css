@@ -2547,7 +2547,7 @@
   color: #667085;
 }
 
-/* ── Daily OEE grid ── */
+/* ── Daily OEE grid (month → Mon–Sun weeks) ── */
 .auk-oee-calendar {
   background: #fff;
   border: 1px solid #e4e7ec;
@@ -2570,6 +2570,20 @@
   color: #344054;
 }
 
+.auk-cal-month-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.auk-cal-month-field__label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #98a2b3;
+}
+
 .auk-cal-nav,
 .auk-cal-date {
   height: 32px;
@@ -2586,8 +2600,10 @@
   cursor: pointer;
 }
 
-.auk-cal-date {
+.auk-cal-date,
+.auk-cal-month-input {
   padding: 0 8px;
+  min-width: 148px;
 }
 
 .auk-cal-legend {
@@ -2610,6 +2626,53 @@
 .auk-cal-scroll {
   overflow: auto;
   max-height: calc(100vh - 220px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 14px 16px;
+}
+
+.auk-cal-week {
+  border: 1px solid #eaecf0;
+  border-radius: 10px;
+  background: #fcfcfd;
+  overflow: hidden;
+}
+
+.auk-cal-week__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eaecf0;
+  background: #f8fafc;
+}
+
+.auk-cal-week__title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #101828;
+}
+
+.auk-cal-week__range {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475467;
+}
+
+.auk-cal-week__span {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #98a2b3;
+}
+
+.auk-cal-week__scroll {
+  overflow: auto;
+  padding: 6px 8px 10px;
 }
 
 .auk-cal-table {
@@ -2618,6 +2681,10 @@
   width: max-content;
   min-width: 100%;
   font-variant-numeric: tabular-nums;
+}
+
+.auk-cal-table--week {
+  width: 100%;
 }
 
 .auk-cal-table th,
@@ -2632,28 +2699,61 @@
   left: 0;
   z-index: 2;
   min-width: 220px;
+  width: 220px;
   background: #fff;
   text-align: left;
 }
 
-.auk-cal-month,
 .auk-cal-day {
   position: sticky;
+  top: 0;
   z-index: 3;
+  min-width: 52px;
+  height: 40px;
   background: #fff;
   color: #667085;
   font-size: 11px;
   font-weight: 800;
   text-align: center;
+  vertical-align: middle;
 }
 
-.auk-cal-month { top: 0; height: 22px; }
-.auk-cal-day { top: 22px; height: 22px; min-width: 32px; }
+.auk-cal-day.is-outside {
+  color: #d0d5dd;
+  background: #f9fafb;
+}
+
+.auk-cal-weekday,
+.auk-cal-date-num {
+  display: block;
+  line-height: 1.15;
+}
+
+.auk-cal-weekday {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #98a2b3;
+}
+
+.auk-cal-day.is-outside .auk-cal-weekday {
+  color: #d0d5dd;
+}
+
+.auk-cal-date-num {
+  margin-top: 2px;
+  color: #344054;
+}
+
+.auk-cal-day.is-outside .auk-cal-date-num {
+  color: #d0d5dd;
+}
 
 .auk-cal-corner {
   top: 0;
   z-index: 5;
-  height: 44px;
+  height: 40px;
+  background: #fff;
 }
 
 .auk-cal-name {
@@ -2697,22 +2797,40 @@
 }
 
 .auk-cal-cell {
-  width: 32px;
-  min-width: 32px;
-  height: 26px;
-  border-radius: 2px;
+  width: 52px;
+  min-width: 52px;
+  height: 28px;
+  border-radius: 3px;
   text-align: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
-  line-height: 26px;
+  line-height: 28px;
 }
 
 .auk-cal-cell.is-empty {
   background: #f2f4f7;
 }
 
+.auk-cal-cell.is-outside {
+  background: #f8fafc;
+}
+
 .auk-cal-status {
   padding: 28px 16px;
   color: #667085;
   font-size: 14px;
+}
+
+@media (max-width: 720px) {
+  .auk-cal-corner,
+  .auk-cal-label {
+    min-width: 160px;
+    width: 160px;
+  }
+
+  .auk-cal-day,
+  .auk-cal-cell {
+    min-width: 42px;
+    width: 42px;
+  }
 }
