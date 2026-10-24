@@ -937,7 +937,7 @@
   const FLOOR_SUBTITLE = 'Shop layout. Each machine shows utilisation, OEE, and the first job in its queue.';
   let floorJobs = { available: false, byCnc: {}, lowPct: 40 };
   let floorJobsSeq = 0;
-  const CALENDAR_SUBTITLE = 'Daily OEE by machine. Click a name for that range’s timeline.';
+  const CALENDAR_SUBTITLE = 'Monthly OEE by machine, grouped Mon–Sun. Pick a month, then click a name for that month’s timeline.';
 
   function readSavedView() {
     try {
@@ -1345,16 +1345,7 @@
     return `background:rgb(${rgb.join(',')});color:${text}`;
   }
 
-  function calendarMonthGroups(days) {
-    const groups = [];
-    (days || []).forEach((day) => {
-      const label = new Date(`${day}T00:00:00`).toLocaleDateString(undefined, { month: 'short' });
-      const last = groups[groups.length - 1];
-      if (last && last.label === label) last.span += 1;
-      else groups.push({ label, span: 1 });
-    });
-    return groups;
-  }
+  const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   function calendarRowVisible(row, byId) {
     let parentId = row.parent_id;
@@ -1364,6 +1355,151 @@
       parentId = parent ? parent.parent_id : null;
     }
     return true;
+  }
+
+  function parseLocalDay(iso) {
+    if (!iso || typeof iso !== 'string') return null;
+    const parts = iso.slice(0, 10).split('-').map(Number);
+    if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null;
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+
+  function formatLocalDay(dt) {
+    return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+  }
+
+  function currentCalendarMonth() {
+    const input = document.getElementById('auk-oee-cal-month');
+    if (input && /^\d{4}-\d{2}$/.test(input.value || '')) return input.value;
+    if (calendarData && calendarData.from) return String(calendarData.from).slice(0, 7);
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function monthBounds(monthValue) {
+    const [year, month] = String(monthValue || '').split('-').map(Number);
+    if (!year || !month) return null;
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 0);
+    return { start: formatLocalDay(start), end: formatLocalDay(end), year, month };
+  }
+
+  function formatMonthLabel(monthValue) {
+    const bounds = monthBounds(monthValue);
+    if (!bounds) return monthValue || '';
+    return new Date(bounds.year, bounds.month - 1, 1).toLocaleDateString(undefined, {
+      month: 'long',
+      year: 'numeric',
+    });
+  }
+
+  function formatWeekRangeLabel(slots) {
+    const inMonth = slots.filter((slot) => slot.inMonth && slot.day);
+    if (!inMonth.length) return 'Week';
+    const first = parseLocalDay(inMonth[0].day);
+    const last = parseLocalDay(inMonth[inMonth.length - 1].day);
+    if (!first || !last) return 'Week';
+    const startText = first.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    const endText = first.getMonth() === last.getMonth()
+      ? String(last.getDate())
+      : last.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    return `${startText} – ${endText}`;
+  }
+
+  /** Pad the selected month into Mon–Sun week strips. */
+  function calendarWeeks(days, monthValue) {
+    const dayIndex = new Map((days || []).map((day, index) => [day, index]));
+    const bounds = monthBounds(monthValue || currentCalendarMonth());
+    const first = bounds ? parseLocalDay(bounds.start) : parseLocalDay((days || [])[0]);
+    const last = bounds ? parseLocalDay(bounds.end) : parseLocalDay((days || [])[(days || []).length - 1]);
+    if (!first || !last) return [];
+
+    const cursor = new Date(first);
+    const mondayOffset = (cursor.getDay() + 6) % 7; // Monday = 0
+    cursor.setDate(cursor.getDate() - mondayOffset);
+
+    const end = new Date(last);
+    const sundayOffset = (7 - end.getDay()) % 7; // Sunday = 0 offset from itself
+    end.setDate(end.getDate() + sundayOffset);
+
+    const weeks = [];
+    while (cursor <= end) {
+      const slots = [];
+      for (let i = 0; i < 7; i += 1) {
+        const day = formatLocalDay(cursor);
+        const inMonth = !bounds || (day >= bounds.start && day <= bounds.end);
+        slots.push({
+          day,
+          index: dayIndex.has(day) ? dayIndex.get(day) : -1,
+          inMonth,
+          weekday: WEEKDAY_LABELS[i],
+          dateNum: String(cursor.getDate()).padStart(2, '0'),
+        });
+        cursor.setDate(cursor.getDate() + 1);
+      }
+      if (slots.some((slot) => slot.inMonth)) weeks.push(slots);
+    }
+    return weeks;
+  }
+
+  function renderCalendarLabelCell(row) {
+    const twist = row.expandable
+      ? `<button type="button" class="auk-cal-twist" data-cal-toggle="${escapeHtml(row.id)}" aria-label="${calendarCollapsed.has(row.id) ? 'Expand' : 'Collapse'}">${calendarCollapsed.has(row.id) ? '▸' : '▾'}</button>`
+      : '<span class="auk-cal-twist auk-cal-twist--spacer"></span>';
+    const nameTag = row.equipment_id != null ? 'button' : 'span';
+    const nameAttrs = row.equipment_id != null
+      ? ` type="button" class="auk-cal-name is-link" data-cal-open="${Number(row.equipment_id)}" data-cal-label="${escapeHtml(row.label)}"`
+      : ' class="auk-cal-name"';
+    return `
+      <th class="auk-cal-label" style="padding-left:${8 + row.depth * 16}px">
+        ${twist}<${nameTag}${nameAttrs}>${escapeHtml(row.label)}</${nameTag}>
+      </th>
+    `;
+  }
+
+  function renderCalendarWeek(week, weekIndex, visibleRows) {
+    const dayHeads = week.map((slot) => `
+      <th class="auk-cal-day${slot.inMonth ? '' : ' is-outside'}">
+        <span class="auk-cal-weekday">${escapeHtml(slot.weekday)}</span>
+        <span class="auk-cal-date-num">${escapeHtml(slot.dateNum)}</span>
+      </th>
+    `).join('');
+    const body = visibleRows.map((row) => {
+      const cells = week.map((slot) => {
+        if (!slot.inMonth || slot.index < 0) {
+          return `<td class="auk-cal-cell is-empty${slot.inMonth ? '' : ' is-outside'}"></td>`;
+        }
+        const value = (row.values || [])[slot.index];
+        if (value == null) return '<td class="auk-cal-cell is-empty"></td>';
+        return `<td class="auk-cal-cell" style="${heatStyle(value)}" title="${escapeHtml(row.label)} · ${escapeHtml(slot.day)} · ${value}%">${value}</td>`;
+      }).join('');
+      return `
+        <tr class="auk-cal-row${row.is_machine ? '' : ' is-group'}">
+          ${renderCalendarLabelCell(row)}
+          ${cells}
+        </tr>
+      `;
+    }).join('');
+    return `
+      <section class="auk-cal-week" aria-label="Week ${weekIndex + 1}">
+        <header class="auk-cal-week__head">
+          <span class="auk-cal-week__title">Week ${weekIndex + 1}</span>
+          <span class="auk-cal-week__range">${escapeHtml(formatWeekRangeLabel(week))}</span>
+          <span class="auk-cal-week__span">Mon – Sun</span>
+        </header>
+        <div class="auk-cal-week__scroll">
+          <table class="auk-cal-table auk-cal-table--week">
+            <thead>
+              <tr>
+                <th class="auk-cal-corner"></th>
+                ${dayHeads}
+              </tr>
+            </thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
+      </section>
+    `;
   }
 
   function renderCalendar() {
@@ -1384,46 +1520,22 @@
       calendarEl.innerHTML = `<p class="auk-cal-status">${escapeHtml(calendarData.error)}</p>`;
       return;
     }
+    const monthValue = (calendarData.from || currentCalendarMonth()).slice(0, 7);
     const days = calendarData.days || [];
     const rows = calendarData.rows || [];
     const byId = new Map(rows.map((row) => [row.id, row]));
-    const months = calendarMonthGroups(days).map((group) => (
-      `<th class="auk-cal-month" colspan="${group.span}">${escapeHtml(group.label)}</th>`
-    )).join('');
-    const dayHeads = days.map((day) => {
-      const num = day.slice(8);
-      return `<th class="auk-cal-day">${escapeHtml(num)}</th>`;
-    }).join('');
-    const body = rows.filter((row) => calendarRowVisible(row, byId)).map((row) => {
-      const twist = row.expandable
-        ? `<button type="button" class="auk-cal-twist" data-cal-toggle="${escapeHtml(row.id)}" aria-label="${calendarCollapsed.has(row.id) ? 'Expand' : 'Collapse'}">${calendarCollapsed.has(row.id) ? '▸' : '▾'}</button>`
-        : '<span class="auk-cal-twist auk-cal-twist--spacer"></span>';
-      const nameTag = row.equipment_id != null ? 'button' : 'span';
-      const nameAttrs = row.equipment_id != null
-        ? ` type="button" class="auk-cal-name is-link" data-cal-open="${Number(row.equipment_id)}" data-cal-label="${escapeHtml(row.label)}"`
-        : ' class="auk-cal-name"';
-      const cells = (row.values || []).map((value, index) => {
-        if (value == null) return '<td class="auk-cal-cell is-empty"></td>';
-        const day = days[index] || '';
-        return `<td class="auk-cal-cell" style="${heatStyle(value)}" title="${escapeHtml(row.label)} · ${escapeHtml(day)} · ${value}%">${value}</td>`;
-      }).join('');
-      return `
-        <tr class="auk-cal-row${row.is_machine ? '' : ' is-group'}">
-          <th class="auk-cal-label" style="padding-left:${8 + row.depth * 16}px">
-            ${twist}<${nameTag}${nameAttrs}>${escapeHtml(row.label)}</${nameTag}>
-          </th>
-          ${cells}
-        </tr>
-      `;
-    }).join('');
+    const visibleRows = rows.filter((row) => calendarRowVisible(row, byId));
+    const weeks = calendarWeeks(days, monthValue);
+    const weekBlocks = weeks.map((week, index) => renderCalendarWeek(week, index, visibleRows)).join('');
     calendarEl.innerHTML = `
       <div class="auk-cal-tools">
         <button type="button" class="auk-cal-nav" data-cal-month="-1" aria-label="Previous month">‹</button>
-        <input type="date" class="auk-cal-date" id="auk-oee-cal-from" value="${escapeHtml(calendarData.from || '')}" aria-label="From date">
-        <span aria-hidden="true">–</span>
-        <input type="date" class="auk-cal-date" id="auk-oee-cal-to" value="${escapeHtml(calendarData.to || '')}" aria-label="To date">
+        <label class="auk-cal-month-field">
+          <span class="auk-cal-month-field__label">Month</span>
+          <input type="month" class="auk-cal-date auk-cal-month-input" id="auk-oee-cal-month" value="${escapeHtml(monthValue)}" aria-label="Report month">
+        </label>
         <button type="button" class="auk-cal-nav" data-cal-month="1" aria-label="Next month">›</button>
-        <span class="auk-cal-res">Daily</span>
+        <span class="auk-cal-res">${escapeHtml(formatMonthLabel(monthValue))} · weekly</span>
         <div class="auk-cal-legend">
           <span>0</span>
           <span class="auk-cal-legend__bar" aria-hidden="true"></span>
@@ -1432,27 +1544,17 @@
         </div>
       </div>
       <div class="auk-cal-scroll">
-        <table class="auk-cal-table">
-          <thead>
-            <tr>
-              <th class="auk-cal-corner" rowspan="2"></th>
-              ${months}
-            </tr>
-            <tr>${dayHeads}</tr>
-          </thead>
-          <tbody>${body}</tbody>
-        </table>
+        ${weekBlocks || '<p class="auk-cal-status">No days in this month.</p>'}
       </div>
     `;
   }
 
   function calendarRangeParams() {
-    const fromInput = document.getElementById('auk-oee-cal-from');
-    const toInput = document.getElementById('auk-oee-cal-to');
+    const bounds = monthBounds(currentCalendarMonth());
     const params = new URLSearchParams();
-    if (fromInput && fromInput.value && toInput && toInput.value) {
-      params.set('from', fromInput.value);
-      params.set('to', toInput.value);
+    if (bounds) {
+      params.set('from', bounds.start);
+      params.set('to', bounds.end);
     }
     return params;
   }
@@ -1493,16 +1595,13 @@
   }
 
   function shiftCalendarMonth(delta) {
-    const fromInput = document.getElementById('auk-oee-cal-from');
-    const toInput = document.getElementById('auk-oee-cal-to');
-    const source = (fromInput && fromInput.value) || (calendarData && calendarData.from);
-    if (!source || !fromInput || !toInput) return;
+    const input = document.getElementById('auk-oee-cal-month');
+    const source = (input && input.value) || currentCalendarMonth();
     const [year, month] = source.split('-').map(Number);
-    const start = new Date(year, month - 1 + delta, 1);
-    const end = new Date(year, month + delta, 0);
-    const iso = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-    fromInput.value = iso(start);
-    toInput.value = iso(end);
+    if (!year || !month) return;
+    const next = new Date(year, month - 1 + delta, 1);
+    const value = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
+    if (input) input.value = value;
     loadCalendar(true);
   }
 
@@ -2515,7 +2614,7 @@
       });
     });
     calendarEl.addEventListener('change', (event) => {
-      if (event.target.id === 'auk-oee-cal-from' || event.target.id === 'auk-oee-cal-to') loadCalendar(true);
+      if (event.target.id === 'auk-oee-cal-month') loadCalendar(true);
     });
   }
   if (floorEl) {
