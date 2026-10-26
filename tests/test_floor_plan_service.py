@@ -49,6 +49,7 @@ def test_compose_floor_current_job_uses_queue_head_and_readiness():
                 "operation_name": "Rough turn",
                 "source_op_no": "20",
                 "queue_position": 1,
+                "total_qty": 24,
             },
             {
                 "machine_no": "CNC 38",
@@ -64,6 +65,17 @@ def test_compose_floor_current_job_uses_queue_head_and_readiness():
                 "operation_id": 4,
                 "operation_name": "Mill",
                 "queue_position": 1,
+                "total_qty": 0,
+                "scheduled_qty": 8,
+            },
+            {
+                "machine_no": "CNC 10",
+                "planner_ps_id": "APS26-0200::2",
+                "process_sheet": "APS26-0200::2",
+                "operation_id": 5,
+                "operation_name": "Finish",
+                "queue_position": 1,
+                "total_qty": 3.5,
             },
         ],
         material_by_ps={"NPS26-0142": {"material_in": True}, "NPS26-0100": {"material_in": False}},
@@ -72,19 +84,26 @@ def test_compose_floor_current_job_uses_queue_head_and_readiness():
         parts_by_ps={"NPS26-0142": {"part_no": "BRACKET-7"}},
     )
     by_cnc = {job["cnc_number"]: job for job in jobs}
-    assert set(by_cnc) == {38, 15}
+    assert set(by_cnc) == {38, 15, 10}
     head = by_cnc[38]
-    assert head["label"] == "BRACKET-7"
-    assert head["sub"] == "NPS26-0142"
+    assert head["label"] == "NPS26-0142"
+    assert head["process_sheet"] == "NPS26-0142"
+    assert head["qty"] == 24
+    assert head["part_no"] == "BRACKET-7"
     assert head["material_in"] is True
     assert head["tooling_ready"] is False
     assert head["program_ready"] is True
     assert head["queue_position"] == 1
     waiting = by_cnc[15]
     assert waiting["label"] == "NPS26-0100"
+    assert waiting["qty"] == 8
     assert waiting["material_in"] is False
     assert waiting["tooling_ready"] is True
     assert waiting["program_ready"] is False
+    partial = by_cnc[10]
+    assert partial["label"] == "APS26-0200"
+    assert partial["process_sheet"] == "APS26-0200"
+    assert partial["qty"] == 3.5
 
 
 def test_low_utilisation_callout_threshold():

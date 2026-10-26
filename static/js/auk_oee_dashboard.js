@@ -932,9 +932,10 @@
   }
 
   const FLOOR_TILE_INSET = 0.025;
-  const FLOOR_MAX_HEIGHT = 760;
+  // Wide enough to read a machine, narrow enough for a normal 1366–1440 window.
+  const FLOOR_STANDARD_WIDTH = 1280;
   const CARDS_SUBTITLE = 'Live factory dashboard · refreshes every minute · drag the board to match the floor';
-  const FLOOR_SUBTITLE = 'Shop layout. Each machine shows utilisation, OEE, and the first job in its queue.';
+  const FLOOR_SUBTITLE = 'Shop layout. Each machine shows OEE, the NPS or APS number, quantity, and material, tooling, and program.';
   let floorJobs = { available: false, byCnc: {}, lowPct: 40 };
   let floorJobsSeq = 0;
   const CALENDAR_SUBTITLE = 'Daily OEE by machine. Click a name for that range’s timeline.';
@@ -1013,11 +1014,15 @@
   function lowCallouts(card) {
     const cutoff = lowCutoff();
     const reasons = [];
-    const loading = Number(card && card.loading_pct);
     const oee = Number(card && card.oee_pct);
-    if (Number.isFinite(loading) && loading < cutoff) reasons.push(`Utilisation under ${cutoff}%`);
     if (Number.isFinite(oee) && oee < cutoff) reasons.push(`OEE under ${cutoff}%`);
     return reasons;
+  }
+
+  function fmtFloorQty(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return '';
+    return Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : n.toFixed(1);
   }
 
   function floorJobFor(cncNumber) {
@@ -1026,19 +1031,15 @@
     return floorJobs.byCnc[key] || floorJobs.byCnc[cncNumber] || null;
   }
 
-  function renderFloorMeter(label, value, compact) {
+  function renderFloorMeter(label, value, kind, compact) {
     const n = Number(value);
     const known = Number.isFinite(n);
-    const pct = known ? Math.max(0, Math.min(100, n)) : 0;
     const tone = known ? metricTone(n) : 'muted';
     const text = compact ? fmtPctShort(value) : fmtFloorPct(value);
     return `
-      <span class="auk-floor-meter">
-        <span class="auk-floor-meter__k">${label}</span>
+      <span class="auk-floor-meter auk-floor-meter--${kind}">
         <strong class="auk-floor-meter__v is-${tone}">${text}</strong>
-        <span class="auk-floor-meter__track" aria-hidden="true">
-          <span class="auk-floor-meter__fill is-${tone}" style="width:${pct}%"></span>
-        </span>
+        <span class="auk-floor-meter__k">${label}</span>
       </span>
     `;
   }
@@ -1060,14 +1061,11 @@
     if (!job) {
       return '<span class="auk-floor-tile__job auk-floor-tile__job--empty">No job</span>';
     }
-    const sub = job.sub ? `<em>${escapeHtml(job.sub)}</em>` : '';
-    const detail = [
-      job.part_no ? `Part ${job.part_no}` : '',
-      job.process_sheet ? `PS ${job.process_sheet}` : '',
-      job.op_no ? `Op ${job.op_no}` : '',
-      job.operation_name || '',
-    ].filter(Boolean).join(' · ');
-    return `<span class="auk-floor-tile__job" title="${escapeHtml(detail)}"><strong>${escapeHtml(job.label || 'Job')}</strong>${sub}</span>`;
+    const sheet = job.process_sheet || job.label || job.operation_name || 'Job';
+    const qty = fmtFloorQty(job.qty);
+    const qtyHtml = qty ? `<em>× ${escapeHtml(qty)}</em>` : '';
+    const detail = [sheet, qty ? `Qty ${qty}` : ''].filter(Boolean).join(' · ');
+    return `<span class="auk-floor-tile__job" title="${escapeHtml(detail)}"><strong>${escapeHtml(sheet)}</strong>${qtyHtml}</span>`;
   }
 
   function renderFloorFlags(job) {
@@ -1088,39 +1086,84 @@
     const bounds = floorBounds(layoutSource);
     const stage = canvas.parentElement;
     if (!stage) return;
-    const ratio = bounds.width / bounds.height;
-    const maxH = Math.min(window.innerHeight * 0.72, FLOOR_MAX_HEIGHT);
-    let canvasW = stage.clientWidth || 640;
-    let canvasH = canvasW / ratio;
-    if (canvasH > maxH) {
-      canvasH = maxH;
-      canvasW = canvasH * ratio;
-    }
+    const available = stage.clientWidth || FLOOR_STANDARD_WIDTH;
+    const canvasW = Math.min(available, FLOOR_STANDARD_WIDTH);
+    const canvasH = canvasW * (bounds.height / bounds.width);
     canvas.style.width = `${Math.floor(canvasW)}px`;
     canvas.style.height = `${Math.floor(canvasH)}px`;
+  }
+
+  function floorAverage(cards, key) {
+    const values = cards
+      .map((card) => Number(card[key]))
+      .filter((value) => Number.isFinite(value));
+    if (!values.length) return null;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+
+  function renderFloorGroupStat(label, value) {
+    const known = Number.isFinite(Number(value));
+    const tone = known ? metricTone(value) : 'muted';
+    const width = known ? Math.max(0, Math.min(100, Number(value))) : 0;
+    return `
+      <div class="auk-floor-group__stat">
+        <strong class="auk-floor-group__value is-${tone}">${fmtFloorPct(value)}</strong>
+        <span class="auk-floor-group__metric">${label}</span>
+        <span class="auk-floor-group__track" aria-hidden="true">
+          <span class="auk-floor-group__fill is-${tone}" style="width:${width}%"></span>
+        </span>
+      </div>
+    `;
+  }
+
+  function floorGroupNote(placed, reporting) {
+    const cutoff = lowCutoff();
+    if (!reporting.length) return 'No live figures for this group';
+    const under = (key) => reporting.filter((card) => {
+      const value = Number(card[key]);
+      return Number.isFinite(value) && value < cutoff;
+    }).length;
+    const lowOee = under('oee_pct');
+    const bits = [
+      lowOee
+        ? `${lowOee} of ${reporting.length} under ${cutoff}% OEE`
+        : `All ${reporting.length} at or above ${cutoff}% OEE`,
+    ];
+    const missing = placed.length - reporting.length;
+    if (missing > 0) bits.push(`${missing} not reporting`);
+    if (floorJobs.available) {
+      let noJob = 0;
+      let notReady = 0;
+      placed.forEach((number) => {
+        const job = floorJobFor(number);
+        if (job === null) noJob += 1;
+        else if (job && (!job.material_in || !job.tooling_ready || !job.program_ready)) notReady += 1;
+      });
+      if (noJob) bits.push(`${noJob} with no job`);
+      if (notReady) bits.push(`${notReady} missing mat, tool, or program`);
+    }
+    return bits.join(' · ');
   }
 
   function renderFloorGroups(layoutSource, byCnc) {
     const groups = layoutSource.groups || [];
     return groups.map((group) => {
       const numbers = (group.cnc_numbers || []).map((value) => Number(value));
-      const values = numbers
-        .map((number) => byCnc.get(number))
-        .filter(Boolean)
-        .map((card) => Number(card.oee_pct))
-        .filter((value) => Number.isFinite(value));
-      const avg = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-      const tone = avg == null ? 'idle' : toneForPct(avg);
-      const width = avg == null ? 0 : Math.max(0, Math.min(100, avg));
-      const subtitle = group.subtitle || `${numbers.length}X`;
+      const reporting = numbers.map((number) => byCnc.get(number)).filter(Boolean);
+      const avgOee = floorAverage(reporting, 'oee_pct');
+      const tone = avgOee == null ? 'idle' : metricTone(avgOee);
+      const countLabel = numbers.length === 1 ? '1 machine' : `${numbers.length} machines`;
+      const meta = group.subtitle ? `${countLabel} · ${group.subtitle}` : countLabel;
       return `
-        <article class="auk-floor-group">
-          <span class="auk-floor-group__label">${escapeHtml(group.label)} <em>${escapeHtml(subtitle)}</em></span>
-          <strong class="auk-floor-group__value">${fmtFloorPct(avg)}</strong>
-          <span class="auk-floor-group__metric">avg OEE</span>
-          <div class="auk-floor-group__track" aria-hidden="true">
-            <span class="auk-floor-group__fill auk-floor-group__fill--${tone}" style="width:${width}%"></span>
+        <article class="auk-floor-group auk-floor-group--${tone}">
+          <header class="auk-floor-group__head">
+            <h2 class="auk-floor-group__label">${escapeHtml(group.label)}</h2>
+            <p class="auk-floor-group__meta">${escapeHtml(meta)}</p>
+          </header>
+          <div class="auk-floor-group__stats">
+            ${renderFloorGroupStat('Avg OEE', avgOee)}
           </div>
+          <p class="auk-floor-group__note">${escapeHtml(floorGroupNote(numbers, reporting))}</p>
         </article>
       `;
     }).join('');
@@ -1162,7 +1205,6 @@
     return (layoutSource.machines || []).map((machine) => {
       const card = byCnc.get(Number(machine.cnc_number)) || null;
       const oee = card ? card.oee_pct : null;
-      const loading = card ? card.loading_pct : null;
       const fill = colors[machine.color] || '#ccc';
       const equipmentId = card && card.equipment_id != null ? Number(card.equipment_id) : null;
       const tag = equipmentId != null ? 'button' : 'div';
@@ -1171,12 +1213,14 @@
       const low = reasons.length ? ' is-low-util' : '';
       const missing = card ? '' : ' is-missing';
       const sizeClass = floorTileSizeClass(machine);
-      const compact = sizeClass.indexOf('auk-floor-tile--tall') < 0;
+      const compact = sizeClass.indexOf('auk-floor-tile--roomy') < 0;
       const job = floorJobFor(machine.cnc_number);
       const subtitle = machine.subtitle ? `<span class="auk-floor-tile__sub">${escapeHtml(machine.subtitle)}</span>` : '';
       const jobBits = [];
       if (job) {
-        jobBits.push(job.label || 'Job');
+        jobBits.push(job.process_sheet || job.label || 'Job');
+        const qty = fmtFloorQty(job.qty);
+        if (qty) jobBits.push(`qty ${qty}`);
         jobBits.push(job.material_in ? 'material in' : 'no material');
         jobBits.push(job.tooling_ready ? 'tooling ready' : 'no tooling');
         jobBits.push(job.program_ready ? 'program ready' : 'no program');
@@ -1186,7 +1230,6 @@
       const title = [
         machine.machine_no,
         card && card.machine_type ? card.machine_type : '',
-        `utilisation ${fmtFloorPct(loading)}`,
         `OEE ${fmtFloorPct(oee)}`,
         reasons.join(' · '),
         ...jobBits,
@@ -1209,8 +1252,7 @@
           <span class="auk-floor-tile__no">${escapeHtml(machine.label)}</span>
           ${subtitle}
           <span class="auk-floor-tile__meters">
-            ${renderFloorMeter(compact ? 'U' : 'Util', loading, compact)}
-            ${renderFloorMeter(compact ? 'O' : 'OEE', oee, compact)}
+            ${renderFloorMeter('OEE', oee, 'oee', compact)}
           </span>
           ${foot}
         </${tag}>
@@ -1260,7 +1302,7 @@
         <div class="auk-floor-stage">
           <div class="auk-floor-canvas" aria-label="Factory floor plan with live OEE">${renderFloorTiles(layoutSource, byCnc)}</div>
         </div>
-        <p class="auk-floor-hint">Colours are the shop layout. Utilisation and OEE are for the selected range. The job is the first one in that machine’s queue. A red ! means utilisation or OEE is under ${lowCutoff()}%.</p>
+        <p class="auk-floor-hint">Each group card shows average OEE. A red figure is under ${lowCutoff()}%. Tile colours are the shop layout. Each machine shows the first job in its queue: the NPS or APS number, the quantity, and material, tooling, and program. A red ! means OEE is under ${lowCutoff()}%.</p>
       </section>
       ${renderFloorExtras(layoutSource, byCnc)}
     `;

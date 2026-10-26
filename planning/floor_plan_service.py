@@ -677,6 +677,32 @@ def _cnc_number_from_machine_no(machine_no: str) -> int | None:
         return None
 
 
+def _floor_sheet_no(process_sheet: str) -> str:
+    """NPS/APS number without a partial suffix (NPS26-0142::2 → NPS26-0142)."""
+    text = compact_text(process_sheet)
+    if "::" in text:
+        text = text.split("::", 1)[0]
+    return text
+
+
+def _floor_job_qty(*values: Any) -> int | float | None:
+    """First positive quantity to show beside the process sheet."""
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number <= 0:
+            continue
+        rounded = round(number)
+        if abs(number - rounded) < 1e-6:
+            return int(rounded)
+        return round(number, 1)
+    return None
+
+
 def compose_floor_current_jobs(
     blocks: list[dict[str, Any]],
     *,
@@ -701,19 +727,10 @@ def compose_floor_current_jobs(
             continue
         seen.add(machine_no.upper())
         ps_id = compact_text(block.get("planner_ps_id"))
-        process_sheet = compact_text(block.get("process_sheet")) or ps_id
-        part_no = compact_text((parts_by_ps.get(ps_id) or {}).get("part_no"))
+        process_sheet = _floor_sheet_no(compact_text(block.get("process_sheet")) or ps_id)
         operation_name = compact_text(block.get("operation_name"))
         op_no = compact_text(block.get("source_op_no"))
-        if part_no and process_sheet and part_no.upper() != process_sheet.upper():
-            label = part_no
-            sub = process_sheet
-        elif process_sheet:
-            label = process_sheet
-            sub = operation_name
-        else:
-            label = operation_name or "Job"
-            sub = ""
+        label = process_sheet or operation_name or "Job"
         try:
             op_id = int(block.get("operation_id") or 0)
         except (TypeError, ValueError):
@@ -724,11 +741,12 @@ def compose_floor_current_jobs(
                 "cnc_number": cnc_number,
                 "machine_no": machine_no,
                 "process_sheet": process_sheet,
-                "part_no": part_no,
+                "part_no": compact_text((parts_by_ps.get(ps_id) or {}).get("part_no")),
                 "operation_name": operation_name,
                 "op_no": op_no,
                 "label": label,
-                "sub": sub,
+                "sub": "",
+                "qty": _floor_job_qty(block.get("total_qty"), block.get("scheduled_qty")),
                 "material_in": bool(overlay.get("material_in")),
                 "tooling_ready": bool(tooling_by_op.get(op_id, True)) if op_id else True,
                 "program_ready": bool(program_by_op.get(op_id, True)) if op_id else True,
@@ -786,10 +804,12 @@ def fetch_floor_current_jobs(con) -> dict[str, Any]:
                 b.block_id,
                 b.machine_id,
                 b.queue_position,
+                b.scheduled_qty,
                 m.machine_no,
                 o.operation_id,
                 o.job_no,
                 o.operation_name,
+                o.total_qty,
                 o.source_ps_id,
                 o.source_op_no
             FROM public.planner_run_block b
@@ -810,6 +830,8 @@ def fetch_floor_current_jobs(con) -> dict[str, Any]:
                 "machine_id": int(row["machine_id"]),
                 "machine_no": compact_text(row.get("machine_no")),
                 "queue_position": int(row.get("queue_position") or 0),
+                "scheduled_qty": row.get("scheduled_qty"),
+                "total_qty": row.get("total_qty"),
                 "operation_id": int(row["operation_id"]) if row.get("operation_id") else None,
                 "operation_name": compact_text(row.get("operation_name")),
                 "source_op_no": compact_text(row.get("source_op_no")),
