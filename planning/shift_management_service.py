@@ -222,18 +222,17 @@ def floor_layout_payload() -> dict[str, Any]:
     """Factory floor geometry for the Shift Management machine picker."""
     from .floor_plan_service import (
         FLOOR_LAYOUT_COLORS,
-        FLOOR_LAYOUT_HEIGHT,
         FLOOR_LAYOUT_MACHINES,
-        FLOOR_LAYOUT_WIDTH,
         compute_layout_bounds,
     )
 
+    bounds = compute_layout_bounds(FLOOR_LAYOUT_MACHINES)
     return {
         "machines": [dict(m) for m in FLOOR_LAYOUT_MACHINES],
         "colors": dict(FLOOR_LAYOUT_COLORS),
-        "bounds": compute_layout_bounds(FLOOR_LAYOUT_MACHINES),
-        "width": FLOOR_LAYOUT_WIDTH,
-        "height": FLOOR_LAYOUT_HEIGHT,
+        "bounds": bounds,
+        "width": bounds["width"],
+        "height": bounds["height"],
     }
 
 

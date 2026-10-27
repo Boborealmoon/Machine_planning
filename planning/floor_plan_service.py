@@ -21,41 +21,61 @@ FLOOR_LAYOUT_COLORS = {
     "milling": "#FF4D4D",
 }
 
-# Matplotlib-style coords: y increases upward. All machines sit inside y >= 0.
+# Matplotlib-style coords: y increases upward.
+# Every tile is a wide rectangle so the OEE line, sheet number, quantity, and pills fit.
+_FLOOR_CARD_W = 2.45
+_FLOOR_CARD_H = 1.38
+_FLOOR_COL = (0.2, 2.93, 5.66, 8.39, 11.12)
+_FLOOR_ROW = (0.2, 1.84, 3.48, 5.12, 6.76, 8.4)
+
+
+def _floor_card(machine_no: str, label: str, col: int, row: int, color: str, **extra: Any) -> dict[str, Any]:
+    card = {
+        "machine_no": machine_no,
+        "label": label,
+        "x": _FLOOR_COL[col],
+        "y": _FLOOR_ROW[row],
+        "w": _FLOOR_CARD_W,
+        "h": _FLOOR_CARD_H,
+        "color": color,
+    }
+    card.update(extra)
+    return card
+
+
 FLOOR_LAYOUT_MACHINES: tuple[dict[str, Any], ...] = (
-    # Turnmill (top)
-    {"machine_no": "CNC 38", "label": "38", "x": 1, "y": 8, "w": 2, "h": 1.5, "color": "turnmill"},
-    {"machine_no": "CNC 39", "label": "39", "x": 4, "y": 8, "w": 2, "h": 1.5, "color": "turnmill"},
-    {"machine_no": "CNC 40", "label": "40", "x": 8, "y": 7.5, "w": 1, "h": 2, "color": "turnmill", "rotation": 90},
-    # MPP (left column - 24hr cells)
-    {"machine_no": "CNC 35", "label": "35", "x": 0.5, "y": 4, "w": 1, "h": 2.5, "color": "mpp", "rotation": 90},
-    {"machine_no": "CNC 36", "label": "36", "x": 0.5, "y": 1, "w": 1, "h": 2.5, "color": "mpp", "rotation": 90},
-    # Turning (center)
-    {"machine_no": "CNC 30", "label": "30", "x": 2.5, "y": 6, "w": 1, "h": 0.8, "color": "turning"},
-    {"machine_no": "CNC 31", "label": "31", "x": 4, "y": 6, "w": 1, "h": 0.8, "color": "turning"},
-    {"machine_no": "CNC 32", "label": "32", "x": 5.5, "y": 6, "w": 1, "h": 0.8, "color": "turning"},
-    {"machine_no": "CNC 22", "label": "22", "x": 3, "y": 4.5, "w": 1, "h": 0.8, "color": "turning"},
-    {"machine_no": "CNC 10", "label": "10", "x": 4.5, "y": 4.5, "w": 1, "h": 0.8, "color": "turning"},
-    {"machine_no": "CNC 15", "label": "15", "x": 6.5, "y": 4, "w": 0.6, "h": 1, "color": "turning", "rotation": 90},
-    {"machine_no": "CNC 21", "label": "21", "x": 6.5, "y": 2.5, "w": 0.6, "h": 1, "color": "turning", "rotation": 90},
-    {"machine_no": "CNC 24", "label": "24", "x": 6, "y": 1, "w": 1, "h": 0.8, "color": "turning"},
-    # Milling + turning (right column, bottom to top: 41, 27, 25, 26, 20, 29)
-    {"machine_no": "CNC 29", "label": "29", "x": 8.5, "y": 5.7, "w": 0.8, "h": 1, "color": "milling", "rotation": 90},
-    {"machine_no": "CNC 20", "label": "20", "x": 8.5, "y": 4.55, "w": 0.8, "h": 1, "color": "milling", "rotation": 90},
-    {"machine_no": "CNC 26", "label": "26", "x": 8.5, "y": 3.4, "w": 0.8, "h": 1, "color": "milling", "rotation": 90},
-    {"machine_no": "CNC 25", "label": "25", "x": 8.5, "y": 2.25, "w": 0.8, "h": 1, "color": "milling", "rotation": 90},
-    {"machine_no": "CNC 27", "label": "27", "x": 8.5, "y": 1.2, "w": 0.8, "h": 0.9, "color": "turning", "rotation": 90},
-    # CNC 41 - I-800 MPP lane: large horizontal rectangle under the right column
-    {
-        "machine_no": "CNC 41",
-        "label": "41",
-        "subtitle": "I-800",
-        "x": 7.0,
-        "y": 0.1,
-        "w": 2.3,
-        "h": 1.0,
-        "color": "mpp",
-    },
+    # Turnmill across the top
+    _floor_card("CNC 38", "38", 1, 5, "turnmill"),
+    _floor_card("CNC 39", "39", 2, 5, "turnmill"),
+    _floor_card("CNC 40", "40", 3, 5, "turnmill"),
+    # MPP down the left side
+    _floor_card("CNC 35", "35", 0, 4, "mpp"),
+    _floor_card("CNC 36", "36", 0, 3, "mpp"),
+    # Turning in the middle
+    _floor_card("CNC 30", "30", 1, 4, "turning"),
+    _floor_card("CNC 31", "31", 2, 4, "turning"),
+    _floor_card("CNC 32", "32", 3, 4, "turning"),
+    _floor_card("CNC 22", "22", 1, 3, "turning"),
+    _floor_card("CNC 10", "10", 2, 3, "turning"),
+    _floor_card("CNC 15", "15", 3, 3, "turning"),
+    _floor_card("CNC 21", "21", 1, 2, "turning"),
+    _floor_card("CNC 24", "24", 2, 2, "turning"),
+    # Milling down the right side, then 27 at the bottom of that column
+    _floor_card("CNC 29", "29", 4, 4, "milling"),
+    _floor_card("CNC 20", "20", 4, 3, "milling"),
+    _floor_card("CNC 26", "26", 4, 2, "milling"),
+    _floor_card("CNC 25", "25", 4, 1, "milling"),
+    _floor_card("CNC 27", "27", 4, 0, "turning"),
+    # CNC 41 - I-800, a longer bar along the bottom
+    _floor_card(
+        "CNC 41",
+        "41",
+        1,
+        0,
+        "mpp",
+        subtitle="I-800",
+        w=(_FLOOR_COL[3] + _FLOOR_CARD_W) - _FLOOR_COL[1],
+    ),
 )
 
 _MAX_TAG_LABEL_LENGTH = 80

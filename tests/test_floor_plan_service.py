@@ -23,6 +23,22 @@ from planning.floor_plan_service import (
 )
 
 
+def test_floor_machines_are_wide_rectangles_without_overlap():
+    machines = list(FLOOR_LAYOUT_MACHINES)
+    assert len(machines) == 19
+    for machine in machines:
+        assert float(machine["w"]) >= float(machine["h"]) * 1.5
+    for index, left in enumerate(machines):
+        for right in machines[index + 1 :]:
+            separated = (
+                left["x"] + left["w"] <= right["x"] + 1e-6
+                or right["x"] + right["w"] <= left["x"] + 1e-6
+                or left["y"] + left["h"] <= right["y"] + 1e-6
+                or right["y"] + right["h"] <= left["y"] + 1e-6
+            )
+            assert separated, (left["machine_no"], right["machine_no"])
+
+
 def test_floor_layout_includes_cnc_41():
     codes = {m["machine_no"] for m in FLOOR_LAYOUT_MACHINES}
     assert "CNC 41" in codes

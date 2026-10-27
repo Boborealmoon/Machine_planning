@@ -2286,10 +2286,10 @@
 
 .auk-floor-meter {
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-direction: row;
+  align-items: baseline;
   justify-content: center;
-  gap: 0;
+  gap: 5px;
   min-width: 0;
   padding: 1px 2px 2px;
   border-radius: 4px;

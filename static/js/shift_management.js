@@ -383,22 +383,27 @@
 
     const colors = (layout && layout.colors) || {};
     const tiles = (layout && layout.machines) || [];
-    const height = Number((layout && layout.height) || 10);
-    const viewW = Number((layout && layout.width) || 10);
-    const viewH = height;
+    const bounds = (layout && layout.bounds) || {};
+    const minX = Number(bounds.min_x);
+    const maxY = Number(bounds.max_y);
+    const hasBounds = Number.isFinite(minX) && Number.isFinite(maxY) && Number(bounds.width) > 0;
+    const viewW = hasBounds ? Number(bounds.width) : Number((layout && layout.width) || 10);
+    const viewH = hasBounds ? Number(bounds.height) : Number((layout && layout.height) || 10);
 
     function toSvg(m) {
       const x = Number(m.x);
       const y = Number(m.y);
       const w = Number(m.w);
       const h = Number(m.h);
+      const sx = hasBounds ? x - minX : x;
+      const sy = hasBounds ? maxY - y - h : viewH - y - h;
       return {
-        x: x,
-        y: height - y - h,
+        x: sx,
+        y: sy,
         w: w,
         h: h,
-        cx: x + w / 2,
-        cy: height - y - h / 2,
+        cx: sx + w / 2,
+        cy: sy + h / 2,
       };
     }
 
