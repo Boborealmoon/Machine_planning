@@ -1707,6 +1707,175 @@
     `;
   }
 
+  function formatClock(date) {
+    return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  }
+
+  function formatDayLabel(date) {
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear()
+      && a.getMonth() === b.getMonth()
+      && a.getDate() === b.getDate();
+  }
+
+  function sliceGroups(losses) {
+    const run = detailNumber(losses && losses.ef);
+    const slow = detailNumber(losses && losses.st)
+      + detailNumber(losses && losses.ms)
+      + detailNumber(losses && losses.sl);
+    const down = detailNumber(losses && losses.us)
+      + detailNumber(losses && losses.pd)
+      + detailNumber(losses && losses.uu)
+      + detailNumber(losses && losses.bd)
+      + detailNumber(losses && losses.rj)
+      + detailNumber(losses && losses.rw)
+      + detailNumber(losses && losses.na);
+    return { run, slow, down };
+  }
+
+  function plotWindow(payload, segments) {
+    const start = new Date((payload && payload.from) || segments[0].start);
+    const fallbackEnd = new Date(segments[segments.length - 1].start).getTime() + slotMinutes() * 60 * 1000;
+    const dataEnd = new Date((payload && payload.to) || fallbackEnd);
+    let endMs = Number.isFinite(dataEnd.getTime()) ? dataEnd.getTime() : fallbackEnd;
+    const startMs = Number.isFinite(start.getTime()) ? start.getTime() : new Date(segments[0].start).getTime();
+    if (start.getHours() === 0 && start.getMinutes() === 0) {
+      const nextMidnight = new Date(start);
+      nextMidnight.setDate(nextMidnight.getDate() + 1);
+      nextMidnight.setHours(0, 0, 0, 0);
+      if (endMs <= nextMidnight.getTime()) endMs = nextMidnight.getTime();
+    }
+    if (endMs <= startMs) endMs = startMs + slotMinutes() * 60 * 1000;
+    return { startMs, endMs };
+  }
+
+  function segmentBox(startIso, startMs, endMs) {
+    const start = new Date(startIso).getTime();
+    const slice = slotMinutes() * 60 * 1000;
+    const span = Math.max(1, endMs - startMs);
+    if (!Number.isFinite(start)) return { left: 0, width: 0, center: 0 };
+    const visibleStart = Math.max(start, startMs);
+    const visibleEnd = Math.min(start + slice, endMs);
+    const left = ((visibleStart - startMs) / span) * 100;
+    const width = Math.max(0, ((visibleEnd - visibleStart) / span) * 100);
+    return { left, width, center: left + width / 2 };
+  }
+
+  function ribbonTicks(startMs, endMs) {
+    const span = Math.max(1, endMs - startMs);
+    const hours = span / 3600000;
+    const step = hours > 16 ? 3 : hours > 8 ? 2 : 1;
+    const ticks = [];
+    const cursor = new Date(startMs);
+    cursor.setMinutes(0, 0, 0);
+    if (cursor.getTime() < startMs) cursor.setHours(cursor.getHours() + 1);
+    const remainder = cursor.getHours() % step;
+    if (remainder !== 0) cursor.setHours(cursor.getHours() + (step - remainder));
+    while (cursor.getTime() < endMs) {
+      const pct = ((cursor.getTime() - startMs) / span) * 100;
+      if (pct > 7 && pct < 93) ticks.push({ pct, label: formatClock(cursor) });
+      cursor.setHours(cursor.getHours() + step);
+    }
+    return ticks;
+  }
+
+  function eventMark(losses) {
+    const options = [
+      { amount: detailNumber(losses && losses.bd), label: 'Down', kind: 'down' },
+      { amount: detailNumber(losses && losses.st), label: 'Setup', kind: 'setup' },
+      { amount: detailNumber(losses && losses.ms), label: 'Stops', kind: 'stops' },
+    ].filter((item) => item.amount >= 15);
+    options.sort((a, b) => b.amount - a.amount);
+    return options[0] || null;
+  }
+
+  function renderHourStack(payload) {
+    const segments = payload.segments || [];
+    const { startMs, endMs } = plotWindow(payload, segments);
+    const start = new Date(startMs);
+    const end = new Date(endMs);
+    const endLabel = sameDay(start, end) ? formatClock(end) : formatDayLabel(end);
+    const ticks = ribbonTicks(startMs, endMs);
+    const eventCount = segments.reduce((count, segment) => count + (eventMark(segment.losses) ? 1 : 0), 0);
+    const labelEvents = eventCount <= 4;
+
+    const columns = segments.map((segment, index) => {
+      const box = segmentBox(segment.start, startMs, endMs);
+      if (box.width <= 0) return '';
+      const groups = sliceGroups(segment.losses);
+      const total = groups.run + groups.slow + groups.down;
+      const parts = total < 1
+        ? '<span class="auk-span__part auk-span__part--idle" style="flex-grow:1"></span>'
+        : `
+          <span class="auk-span__part auk-span__part--bad" style="flex-grow:${groups.down.toFixed(2)}"></span>
+          <span class="auk-span__part auk-span__part--warn" style="flex-grow:${groups.slow.toFixed(2)}"></span>
+          <span class="auk-span__part auk-span__part--good" style="flex-grow:${groups.run.toFixed(2)}"></span>
+        `;
+      const title = `${formatSlotWindow(segment.start)} · OEE ${fmtPctShort(segment.oee_pct)}`;
+      return `
+        <button type="button" class="auk-span__slice${index === detailSelected ? ' is-selected' : ''}" data-segment-index="${index}" style="left:${box.left.toFixed(4)}%;width:${box.width.toFixed(4)}%" title="${escapeHtml(title)}" aria-pressed="${index === detailSelected ? 'true' : 'false'}">
+          <span class="auk-span__stack">${parts}</span>
+        </button>
+      `;
+    }).join('');
+
+    const rejectMarks = segments.map((segment) => {
+      const amount = detailNumber(segment.losses && segment.losses.rj) + detailNumber(segment.losses && segment.losses.rw);
+      if (amount < 8) return '';
+      const box = segmentBox(segment.start, startMs, endMs);
+      return `<span class="auk-span__mark auk-span__mark--reject" style="left:${box.center.toFixed(4)}%" title="${escapeHtml(`${formatSlotWindow(segment.start)} · Rejects ${fmtPctShort(amount)}`)}"></span>`;
+    }).join('');
+
+    const eventMarks = segments.map((segment) => {
+      const mark = eventMark(segment.losses);
+      if (!mark) return '';
+      const box = segmentBox(segment.start, startMs, endMs);
+      const pill = labelEvents
+        ? `<span class="auk-span__pill">${escapeHtml(mark.label)}</span>`
+        : '';
+      return `<span class="auk-span__mark auk-span__mark--${mark.kind}" style="left:${box.center.toFixed(4)}%" title="${escapeHtml(`${formatSlotWindow(segment.start)} · ${mark.label} ${fmtPctShort(mark.amount)}`)}">${pill}</span>`;
+    }).join('');
+
+    const tickHtml = ticks.map((tick) => `<span class="auk-span__tick" style="left:${tick.pct.toFixed(2)}%">${escapeHtml(tick.label)}</span>`).join('');
+
+    return `
+      <div class="auk-span" aria-label="Hourly stacked timeline">
+        <div class="auk-span__row">
+          <span class="auk-span__label">Rejects</span>
+          <div class="auk-span__lane">${rejectMarks}</div>
+        </div>
+        <div class="auk-span__row">
+          <span class="auk-span__label">Events</span>
+          <div class="auk-span__lane">${eventMarks}</div>
+        </div>
+        <div class="auk-span__row auk-span__row--line">
+          <span class="auk-span__label">Shifts</span>
+          <div class="auk-span__lane auk-span__lane--line"></div>
+        </div>
+        <div class="auk-span__row auk-span__row--plot">
+          <span class="auk-span__label"></span>
+          <div class="auk-span__plot">${columns}</div>
+        </div>
+        <div class="auk-span__row auk-span__row--axis">
+          <span class="auk-span__label"></span>
+          <div class="auk-span__scale">
+            <span class="auk-span__end">${escapeHtml(formatDayLabel(start))}</span>
+            ${tickHtml}
+            <span class="auk-span__end auk-span__end--right">${escapeHtml(endLabel)}</span>
+          </div>
+        </div>
+        <div class="auk-span__legend">
+          <span><i class="auk-span__key auk-span__part--good"></i>Producing</span>
+          <span><i class="auk-span__key auk-span__part--warn"></i>Setup or slow</span>
+          <span><i class="auk-span__key auk-span__part--bad"></i>Down</span>
+        </div>
+      </div>
+    `;
+  }
+
   function renderTimeline(payload) {
     const segments = (payload && payload.segments) || [];
     if (!segments.length) {
@@ -1716,19 +1885,9 @@
     if (detailSelected == null || detailSelected >= segments.length) detailSelected = segments.length - 1;
     const selected = segments[detailSelected];
     const blockWord = slotMinutes() === 15 ? '15-minute block' : 'hour';
-    const bars = segments.map((segment, index) => {
-      const pct = Math.max(0, Math.min(100, detailNumber(segment.oee_pct)));
-      const tone = segmentTone(segment.oee_pct);
-      return `
-        <button type="button" class="auk-tl__bar${index === detailSelected ? ' is-selected' : ''}" data-segment-index="${index}" title="${escapeHtml(formatSlotWindow(segment.start))} · OEE ${fmtPctShort(segment.oee_pct)}">
-          <span class="auk-tl__plot"><span class="auk-tl__fill auk-tl__fill--${tone}" style="height:${Math.max(pct, 4)}%"></span></span>
-          <span class="auk-tl__meta"><strong>${fmtPctShort(segment.oee_pct)}</strong>${escapeHtml(formatSlotTick(segment.start))}</span>
-        </button>
-      `;
-    }).join('');
     modalBodyEl.innerHTML = `
-      <p class="auk-tl__hint">Each bar is one ${blockWord}. Taller means higher OEE. Grey means it was off the plan. Click a bar.</p>
-      <div class="auk-tl__track">${bars}</div>
+      <p class="auk-tl__hint">Each column is one ${blockWord}. Red is down, amber is setup or running slow, green is producing. Click a column.</p>
+      ${renderHourStack(payload)}
       <section class="auk-detail">
         <div class="auk-detail__lead">
           <p class="auk-detail__when">${escapeHtml(selected && selected.start ? formatSlotWindow(selected.start) : 'This block')}</p>
@@ -1751,15 +1910,6 @@
         renderTimeline(detailPayload);
       });
     });
-    const selectedBar = modalBodyEl.querySelector('.auk-tl__bar.is-selected');
-    if (selectedBar) selectedBar.scrollIntoView({ inline: 'center', block: 'nearest' });
-  }
-
-  function formatSlotTick(iso) {
-    const dt = new Date(iso);
-    if (Number.isNaN(dt.getTime())) return '';
-    if (dt.getMinutes() === 0) return dt.toLocaleTimeString(undefined, { hour: 'numeric' });
-    return dt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
   async function openDetail(equipmentId, options) {

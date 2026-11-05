@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 from datetime import date
 from urllib.parse import unquote
 
@@ -3806,6 +3808,136 @@ def process_sheet_board_identity_key(item):
     return f"{source}::{partial}"
 
 
+def _cheap_row_shipped_complete(ps):
+    """SO-line shipped complete, decided from the list row before flow/WO enrichment.
+
+    [Temp] copies stay in the outstanding set. Rows with no SO qty are not treated
+    as shipped — those still go through the normal completion check.
+    """
+    ps_id = compact_text(ps.get("ps_id") or ps.get("planner_ps_id"))
+    if is_temp_planner_ps_id(ps_id):
+        return False
+    if ps.get("so_det_qty") is None:
+        return False
+    return shipped_quantity_completed(ps.get("so_det_qty"), ps.get("qty_shipped"))
+
+
+def _board_source_key(row):
+    ps_id = compact_text(row.get("ps_id") or row.get("planner_ps_id"))
+    if is_temp_planner_ps_id(ps_id):
+        return f"temp:{ps_id}"
+    source = compact_text(row.get("source_ps_id") or ps_id).split("::", 1)[0]
+    return source or ps_id
+
+
+def slice_board_source_groups(rows, offset, limit):
+    """Page planner rows without splitting partials of the same process sheet.
+
+    Returns (selected_rows, next_offset, has_more). A later partial that was
+    already pulled in with an earlier sibling is skipped on the next page.
+    """
+    total = len(rows or [])
+    offset = max(0, int(offset or 0))
+    limit = max(1, int(limit or 1))
+    if offset >= total:
+        return [], total, False
+
+    selected = []
+    selected_idx = set()
+    sources = set()
+    index = offset
+    while index < total and len(selected) < limit:
+        key = _board_source_key(rows[index])
+        if key in sources:
+            index += 1
+            continue
+        group_idx = [pos for pos, row in enumerate(rows) if _board_source_key(row) == key]
+        if any(pos < offset for pos in group_idx):
+            index += 1
+            continue
+        sources.add(key)
+        for pos in group_idx:
+            if pos in selected_idx:
+                continue
+            selected_idx.add(pos)
+            selected.append(rows[pos])
+        index += 1
+
+    next_offset = offset
+    while next_offset < total:
+        if next_offset in selected_idx:
+            next_offset += 1
+            continue
+        key = _board_source_key(rows[next_offset])
+        already_taken = any(
+            pos < offset and _board_source_key(rows[pos]) == key
+            for pos in range(offset)
+        )
+        if already_taken:
+            next_offset += 1
+            continue
+        break
+    return selected, next_offset, next_offset < total
+
+
+_PLANNER_PS_ROW_CACHE_LOCK = threading.Lock()
+_PLANNER_PS_ROW_CACHE = {"expires_at": 0.0, "rows": None}
+_PLANNER_PS_ROW_CACHE_TTL = 45.0
+
+
+def _query_planner_ps_rows(con, search=""):
+    search_clause, search_params = _ps_select_search_clause(search)
+    return [
+        dict(row)
+        for row in rows(
+            con.execute(
+                _ps_select(con)
+                + search_clause
+                + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id",
+                tuple(search_params),
+            )
+        )
+    ]
+
+
+def _cached_planner_ps_rows(con, *, refresh=False):
+    """Reuse the un-enriched planner list across board pages for a short window."""
+    now = time.monotonic()
+    if not refresh:
+        with _PLANNER_PS_ROW_CACHE_LOCK:
+            cached = _PLANNER_PS_ROW_CACHE.get("rows")
+            if cached is not None and now < float(_PLANNER_PS_ROW_CACHE.get("expires_at") or 0):
+                return [dict(row) for row in cached]
+    queried = _query_planner_ps_rows(con, "")
+    with _PLANNER_PS_ROW_CACHE_LOCK:
+        _PLANNER_PS_ROW_CACHE["rows"] = queried
+        _PLANNER_PS_ROW_CACHE["expires_at"] = time.monotonic() + _PLANNER_PS_ROW_CACHE_TTL
+    return [dict(row) for row in queried]
+
+
+def planner_board_identity_keys(con):
+    """Identity keys for every planner sheet, used to drop ERP duplicates per page."""
+    keys = set()
+    for row in rows(
+        con.execute(
+            """
+            SELECT planner_ps_id, source_ps_id, pp_partial_no
+            FROM planner_process_sheet
+            """
+        )
+    ):
+        keys.add(
+            process_sheet_board_identity_key(
+                {
+                    "ps_id": row.get("planner_ps_id"),
+                    "source_ps_id": row.get("source_ps_id"),
+                    "pp_partial_no": row.get("pp_partial_no"),
+                }
+            )
+        )
+    return keys
+
+
 def _payload_filter_arg(name, explicit, *, default="", bool_values=False):
     if explicit is not None:
         if bool_values:
@@ -3827,6 +3959,11 @@ def list_process_sheets_payload(
     planner_filter=None,
     show_completed=None,
     overdue_only=None,
+    completed_only=None,
+    offset=None,
+    limit=None,
+    refresh=None,
+    page_meta=None,
 ):
     _set_process_sheet_read_timeouts(con)
     _overlay_column_flags(con)
@@ -3835,20 +3972,48 @@ def list_process_sheets_payload(
     planner_filter = _payload_filter_arg("planner_status", planner_filter).upper()
     show_completed = _payload_filter_arg("show_completed", show_completed, bool_values=True)
     overdue_only = _payload_filter_arg("overdue_only", overdue_only, bool_values=True)
+    completed_only = _payload_filter_arg("completed_only", completed_only, bool_values=True)
     search_terms = split_process_sheet_search_terms(search)
+    if limit is not None:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = None
+        if limit is not None and limit < 1:
+            limit = None
+    refresh_rows = refresh
+    if refresh_rows is None and has_request_context():
+        refresh_rows = compact_text(request.args.get("refresh")).lower() in {"1", "true", "yes", "on"}
 
-    search_clause, search_params = _ps_select_search_clause(search)
-    ps_rows = [
-        dict(row)
-        for row in rows(
-            con.execute(
-                _ps_select(con)
-                + search_clause
-                + " ORDER BY COALESCE(v.due_date::TEXT, ''), ps.planner_ps_id",
-                tuple(search_params),
-            )
-        )
-    ]
+    paging = (
+        limit is not None
+        and not search_terms
+        and not status_filter
+        and not planner_filter
+        and not overdue_only
+    )
+    if paging:
+        ps_rows = _cached_planner_ps_rows(con, refresh=bool(refresh_rows))
+    else:
+        ps_rows = _query_planner_ps_rows(con, search)
+    if completed_only:
+        ps_rows = [row for row in ps_rows if _cheap_row_shipped_complete(row)]
+    elif not show_completed:
+        ps_rows = [row for row in ps_rows if not _cheap_row_shipped_complete(row)]
+
+    if paging:
+        total = len(ps_rows)
+        selected, next_offset, has_more = slice_board_source_groups(ps_rows, offset or 0, limit)
+        ps_rows = selected
+        if page_meta is not None:
+            page_meta.clear()
+            page_meta.update({
+                "total": total,
+                "offset": max(0, int(offset or 0)),
+                "next_offset": next_offset,
+                "limit": int(limit),
+                "has_more": has_more,
+            })
     ps_ids = [row["ps_id"] for row in ps_rows]
     steps_by_ps = _flow_steps_for_ps_ids(con, ps_ids)
     manual_qty_by_ps = _manual_qty_by_ps_ids(con, ps_ids)
@@ -3990,7 +4155,9 @@ def list_process_sheets_payload(
             continue
         if planner_filter and compact_text(payload["planner_status"]).upper() != planner_filter:
             continue
-        if not show_completed and payload["is_completed"]:
+        if completed_only and not payload["is_completed"]:
+            continue
+        if not completed_only and not show_completed and payload["is_completed"]:
             continue
         if overdue_only and not (
             payload["due_date"] and payload["due_date"] < today and not payload["is_completed"]

@@ -32,6 +32,8 @@ _cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _IN_SELECT = """
 SELECT
     h.shipment_voucher_no,
+    h.segment_1_code,
+    seg.segment_desc,
     h.grn_no,
     h.source_voucher_no,
     h.supplier_do_no,
@@ -54,6 +56,8 @@ SELECT
 _OUT_SELECT = """
 SELECT
     h.shipment_voucher_no,
+    h.segment_1_code,
+    seg.segment_desc,
     h.do_no,
     h.invoice_no,
     h.source_voucher_no,
@@ -84,6 +88,8 @@ LEFT JOIN public.mt_user cu
   ON cu.user_id = h.created_by
 LEFT JOIN public.mt_user uu
   ON uu.user_id = h.last_updated_by
+LEFT JOIN public.mt_segment1 seg
+  ON seg.segment_code = h.segment_1_code
 """
 
 

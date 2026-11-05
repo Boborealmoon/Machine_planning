@@ -38,6 +38,9 @@ class LogisticsShipmentRouteTests(unittest.TestCase):
         self.assertNotIn("LIMIT", rows_sql("in", "outstanding"))
         self.assertIn("h.do_no", rows_sql("out", "outstanding"))
         self.assertIn("h.grn_no", rows_sql("in", "grn"))
+        self.assertIn("h.segment_1_code", rows_sql("in", "outstanding"))
+        self.assertIn("h.segment_1_code", rows_sql("out", "outstanding"))
+        self.assertIn("mt_segment1", rows_sql("in", "outstanding"))
 
     def test_invalid_bucket_rejected(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
@@ -83,6 +86,8 @@ class LogisticsShipmentRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         self.assertIn('data-sol-section="jobs"', html)
+        self.assertIn('data-sol-section="subcon"', html)
+        self.assertIn('data-sol-subcon-status="at_subcon"', html)
         self.assertIn('data-sol-section="purchasing"', html)
         self.assertIn('data-sol-section="logistics-in"', html)
         self.assertIn('data-sol-section="logistics-out"', html)

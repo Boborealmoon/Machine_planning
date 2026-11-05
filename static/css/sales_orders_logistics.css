@@ -460,6 +460,78 @@ body.sol-view .app-main--sales-logistics {
   box-shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
 }
 
+.sol-section .sol-chip-count {
+  margin-left: 6px;
+}
+
+.sol-cnc-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sol-cnc-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #5b21b6;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sol-cnc-pill--other {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.sol-subcon-status {
+  appearance: none;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  border-radius: 999px;
+  border: 1px solid #fdba74;
+  padding: 4px 10px;
+  background: #fff7ed;
+  color: #9a3412;
+  cursor: pointer;
+}
+
+.sol-subcon-status--sent {
+  border-color: #a5b4fc;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.sol-subcon-status--at_subcon {
+  border-color: #fdba74;
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.sol-subcon-status--received {
+  border-color: #86efac;
+  background: #ecfdf3;
+  color: #166534;
+}
+
+.sol-subcon-status--done {
+  border-color: #d6d3d1;
+  background: #f5f5f4;
+  color: #57534e;
+}
+
+.sol-subcon-status-cell .so-editable-status {
+  display: block;
+  min-height: 12px;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .sol-nav {
   display: flex;
   flex-wrap: wrap;
@@ -1967,6 +2039,33 @@ body.sol-view .so-editable-status:empty {
   border: 1px solid #a7f3d0;
   color: #047857;
   font-weight: 700;
+}
+
+.sol-segment-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.sol-segment-pill--pps {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.sol-segment-pill--nps {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.sol-segment-pill--aps {
+  background: #d1fae5;
+  color: #065f46;
 }
 
 .sol-meta {

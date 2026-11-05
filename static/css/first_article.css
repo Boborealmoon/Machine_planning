@@ -3134,3 +3134,136 @@ body.so-material-modal-open {
     max-height: 70dvh;
   }
 }
+
+.fa-prog-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fa-prog-stat {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.fa-prog-stat-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.fa-prog-stat-value {
+  margin-top: 2px;
+  font-size: 1.35rem;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  color: #0f172a;
+  line-height: 1.15;
+}
+
+.fa-prog-stat-note {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.fa-prog-note {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.fa-prog-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.fa-prog-badge.is-have {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.fa-prog-badge.is-partial {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.fa-prog-badge.is-missing {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.fa-prog-part {
+  font-weight: 700;
+}
+
+.fa-prog-sub {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.fa-prog-missing {
+  color: #9f1239;
+  font-size: 0.75rem;
+}
+
+.fa-prog-row {
+  cursor: pointer;
+}
+
+.fa-prog-detail td {
+  background: #f8fafc;
+  padding-top: 8px;
+  padding-bottom: 10px;
+}
+
+.fa-prog-op-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fa-prog-op {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  font-size: 0.78rem;
+}
+
+.fa-prog-op a {
+  color: #1d4ed8;
+}
+
+.fa-prog-bom-label {
+  margin: 8px 0 4px;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.fa-prog-bom-label:first-child {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .fa-prog-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}

@@ -817,8 +817,8 @@ def test_assembly_line_items_keep_own_queue_and_proposed_cnc(monkeypatch):
     monkeypatch.setattr(
         "planning.sales_orders_route._load_notes_map",
         lambda ids: {
-            "NPS26-0321-1": {"proposed_cnc_saved": ["CNC 40"]},
-            "NPS26-0321-2": {"proposed_cnc_saved": []},
+            "NPS26-0321-1": {"proposed_cnc_saved": ["CNC 40"], "subcon_status": "sent"},
+            "NPS26-0321-2": {"proposed_cnc_saved": [], "subcon_status": ""},
         },
     )
     orders = [
@@ -848,6 +848,8 @@ def test_assembly_line_items_keep_own_queue_and_proposed_cnc(monkeypatch):
     assert parent["proposed_cnc"] == ["CNC 15", "CNC 31", "CNC 39"]
     assert lines[0]["queued_machines"] == ["CNC 39"]
     assert lines[0]["proposed_cnc"] == ["CNC 40"]
+    assert lines[0]["subcon_status"] == "sent"
+    assert lines[1]["subcon_status"] == ""
     assert lines[1]["queued_machines"] == []
     assert lines[1]["proposed_cnc"] == []
     assert lines[2]["queued_machines"] == ["CNC 15"]
@@ -861,6 +863,7 @@ def test_notes_from_row_parses_proposed_cnc():
 
     empty = _empty_notes()
     assert empty["proposed_cnc_saved"] is None
+    assert empty["subcon_status"] == ""
     assert _parse_proposed_cnc("CNC 10, 22") == ["CNC 10", "22"]
     assert _format_proposed_cnc(["CNC 10", "CNC 22"]) == "CNC 10, CNC 22"
     assert _format_proposed_cnc(None) is None
@@ -914,6 +917,37 @@ def test_notes_api_accepts_proposed_cnc(monkeypatch):
     assert ok.get_json()["proposed_cnc"] == ["22", "CNC 38"]
     assert cleared.status_code == 200
     assert cleared.get_json()["proposed_cnc"] == []
+
+
+def test_notes_api_accepts_subcon_status(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+    from planning.sales_orders_route import _empty_notes, _normalize_subcon_status
+
+    assert _normalize_subcon_status("At subcon") == "at_subcon"
+    assert _normalize_subcon_status("") == ""
+    captured = []
+
+    def fake_upsert(pp_voucher_no, patch):
+        captured.append({"pp": pp_voucher_no, "patch": dict(patch)})
+        notes = _empty_notes()
+        notes["subcon_status"] = patch.get("subcon_status") or ""
+        return {"pp_voucher_no": pp_voucher_no, **notes}
+
+    monkeypatch.setattr("planning.sales_orders_route._upsert_notes", fake_upsert)
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        ok = client.patch("/api/sales-orders/notes/PP/1", json={"subcon_status": "Sent"})
+        bad = client.patch("/api/sales-orders/notes/PP/1", json={"subcon_status": "maybe"})
+
+    assert ok.status_code == 200
+    assert captured[0]["patch"]["subcon_status"] == "sent"
+    assert ok.get_json()["subcon_status"] == "sent"
+    assert bad.status_code == 400
 
 
 def test_program_finish_iso_normalizes_datetime():
@@ -1149,5 +1183,5 @@ def test_sales_orders_page_offers_exception_workbook_export():
     assert 'data-so-export-view="all"' in html
     assert "material in date" in html
     assert "Ops, Sales, PP, SO, External" in html
-    assert "so-exception-detail-20260929" in html
+    assert "so-subcon-status-20261103" in html
 

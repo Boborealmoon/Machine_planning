@@ -216,6 +216,7 @@
 
 .mdp-kpi--amount { border-top-color: #047857; }
 .mdp-kpi--qty { border-top-color: #b45309; }
+.mdp-kpi--new { border-top-color: #2563eb; }
 
 .mdp-kpi-label {
   display: block;
@@ -475,6 +476,26 @@
 .mdp-flag--closed { background: #e2e8f0; color: #334155; }
 .mdp-flag--delivered { background: #dcfce7; color: #166534; margin-left: 0.35rem; }
 .mdp-flag--okay { background: #e2e8f0; color: #334155; margin-left: 0.35rem; }
+
+.mdp-ps-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.22rem;
+}
+
+.mdp-new-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1.45;
+}
 
 .mdp-tag-filters {
   display: grid;

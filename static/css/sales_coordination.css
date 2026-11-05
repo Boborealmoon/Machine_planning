@@ -220,6 +220,26 @@ body.sc-view .app-main--sc {
   color: #fff;
 }
 
+.sc-type-chip--lead {
+  min-width: 5.5rem;
+  justify-content: center;
+  padding: 8px 14px;
+  font-size: 0.875rem;
+}
+
+.sc-type-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  opacity: 0.8;
+}
+
+.sc-type-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--sc-line);
+  margin: 2px 4px;
+}
+
 .sc-meta-wrap {
   margin-left: auto;
   display: flex;
@@ -305,27 +325,25 @@ body.sc-view .app-main--sc {
 }
 
 .sc-table {
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 1180px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 0.8125rem;
+  font-size: 0.78rem;
   color: var(--sc-ink);
 }
 
-.sc-table col.sc-col-check { width: 2.6rem; }
-.sc-table col.sc-col-ps { width: 8.5rem; }
-.sc-table col.sc-col-so { width: 8.2rem; }
-.sc-table col.sc-col-po { width: 8.2rem; }
-.sc-table col.sc-col-part { width: 11.5rem; }
-.sc-table col.sc-col-desc { width: 16rem; }
-.sc-table col.sc-col-qty { width: 5.8rem; }
-.sc-table col.sc-col-date { width: 7.6rem; }
-.sc-table col.sc-col-buyer { width: 10.5rem; }
-.sc-table col.sc-col-status { width: 10.5rem; }
-.sc-table col.sc-col-material { width: 9.5rem; }
-.sc-table col.sc-col-mtl-status { width: 8.5rem; }
+.sc-table col.sc-col-check { width: 2.2rem; }
+.sc-table col.sc-col-ps { width: 7.4rem; }
+.sc-table col.sc-col-po { width: 8.4rem; }
+.sc-table col.sc-col-line { width: 4.6rem; }
+.sc-table col.sc-col-part { width: 9.2rem; }
+.sc-table col.sc-col-desc { width: 14rem; }
+.sc-table col.sc-col-qty { width: 4.6rem; }
+.sc-table col.sc-col-date { width: 6.4rem; }
+.sc-table col.sc-col-remark { width: 11rem; }
+.sc-table col.sc-col-commit { width: 8.6rem; }
 
 .sc-table thead th {
   position: sticky;
@@ -333,12 +351,12 @@ body.sc-view .app-main--sc {
   z-index: 2;
   background: var(--sc-paper-2);
   color: var(--sc-faint);
-  font-size: 0.68rem;
+  font-size: 0.64rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   text-align: left;
-  padding: 11px 12px;
+  padding: 8px 8px;
   border-bottom: 1px solid var(--sc-line);
   white-space: nowrap;
   overflow: hidden;
@@ -374,11 +392,11 @@ body.sc-view .app-main--sc {
 
 .sc-table thead th.sc-check-col {
   cursor: default;
-  width: 2.6rem;
-  min-width: 2.6rem;
+  width: 2.2rem;
+  min-width: 2.2rem;
   text-align: center;
-  padding-left: 10px;
-  padding-right: 10px;
+  padding-left: 6px;
+  padding-right: 6px;
 }
 
 .sc-table thead th.sc-check-col::after {
@@ -386,8 +404,8 @@ body.sc-view .app-main--sc {
 }
 
 .sc-check-col {
-  width: 2.6rem;
-  min-width: 2.6rem;
+  width: 2.2rem;
+  min-width: 2.2rem;
   text-align: center;
   vertical-align: middle;
 }
@@ -409,7 +427,7 @@ body.sc-view .app-main--sc {
 }
 
 .sc-table tbody td {
-  padding: 10px 12px;
+  padding: 4px 8px;
   border-bottom: 1px solid #f0ebe3;
   vertical-align: middle;
   background: var(--sc-paper);
@@ -426,15 +444,26 @@ body.sc-view .app-main--sc {
 }
 
 .sc-group-row td {
-  background: var(--sc-accent-soft);
+  position: sticky;
+  top: 31px;
+  z-index: 1;
+  background: #dce8e3;
   color: var(--sc-accent);
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--sc-line);
+  padding: 7px 10px;
+  border-bottom: 1px solid #c5d6d0;
   overflow: visible;
+}
+
+.sc-group-count {
+  margin-left: 8px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--sc-muted);
 }
 
 .sc-table tbody tr.sc-group-row:hover td,
@@ -613,6 +642,108 @@ body.sc-view .app-main--sc {
   background: transparent;
   padding: 0;
   font-weight: 500;
+}
+
+.sc-desc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sc-line {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-grid-cell {
+  cursor: cell;
+}
+
+.sc-table tbody tr:hover td.sc-grid-cell.is-grid-selected,
+.sc-table tbody tr.is-selected td.sc-grid-cell.is-grid-selected,
+.sc-table td.sc-grid-cell.is-grid-selected {
+  background: #e7f0ec;
+  box-shadow: inset 0 0 0 1px #9bb8ae;
+}
+
+.sc-table tbody tr:hover td.sc-grid-cell.is-grid-active,
+.sc-table tbody tr.is-selected td.sc-grid-cell.is-grid-active,
+.sc-table td.sc-grid-cell.is-grid-active {
+  background: #e7f0ec;
+  box-shadow: inset 0 0 0 2px var(--sc-accent);
+}
+
+body.sc-grid-dragging,
+body.sc-grid-dragging * {
+  user-select: none !important;
+  cursor: cell !important;
+}
+
+.sc-remark-input,
+.sc-date-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: var(--sc-ink);
+  background: transparent;
+}
+
+.sc-remark-input:hover,
+.sc-date-input:hover {
+  border-color: var(--sc-line);
+  background-color: #fff;
+}
+
+.sc-remark-input:focus,
+.sc-date-input:focus {
+  outline: none;
+  border-color: var(--sc-accent);
+  background-color: #fff;
+  box-shadow: 0 0 0 2px rgba(47, 93, 86, 0.14);
+}
+
+.sc-date-input.is-invalid {
+  border-color: #dc2626;
+  background-color: #fff;
+}
+
+.sc-date-field {
+  position: relative;
+  display: block;
+}
+
+.sc-date-input {
+  padding-right: 22px;
+  font-variant-numeric: tabular-nums;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236f675e' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.5' y='5.5' width='17' height='15' rx='2'/%3E%3Cpath d='M8 3.5v4M16 3.5v4M3.5 10h17'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  background-size: 13px 13px;
+}
+
+.sc-date-picker {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 22px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+  background: transparent;
+}
+
+.sc-remark-input.is-saving,
+.sc-date-input.is-saving {
+  opacity: 0.7;
 }
 
 .sc-empty {

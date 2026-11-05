@@ -43,6 +43,14 @@ body.driver-view .app-main--driver-view {
   min-height: calc(100dvh - 48px);
 }
 
+#dv-panel-schedule,
+#dv-panel-month {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
 .dv-header {
   display: flex;
   align-items: flex-start;
@@ -115,6 +123,69 @@ body.driver-view .app-main--driver-view {
   background: var(--dv-accent-hover);
   border-color: var(--dv-accent-hover);
   color: #fff;
+}
+
+.dv-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dv-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--dv-line);
+  background: var(--dv-paper);
+  color: var(--dv-muted);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dv-tab:hover {
+  background: var(--dv-accent-soft);
+  border-color: #c5d6d0;
+  color: var(--dv-ink);
+}
+
+.dv-tab.is-active {
+  background: var(--dv-accent);
+  border-color: var(--dv-accent);
+  color: #fff;
+}
+
+.dv-tab:focus-visible {
+  outline: 2px solid rgba(47, 93, 86, 0.45);
+  outline-offset: 2px;
+}
+
+.dv-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.dv-search input {
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--dv-line);
+  background: var(--dv-paper);
+  color: var(--dv-ink);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.dv-search input:focus {
+  outline: 2px solid rgba(47, 93, 86, 0.35);
+  border-color: #c5d6d0;
 }
 
 .dv-toolbar {
@@ -202,7 +273,9 @@ body.driver-view .app-main--driver-view {
 
 .dv-loading[hidden],
 .dv-table-card[hidden],
-.dv-empty[hidden] {
+.dv-empty[hidden],
+#dv-panel-schedule[hidden],
+#dv-panel-month[hidden] {
   display: none !important;
 }
 
@@ -318,7 +391,24 @@ body.driver-view .app-main--driver-view {
 }
 
 .dv-col-ps {
+  min-width: 140px;
+}
+
+.dv-col-part {
+  min-width: 140px;
+}
+
+.dv-col-pic,
+.dv-col-cnc {
   min-width: 120px;
+}
+
+.dv-row.is-okay td {
+  color: var(--dv-muted);
+}
+
+.dv-row.is-okay .dv-ps {
+  color: var(--dv-muted);
 }
 
 .dv-col-desc {
@@ -544,6 +634,10 @@ body.driver-view .app-main--driver-view {
 @media (max-width: 1024px) {
   .dv-table {
     min-width: 1040px;
+  }
+
+  .dv-table--month {
+    min-width: 1480px;
   }
 }
 

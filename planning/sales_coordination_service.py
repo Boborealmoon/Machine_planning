@@ -1,7 +1,8 @@
 """Sales-coordination view - APS/NPS process-sheet lines for delivery follow-up.
 
-Buyer is editable here. Material status / dates / material codes are read-only
-mirrors of Material Tracking. Order status is the work-order stage from ERP.
+The page is a compressed APS/NPS commitment sheet. Customer remarks, Coway
+remarks, and the committed schedule are planner edits. ERP supplies the
+process sheet, PO, inventory, due date, and order quantity.
 """
 from __future__ import annotations
 
@@ -24,6 +25,9 @@ _WEEKDAY_NAMES = (
 )
 
 _PS_TYPE_ORDER = ("APS", "NPS", "MPS", "PPS", "CPS", "SR")
+_REMARK_LIMIT = 2000
+_UPDATE_LIMIT = 400
+_BLANK_DATE = {"", "-", "—", "–", "−", "n/a", "na", "none", "blank"}
 
 
 def _compact(value: Any) -> str:
@@ -72,6 +76,24 @@ def _coway_edd(pp: dict[str, Any], partial: dict[str, Any] | None) -> str | None
         or _compact(pp.get("coway_proposed_edd"))
     )[:10]
     return raw or None
+
+
+def _po_date(order: dict[str, Any], pp: dict[str, Any]) -> str | None:
+    """Customer PO / sales-order date, then the posted date when ERP has no order date."""
+    return _iso_date(
+        order.get("order_date")
+        or pp.get("order_date")
+        or order.get("first_posted_datetime")
+        or pp.get("posted_date")
+    )
+
+
+def _order_qty(pp: dict[str, Any], fallback: float | int | None) -> float | int | None:
+    if pp.get("so_det_qty") not in (None, ""):
+        parsed = _qty_number(pp.get("so_det_qty"))
+        if parsed is not None:
+            return parsed
+    return fallback
 
 
 def _posted_date(order: dict[str, Any], pp: dict[str, Any]) -> str | None:
@@ -232,6 +254,8 @@ def expand_sales_coordination_lines(orders: list[dict[str, Any]]) -> list[dict[s
                     (partial or {}).get("partial_qty") if partial is not None else qty
                 )
                 typed = ps_type(process_sheet_no)
+                erp_customer_remarks = _compact(order.get("external_remarks"))
+                erp_coway_remarks = _compact(pp.get("remarks"))
 
                 lines.append(
                     {
@@ -240,16 +264,24 @@ def expand_sales_coordination_lines(orders: list[dict[str, Any]]) -> list[dict[s
                         "customer_name": customer,
                         "pp_voucher_no": pp_voucher,
                         "process_sheet_no": process_sheet_no,
-                        "pp_partial_no": p_no,
+                        "pp_partial_no": p_no or 1,
                         "ps_type": typed,
                         "part_no": part_no,
                         "part_desc": part_desc,
                         "bom_code": bom_code,
+                        "line_item_no": _compact(pp.get("source_line_item_no")),
                         "customer_po_no": _customer_po(order, pp, partial),
                         "due_date": due,
+                        "po_date": _po_date(order, pp),
                         "posted_date": _posted_date(order, pp),
                         "qty": qty,
+                        "order_qty": _order_qty(pp, qty),
                         "partial_qty": partial_qty,
+                        "erp_customer_remarks": erp_customer_remarks,
+                        "erp_coway_remarks": erp_coway_remarks,
+                        "customer_remarks": erp_customer_remarks,
+                        "coway_remarks": erp_coway_remarks,
+                        "committed_schedule": None,
                         "buyer": buyer,
                         "material": "",
                         "material_codes": [],
@@ -275,9 +307,198 @@ def expand_sales_coordination_lines(orders: list[dict[str, Any]]) -> list[dict[s
     return lines
 
 
+def _parse_commit_date(value: Any) -> date | None:
+    parsed = _parse_date(value)
+    if parsed is not None:
+        return parsed
+    text = _compact(value)[:8]
+    for fmt in ("%d/%m/%y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _edit_key(pp_voucher_no: Any, pp_partial_no: Any) -> tuple[str, int]:
+    try:
+        partial = int(pp_partial_no or 1)
+    except (TypeError, ValueError):
+        partial = 1
+    return _compact(pp_voucher_no), max(partial, 1)
+
+
+def _iso_from_db(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return _iso_date(value)
+
+
+def normalize_coordination_update(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate one pasted or typed sales-coordination edit."""
+    if not isinstance(raw, dict):
+        raise ValueError("Each update must be an object")
+    pp_voucher_no, partial_no = _edit_key(raw.get("pp_voucher_no"), raw.get("pp_partial_no"))
+    if not pp_voucher_no:
+        raise ValueError("Process sheet is required")
+    out: dict[str, Any] = {
+        "pp_voucher_no": pp_voucher_no,
+        "pp_partial_no": partial_no,
+    }
+    if "customer_remarks" in raw:
+        out["customer_remarks"] = _compact(raw.get("customer_remarks"))[:_REMARK_LIMIT]
+    if "coway_remarks" in raw:
+        out["coway_remarks"] = _compact(raw.get("coway_remarks"))[:_REMARK_LIMIT]
+    if "committed_schedule" in raw:
+        text = _compact(raw.get("committed_schedule"))
+        if text.lower() in _BLANK_DATE:
+            out["committed_schedule"] = None
+        else:
+            parsed = _parse_commit_date(text)
+            if parsed is None:
+                raise ValueError(f'"{text}" is not a date (dd/mm/yyyy)')
+            out["committed_schedule"] = parsed.isoformat()
+    if "customer_remarks" not in out and "coway_remarks" not in out and "committed_schedule" not in out:
+        raise ValueError("Nothing to save")
+    return out
+
+
+def _ensure_coordination_table(con) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planner_sales_coordination (
+            pp_voucher_no       TEXT         NOT NULL,
+            pp_partial_no       INTEGER      NOT NULL DEFAULT 1,
+            customer_remarks    TEXT,
+            coway_remarks       TEXT,
+            committed_schedule  DATE,
+            updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (pp_voucher_no, pp_partial_no)
+        )
+        """
+    )
+
+
+def _load_coordination_edits() -> dict[tuple[str, int], dict[str, Any]]:
+    from .helpers import planner_db, rows
+
+    with planner_db() as con:
+        _ensure_coordination_table(con)
+        fetched = rows(
+            con.execute(
+                """
+                SELECT pp_voucher_no, pp_partial_no, customer_remarks,
+                       coway_remarks, committed_schedule
+                FROM planner_sales_coordination
+                """
+            )
+        )
+    out: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in fetched:
+        key = _edit_key(row.get("pp_voucher_no"), row.get("pp_partial_no"))
+        if not key[0]:
+            continue
+        out[key] = {
+            "customer_remarks": None if row.get("customer_remarks") is None else _compact(row.get("customer_remarks")),
+            "coway_remarks": None if row.get("coway_remarks") is None else _compact(row.get("coway_remarks")),
+            "committed_schedule": _iso_from_db(row.get("committed_schedule")),
+        }
+    return out
+
+
+def _attach_coordination_edits(lines: list[dict[str, Any]]) -> None:
+    if not lines:
+        return
+    try:
+        saved = _load_coordination_edits()
+    except Exception as exc:
+        logger.warning("sales coordination edits skipped: %s", exc)
+        return
+    for row in lines:
+        edit = saved.get(_edit_key(row.get("pp_voucher_no"), row.get("pp_partial_no")))
+        if not edit:
+            continue
+        if edit.get("customer_remarks") is not None:
+            row["customer_remarks"] = edit["customer_remarks"]
+        if edit.get("coway_remarks") is not None:
+            row["coway_remarks"] = edit["coway_remarks"]
+        row["committed_schedule"] = edit.get("committed_schedule")
+
+
+def _upsert_coordination_edit(con, edit: dict[str, Any]) -> dict[str, Any]:
+    from .helpers import one
+
+    has_customer = "customer_remarks" in edit
+    has_coway = "coway_remarks" in edit
+    has_schedule = "committed_schedule" in edit
+    saved = one(
+        con.execute(
+            """
+            INSERT INTO planner_sales_coordination AS t (
+                pp_voucher_no, pp_partial_no, customer_remarks, coway_remarks,
+                committed_schedule, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (pp_voucher_no, pp_partial_no) DO UPDATE SET
+                customer_remarks = CASE WHEN %s THEN EXCLUDED.customer_remarks ELSE t.customer_remarks END,
+                coway_remarks = CASE WHEN %s THEN EXCLUDED.coway_remarks ELSE t.coway_remarks END,
+                committed_schedule = CASE WHEN %s THEN EXCLUDED.committed_schedule ELSE t.committed_schedule END,
+                updated_at = NOW()
+            RETURNING pp_voucher_no, pp_partial_no, customer_remarks, coway_remarks, committed_schedule
+            """,
+            (
+                edit["pp_voucher_no"],
+                edit["pp_partial_no"],
+                edit.get("customer_remarks"),
+                edit.get("coway_remarks"),
+                edit.get("committed_schedule"),
+                has_customer,
+                has_coway,
+                has_schedule,
+            ),
+        )
+    )
+    if not saved:
+        raise RuntimeError("Could not save sales coordination edit")
+    return {
+        "pp_voucher_no": _compact(saved.get("pp_voucher_no")),
+        "pp_partial_no": int(saved.get("pp_partial_no") or 1),
+        "customer_remarks": None if saved.get("customer_remarks") is None else _compact(saved.get("customer_remarks")),
+        "coway_remarks": None if saved.get("coway_remarks") is None else _compact(saved.get("coway_remarks")),
+        "committed_schedule": _iso_from_db(saved.get("committed_schedule")),
+    }
+
+
+def save_sales_coordination_edits(updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(updates, list) or not updates:
+        raise ValueError("No updates.")
+    if len(updates) > _UPDATE_LIMIT:
+        raise ValueError(f"Save at most {_UPDATE_LIMIT} cells at once")
+    merged: dict[tuple[str, int], dict[str, Any]] = {}
+    for raw in updates:
+        edit = normalize_coordination_update(raw)
+        key = (edit["pp_voucher_no"], edit["pp_partial_no"])
+        current = merged.get(key) or {
+            "pp_voucher_no": edit["pp_voucher_no"],
+            "pp_partial_no": edit["pp_partial_no"],
+        }
+        current.update(edit)
+        merged[key] = current
+
+    from .helpers import planner_db
+
+    with planner_db() as con:
+        _ensure_coordination_table(con)
+        return [_upsert_coordination_edit(con, edit) for edit in merged.values()]
+
+
 def build_sales_coordination(orders: list[dict[str, Any]]) -> dict[str, Any]:
     lines = expand_sales_coordination_lines(orders)
     _attach_bom_materials(lines)
+    _attach_coordination_edits(lines)
     return {
         "ok": True,
         "line_count": len(lines),

@@ -156,8 +156,38 @@ class DeliveryCommitmentTests(unittest.TestCase):
         self.assertEqual(row["allocated_qty"], 3.0)
         self.assertEqual(row["part_no"], "P-1")
         self.assertEqual(row["amount"], 90.0)
+        self.assertIsNone(row["partial_qty"])
+        self.assertIsNone(row["order_value"])
+        self.assertIsNone(row["partial_revenue"])
         self.assertEqual(month_totals(joined, "2026-10")["qty"], 3.0)
         self.assertEqual(month_totals(joined, "unassigned")["line_count"], 0)
+
+    def test_partial_qty_keeps_line_value_and_partial_revenue(self):
+        # S/O line is 30 @ 20 x 1.5 = 900. This partial is 10; 8 is still open.
+        joined = join_delivery_lines(
+            [_line(so_qty=30, pp_qty=10, remaining_qty=8, line_value_home=900)],
+            [],
+        )
+        row = joined[0]
+        self.assertEqual(row["partial_qty"], 10.0)
+        self.assertEqual(row["open_qty"], 8.0)
+        self.assertEqual(row["order_value"], 900.0)
+        self.assertEqual(row["partial_revenue"], 300.0)
+        self.assertEqual(row["amount"], 240.0)
+        self.assertFalse(row["is_new_part"])
+
+        flagged = join_delivery_lines(
+            [_line(is_new_part=True)],
+            [],
+        )[0]
+        self.assertTrue(flagged["is_new_part"])
+
+        from_qty = join_delivery_lines(
+            [_line(so_qty=30, pp_qty=10, remaining_qty=8)],
+            [],
+        )[0]
+        self.assertEqual(from_qty["order_value"], 900.0)
+        self.assertEqual(from_qty["partial_revenue"], 300.0)
 
     def test_assign_puts_the_whole_open_qty_in_one_month(self):
         month, qty, drop = plan_whole_month_assign(

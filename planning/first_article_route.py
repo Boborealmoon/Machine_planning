@@ -46,6 +46,7 @@ from .first_article_service import (
     _MAX_IMPORT_BYTES,
 )
 from .helpers import planner_db
+from .programme_list_service import programme_list_payload
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -436,6 +437,19 @@ def api_list_first_article_history():
         "count": len(rows),
         "rows": rows,
     })
+
+
+@first_article_bp.get("/api/first-article/programme-list")
+def api_programme_list():
+    """Inventory BOM machining parts crossed with Program / Tool Tracker."""
+    raw_prefix = request.args.get("prefix")
+    prefix = None if raw_prefix is None else raw_prefix
+    try:
+        return jsonify(programme_list_payload(prefix))
+    except Exception as exc:
+        logger.exception("programme list failed")
+        payload, status = json_error(exc)
+        return jsonify(payload), status
 
 
 @first_article_bp.get("/api/first-article/pics")

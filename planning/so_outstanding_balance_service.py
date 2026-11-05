@@ -499,6 +499,7 @@ def _outstanding_row(
         "proposed_edd": coway,
         "commitment_date": commit.isoformat() if commit else None,
         "week": week_label(commit),
+        "is_new_part": bool(pp.get("is_new_part")),
         **_planner_export_fields(pp, partial, no_pp=no_pp),
     }
 

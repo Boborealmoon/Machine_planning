@@ -1,10 +1,19 @@
 (function () {
   const PAGE_SIZE = 100;
 
+  const BOARD_CHUNK_SIZE = 100;
+
   const state = {
     items: [],
+    openItems: [],
+    completedItems: [],
     details: new Map(),
     loading: false,
+    loadingMore: false,
+    completedLoading: false,
+    completedLoaded: false,
+    openSerial: 0,
+    completedSerial: 0,
     page: 1,
     erpIncludeCompleted: false,
     psView: 'queue',
@@ -2118,7 +2127,10 @@
   function updateLoadStatusMessage() {
     if (!state.loading || !els.queueHint) return;
     const seconds = Math.max(1, Math.round((Date.now() - loadStartedAt) / 1000));
-    els.queueHint.textContent = `Loading process sheets… ${seconds}s`;
+    const label = state.completedLoading && !state.loadingMore
+      ? 'Loading completed process sheets'
+      : 'Loading outstanding process sheets';
+    els.queueHint.textContent = `${label}… ${seconds}s`;
   }
 
   function startLoadStatusTimer() {
@@ -2145,34 +2157,198 @@
     };
   }
 
-  async function loadProcessSheets({ refresh = false } = {}) {
-    state.loading = true;
+  function boardChunkUrl({ refresh = false, offset = 0, erpOffset = 0, completedOnly = false } = {}) {
+    const params = new URLSearchParams();
+    params.set('chunk_size', String(BOARD_CHUNK_SIZE));
+    params.set('offset', String(offset || 0));
+    params.set('erp_offset', String(erpOffset || 0));
+    if (completedOnly) params.set('completed_only', '1');
+    if (refresh) params.set('refresh', '1');
+    return `/api/process-sheets/board?${params}`;
+  }
+
+  function appendUnique(target, incoming) {
+    const seen = new Set(target.map(itemIdentityKey));
+    incoming.forEach(item => {
+      const key = itemIdentityKey(item);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      target.push(item);
+    });
+  }
+
+  function publishBoardItems() {
+    const seen = new Set();
+    const merged = [];
+    const add = item => {
+      const key = itemIdentityKey(item);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      merged.push(item);
+    };
+    state.openItems.forEach(add);
+    if (shouldIncludeErpCompleted()) state.completedItems.forEach(add);
+    state.items = merged;
+  }
+
+  function waitMs(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
+  }
+
+  async function pullBoardChunks({ completedOnly, refresh, isCurrent }) {
+    let offset = 0;
+    let erpOffset = 0;
+    let pendingTries = 0;
+    let first = true;
+    const bucket = () => (completedOnly ? state.completedItems : state.openItems);
+    for (let guard = 0; guard < 400; guard += 1) {
+      if (!isCurrent()) return;
+      const board = await getJson(boardChunkUrl({
+        refresh: Boolean(refresh && first),
+        offset,
+        erpOffset,
+        completedOnly,
+      }), { timeoutMs: 55000 });
+      if (!isCurrent()) return;
+      appendUnique(bucket(), mergeBoardItems(board));
+      publishBoardItems();
+      state.lastRefreshedAt = refresh ? Date.now() : state.lastRefreshedAt;
+      state.loading = false;
+      const more = Boolean(board.has_more);
+      if (completedOnly) state.completedLoading = more || Boolean(board.erp_pending);
+      else state.loadingMore = more;
+      render();
+      first = false;
+      refresh = false;
+      const nextOffset = Number(board.next_offset ?? offset);
+      const nextErp = Number(board.erp_next_offset ?? erpOffset);
+      if (!more) {
+        if (board.erp_pending && pendingTries < 3) {
+          pendingTries += 1;
+          if (completedOnly) state.completedLoading = true;
+          else state.loadingMore = true;
+          render();
+          await waitMs(1500);
+          continue;
+        }
+        break;
+      }
+      if (nextOffset === offset && nextErp === erpOffset) break;
+      offset = nextOffset;
+      erpOffset = nextErp;
+    }
+    if (completedOnly) {
+      state.completedLoading = false;
+      state.completedLoaded = true;
+    } else {
+      state.loadingMore = false;
+    }
+  }
+
+  async function loadOutstanding({ refresh = false } = {}) {
+    const serial = ++state.openSerial;
+    const isCurrent = () => serial === state.openSerial;
+    if (refresh) {
+      state.openItems = [];
+      publishBoardItems();
+    }
+    state.loading = state.openItems.length === 0;
+    state.loadingMore = true;
     setBusy(true, refresh);
-    startLoadStatusTimer();
+    if (state.loading) startLoadStatusTimer();
     render();
     try {
-      let board;
       try {
-        board = await fetchBoardPayload(refresh);
+        await pullBoardChunks({ completedOnly: false, refresh, isCurrent });
       } catch (boardErr) {
+        if (!isCurrent()) return;
+        if (state.openItems.length) throw boardErr;
         console.warn('process sheet board load failed, falling back to planner list:', boardErr);
-        board = await fetchPlannerOnlyPayload(refresh);
+        const board = await fetchPlannerOnlyPayload(refresh);
+        if (!isCurrent()) return;
+        state.openItems = mergeBoardItems(board);
+        publishBoardItems();
       }
-      state.items = mergeBoardItems(board);
-      state.lastRefreshedAt = refresh ? Date.now() : state.lastRefreshedAt;
+      if (!isCurrent()) return;
+      state.loading = false;
+      state.loadingMore = false;
+      render();
+    } catch (err) {
+      if (!isCurrent()) return;
+      console.error('process sheet load failed:', err);
+      if (!state.openItems.length) {
+        state.items = state.completedItems.slice();
+        state.loading = false;
+        state.loadingMore = false;
+        renderError(err.message || 'Could not load process sheets.');
+        return;
+      }
+      state.loading = false;
+      state.loadingMore = false;
+      render();
+      if (els.queueHint) {
+        els.queueHint.textContent = `Outstanding load stopped: ${err.message || 'could not load the next chunk'}`;
+      }
+    } finally {
+      if (isCurrent()) {
+        state.loading = false;
+        state.loadingMore = false;
+        stopLoadStatusTimer();
+        setBusy(false);
+        loadTempTracker();
+      }
+    }
+  }
+
+  async function loadCompleted({ refresh = false } = {}) {
+    const serial = ++state.completedSerial;
+    const isCurrent = () => serial === state.completedSerial;
+    if (refresh) {
+      state.completedItems = [];
+      state.completedLoaded = false;
+      publishBoardItems();
+    }
+    state.completedLoading = true;
+    if (!state.openItems.length && !state.completedItems.length) {
+      state.loading = true;
+      startLoadStatusTimer();
+    }
+    render();
+    try {
+      await pullBoardChunks({ completedOnly: true, refresh, isCurrent });
+      if (!isCurrent()) return;
+      state.completedLoading = false;
+      state.completedLoaded = true;
       state.loading = false;
       render();
     } catch (err) {
-      console.error('process sheet load failed:', err);
-      state.items = [];
+      if (!isCurrent()) return;
+      console.error('completed process sheet load failed:', err);
+      state.completedLoading = false;
+      state.completedLoaded = false;
       state.loading = false;
-      renderError(err.message || 'Could not load process sheets.');
+      render();
+      if (els.queueHint) {
+        els.queueHint.textContent = `Completed sheets failed to load: ${err.message || 'request failed'}`;
+      }
     } finally {
-      state.loading = false;
-      stopLoadStatusTimer();
-      setBusy(false);
-      loadTempTracker();
+      if (isCurrent()) {
+        state.completedLoading = false;
+        state.loading = false;
+        stopLoadStatusTimer();
+      }
     }
+  }
+
+  async function loadProcessSheets({ refresh = false } = {}) {
+    if (refresh) {
+      state.completedItems = [];
+      state.completedLoaded = false;
+      publishBoardItems();
+    }
+    const jobs = [loadOutstanding({ refresh })];
+    if (shouldIncludeErpCompleted()) jobs.push(loadCompleted({ refresh }));
+    await Promise.all(jobs);
   }
 
   function describeActiveFilters() {
@@ -2327,11 +2503,17 @@
   function renderQueue(items) {
     if (!els.queue) return;
     if (!items.length) {
-      if (state.loading && !state.items.length) {
+      const wantCompletedOnly = Boolean(els.completedOnly?.checked);
+      const loadingFirst = (state.loading && !state.openItems.length && !wantCompletedOnly)
+        || (wantCompletedOnly && state.completedLoading && !state.completedItems.length);
+      if (loadingFirst) {
+        const label = wantCompletedOnly
+          ? 'Loading completed process sheets…'
+          : 'Loading outstanding process sheets…';
         els.queue.innerHTML = [
           '<div class="queue-empty">',
-          '<p><strong>Loading process sheets…</strong></p>',
-          '<p class="queue-empty-meta">If this stays stuck, wait for any ERP sync to finish, then click retry. Sync ERP lives on the Admin page.</p>',
+          `<p><strong>${label}</strong></p>`,
+          '<p class="queue-empty-meta">Finished sheets stay out of this load. Check <strong>Show completed</strong> or <strong>Completed only</strong> when you need them.</p>',
           '<button class="btn btn-light btn-sm" type="button" data-action="retry-load">Retry load</button>',
           '</div>',
         ].join('');
@@ -2371,7 +2553,13 @@
     const pageItems = sortedItems.slice(start, end);
 
     if (els.queueHint) {
-      const loadingNote = state.loading ? ' | refreshing from cache…' : '';
+      const loadingBits = [];
+      if (state.loadingMore) loadingBits.push('loading more outstanding');
+      if (state.completedLoading) loadingBits.push('loading completed');
+      if (!state.loadingMore && !state.completedLoading && !shouldIncludeErpCompleted() && !state.completedLoaded) {
+        loadingBits.push('completed not loaded');
+      }
+      const loadingNote = loadingBits.length ? ` | ${loadingBits.join(' | ')}` : '';
       if (state.psView === 'rejects') {
         els.queueHint.textContent = `${sortedItems.length} active with rejected qty · showing ${start + 1}-${end}${loadingNote}`;
       } else {
@@ -3452,11 +3640,22 @@
       el.addEventListener('change', () => {
         const wantCompleted = shouldIncludeErpCompleted();
         state.page = 1;
-        if (wantCompleted !== state.erpIncludeCompleted) {
-          loadProcessSheets();
-        } else {
+        state.erpIncludeCompleted = wantCompleted;
+        if (!wantCompleted) {
+          state.completedSerial += 1;
+          state.completedLoading = false;
+          state.loading = false;
+          stopLoadStatusTimer();
+          publishBoardItems();
           render();
+          return;
         }
+        if (!state.completedLoaded && !state.completedLoading) {
+          loadCompleted({ refresh: false });
+          return;
+        }
+        publishBoardItems();
+        render();
       });
     });
 

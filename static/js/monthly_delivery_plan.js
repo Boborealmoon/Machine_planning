@@ -37,9 +37,12 @@ const MDP_COLUMNS = [
   { id: 'part_no', label: 'Part' },
   { id: 'part_desc', label: 'Description' },
   { id: 'open_qty', label: 'Open qty' },
+  { id: 'partial_qty', label: 'Partial qty' },
   { id: 'allocated_qty', label: 'Allocated' },
   { id: 'left_qty', label: 'Left' },
   { id: 'unit_cost', label: 'U/Cost' },
+  { id: 'order_value', label: 'Order value' },
+  { id: 'partial_revenue', label: 'Partial revenue' },
   { id: 'amount', label: 'Amount' },
   { id: 'status', label: 'Stage' },
   { id: 'program_pic', label: 'Programme PIC' },
@@ -85,6 +88,7 @@ const mdpState = {
   tagFilters: {
     delivered: 'any',
     okay: 'any',
+    new: 'any',
   },
   okayPending: new Set(),
   selected: new Set(),
@@ -250,31 +254,36 @@ function mdpFocusOk(row) {
   return (row.slices || []).some((slice) => slice.plan_month === focus);
 }
 
+function mdpTagOn(row, tag) {
+  if (tag === 'delivered') return Boolean(row.delivered);
+  if (tag === 'okay') return Boolean(row.okay);
+  if (tag === 'new') return Boolean(row.is_new_part);
+  return false;
+}
+
 function mdpOneTagOk(row, tag) {
   const mode = mdpState.tagFilters[tag] || 'any';
   if (mode === 'any') return true;
-  const on = tag === 'delivered' ? Boolean(row.delivered) : Boolean(row.okay);
-  return on ? mode === 'yes' : mode === 'no';
+  return mdpTagOn(row, tag) ? mode === 'yes' : mode === 'no';
 }
 
 function mdpTagOk(row) {
-  return mdpOneTagOk(row, 'delivered') && mdpOneTagOk(row, 'okay');
+  return Object.keys(mdpState.tagFilters).every((tag) => mdpOneTagOk(row, tag));
 }
 
-function mdpTagFilterCount() {
-  let count = 0;
-  if (mdpState.tagFilters.delivered !== 'any') count += 1;
-  if (mdpState.tagFilters.okay !== 'any') count += 1;
-  return count;
+function mdpTagFilterCount(keys) {
+  const names = keys || Object.keys(mdpState.tagFilters);
+  return names.filter((key) => mdpState.tagFilters[key] && mdpState.tagFilters[key] !== 'any').length;
 }
 
 function mdpTagChoiceCount(tag, mode) {
   return (mdpState.data?.lines || []).filter((row) => {
     if (!mdpPsOk(row) || !mdpSearchOk(row) || !mdpFocusOk(row) || !mdpCatOk(row) || !mdpDateOk(row)) return false;
-    if (tag !== 'delivered' && !mdpOneTagOk(row, 'delivered')) return false;
-    if (tag !== 'okay' && !mdpOneTagOk(row, 'okay')) return false;
-    if (mode === 'yes') return tag === 'delivered' ? Boolean(row.delivered) : Boolean(row.okay);
-    if (mode === 'no') return tag === 'delivered' ? !row.delivered : !row.okay;
+    for (const key of Object.keys(mdpState.tagFilters)) {
+      if (key !== tag && !mdpOneTagOk(row, key)) return false;
+    }
+    if (mode === 'yes') return mdpTagOn(row, tag);
+    if (mode === 'no') return !mdpTagOn(row, tag);
     return true;
   }).length;
 }
@@ -313,7 +322,7 @@ function mdpSortValue(row, col) {
   if (col === 'amount') return mdpDisplayAmount(row);
   const value = row[col];
   if (value == null || value === '') {
-    if (['open_qty', 'allocated_qty', 'left_qty', 'unit_cost', 'amount', 'pp_partial_no'].includes(col)) return -1;
+    if (['open_qty', 'partial_qty', 'allocated_qty', 'left_qty', 'unit_cost', 'order_value', 'partial_revenue', 'amount', 'pp_partial_no'].includes(col)) return -1;
     return '9999-12-31';
   }
   return value;
@@ -372,6 +381,22 @@ function mdpPsLabel(line) {
   const partial = line.pp_partial_no ? ` #${line.pp_partial_no}` : '';
   if (sheet) return `${sheet}${partial}`;
   return line.ps_type === 'NOPP' ? 'No PP' : '-';
+}
+
+function mdpPsHtml(line) {
+  const label = mdpEscape(mdpPsLabel(line));
+  if (!line.is_new_part) return label;
+  return `<span class="mdp-ps-cell"><span class="mdp-ps-no">${label}</span><span class="mdp-new-pill" title="No earlier process sheet for this part on another sales order">NEW</span></span>`;
+}
+
+function mdpNewPartCount(lines) {
+  const parts = new Set();
+  for (const line of lines) {
+    if (!line.is_new_part) continue;
+    const part = String(line.part_no || '').trim();
+    parts.add(part || line.row_id);
+  }
+  return parts.size;
 }
 
 function mdpRangeActive(range) {
@@ -458,6 +483,10 @@ function mdpRenderKpis() {
       <span class="mdp-kpi-label">${amountLabel}</span>
       <div class="mdp-kpi-value">${mdpFormatMoney(Math.round(amount * 100) / 100)}</div>
     </article>
+    <article class="mdp-kpi mdp-kpi--new">
+      <span class="mdp-kpi-label">New parts</span>
+      <div class="mdp-kpi-value">${mdpNewPartCount(lines)}</div>
+    </article>
   `;
 }
 
@@ -498,6 +527,12 @@ function mdpFilterChips() {
     chips.push({
       label: `Okay: ${tagLabels[mdpState.tagFilters.okay]}`,
       clear: 'tag:okay',
+    });
+  }
+  if (mdpState.tagFilters.new !== 'any') {
+    chips.push({
+      label: `New: ${tagLabels[mdpState.tagFilters.new]}`,
+      clear: 'tag:new',
     });
   }
   for (const [colId, selected] of Object.entries(mdpState.catFilters)) {
@@ -541,7 +576,8 @@ function mdpSyncFilterButtons() {
     const selected = mdpState.catFilters[colId];
     const spec = MDP_DATE_RANGES[colId];
     const rangeOn = Boolean(spec && mdpRangeActive(mdpState.dateRanges[spec.field]));
-    const tagExtra = colId === 'plan_month' ? mdpTagFilterCount() : 0;
+    const tagKeys = colId === 'plan_month' ? ['delivered', 'okay'] : (colId === 'ps_type' ? ['new'] : []);
+    const tagExtra = mdpTagFilterCount(tagKeys);
     const active = selected instanceof Set || rangeOn || tagExtra > 0;
     const badge = btn.querySelector('.mdp-filter-badge');
     btn.classList.toggle('is-filtering', active);
@@ -623,13 +659,16 @@ function mdpRenderTable() {
         <td class="mdp-okay-col"><button type="button" class="mdp-okay-toggle" data-line-id="${mdpEscape(line.row_id)}" aria-pressed="${okayPressed}" aria-label="Mark line okay" title="Mark this line okay"${okayDisabled}><span></span></button></td>
         ${mdpTd('plan_month', plan)}
         ${mdpTd('sales_order_no', mdpEscape(line.sales_order_no || '-'))}
-        ${mdpTd('process_sheet_no', mdpEscape(mdpPsLabel(line)))}
+        ${mdpTd('process_sheet_no', mdpPsHtml(line))}
         ${mdpTd('part_no', mdpEscape(line.part_no || '-'))}
         ${mdpTd('part_desc', mdpEscape(line.part_desc || '-'), 'mdp-desc', line.part_desc || '')}
         ${mdpTd('open_qty', mdpFormatQty(line.open_qty), 'mdp-num')}
+        ${mdpTd('partial_qty', line.partial_qty == null ? '-' : mdpFormatQty(line.partial_qty), 'mdp-num')}
         ${mdpTd('allocated_qty', mdpFormatQty(line.allocated_qty), 'mdp-num')}
         ${mdpTd('left_qty', mdpFormatQty(line.left_qty), 'mdp-num')}
         ${mdpTd('unit_cost', line.unit_cost == null ? '-' : mdpFormatMoney(line.unit_cost), 'mdp-num')}
+        ${mdpTd('order_value', line.order_value == null ? '-' : mdpFormatMoney(line.order_value), 'mdp-num')}
+        ${mdpTd('partial_revenue', line.partial_revenue == null ? '-' : mdpFormatMoney(line.partial_revenue), 'mdp-num')}
         ${mdpTd('amount', mdpFormatMoney(mdpDisplayAmount(line)), 'mdp-num')}
         ${mdpTd('status', mdpEscape(line.status || '-'), 'mdp-stage', line.status || '')}
         ${mdpTd('program_pic', mdpEscape(line.program_pic || '-'), 'mdp-pic', line.program_pic || '')}
@@ -743,7 +782,21 @@ function mdpRenderFilterPopover() {
       <label>To <input type="date" data-mdp-range="to" value="${mdpEscape(range?.to || '')}"></label>
     </div>
   ` : '';
-  const tagHtml = colId === 'plan_month' ? mdpTagFilterHtml() : '';
+  const tagHtml = colId === 'plan_month'
+    ? mdpTagFilterHtml([
+      { key: 'delivered', label: 'Delivered' },
+      { key: 'okay', label: 'Okay' },
+    ])
+    : (colId === 'ps_type'
+      ? mdpTagFilterHtml(
+        [{ key: 'new', label: 'New' }],
+        [
+          { mode: 'any', label: 'Show' },
+          { mode: 'yes', label: 'Only' },
+          { mode: 'no', label: 'Hide' },
+        ],
+      )
+      : '');
   pop.hidden = false;
   pop.innerHTML = `
     <div class="mdp-col-filter-title">Filter: ${mdpEscape(conf.label)}</div>
@@ -764,12 +817,8 @@ function mdpRenderFilterPopover() {
   mdp$('mdp-col-filter-search')?.focus();
 }
 
-function mdpTagFilterHtml() {
-  const groups = [
-    { key: 'delivered', label: 'Delivered' },
-    { key: 'okay', label: 'Okay' },
-  ];
-  const modes = [
+function mdpTagFilterHtml(groups, modes) {
+  const choices = modes || [
     { mode: 'any', label: 'Any' },
     { mode: 'yes', label: 'Only' },
     { mode: 'no', label: 'Hide' },
@@ -780,7 +829,7 @@ function mdpTagFilterHtml() {
         <div class="mdp-tag-filter">
           <div class="mdp-tag-filter-label">${group.label}</div>
           <div class="mdp-tag-filter-modes" role="group" aria-label="${group.label} filter">
-            ${modes.map((item) => {
+            ${choices.map((item) => {
               const on = mdpState.tagFilters[group.key] === item.mode ? ' is-on' : '';
               const count = item.mode === 'any' ? '' : `<span class="mdp-tag-filter-count">${mdpTagChoiceCount(group.key, item.mode)}</span>`;
               return `<button type="button" class="mdp-tag-filter-btn${on}" data-mdp-tag="${group.key}" data-mdp-tag-mode="${item.mode}">${item.label}${count}</button>`;
@@ -873,7 +922,8 @@ function mdpExportCsv() {
   if (!mdpState.data) return;
   const headers = [
     'okay', 'plan_month', 'sales_order_no', 'process_sheet_no', 'part_no', 'part_desc',
-    'open_qty', 'allocated_qty', 'left_qty', 'unit_cost', 'exch_rate', 'amount',
+    'open_qty', 'partial_qty', 'allocated_qty', 'left_qty', 'unit_cost', 'exch_rate',
+    'order_value', 'partial_revenue', 'amount',
     'status', 'program_pic', 'proposed_cnc', 'material_need_date', 'material_in_date', 'due_date', 'coway_edd', 'delivery_date', 'week',
   ].filter((key) => key === 'okay' || key === 'exch_rate' || !mdpState.hiddenCols.has(key));
   const rows = [headers.join(',')];
@@ -886,10 +936,13 @@ function mdpExportCsv() {
       part_no: line.part_no || '',
       part_desc: line.part_desc || '',
       open_qty: line.open_qty ?? '',
+      partial_qty: line.partial_qty ?? '',
       allocated_qty: line.allocated_qty ?? '',
       left_qty: line.left_qty ?? '',
       unit_cost: line.unit_cost ?? '',
       exch_rate: line.exch_rate ?? '',
+      order_value: line.order_value ?? '',
+      partial_revenue: line.partial_revenue ?? '',
       amount: mdpDisplayAmount(line),
       status: line.status || '',
       program_pic: line.program_pic || '',
@@ -1156,8 +1209,7 @@ function mdpBind() {
     mdpState.search = '';
     const input = mdp$('mdp-search');
     if (input) input.value = '';
-    mdpState.tagFilters.delivered = 'any';
-    mdpState.tagFilters.okay = 'any';
+    for (const key of Object.keys(mdpState.tagFilters)) mdpState.tagFilters[key] = 'any';
     for (const key of Object.keys(mdpState.catFilters)) mdpState.catFilters[key] = null;
     for (const field of Object.keys(mdpState.dateRanges)) {
       mdpState.dateRanges[field] = { from: '', to: '' };
@@ -1252,6 +1304,7 @@ function mdpBind() {
         mdpState.tagFilters.delivered = 'any';
         mdpState.tagFilters.okay = 'any';
       }
+      if (colId === 'ps_type') mdpState.tagFilters.new = 'any';
       mdpRender();
       mdpRenderFilterPopover();
       return;

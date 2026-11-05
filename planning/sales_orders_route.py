@@ -62,6 +62,22 @@ _NOTE_FIELDS = (
     "sales_notes",
     "buyer",
 )
+_SUBCON_STATUS_IDS = (
+    "to_send",
+    "sent",
+    "at_subcon",
+    "received",
+    "done",
+)
+_SUBCON_STATUS_ALIASES = {
+    "to send": "to_send",
+    "in process": "at_subcon",
+    "inprocess": "at_subcon",
+    "at subcon": "at_subcon",
+    "received back": "received",
+    "complete": "done",
+    "completed": "done",
+}
 _EXCEPTION_ISSUE_IDS = (
     "supply_chain",
     "process_engr",
@@ -401,6 +417,7 @@ def _empty_notes() -> dict[str, Any]:
     out["highlighted_partials"] = []
     out["exception_issues"] = {}
     out["proposed_cnc_saved"] = None
+    out["subcon_status"] = ""
     out["material_delay"] = False
     out["material_need_date"] = ""
     out["material_need_date_history_count"] = 0
@@ -477,6 +494,30 @@ def _resolve_proposed_cnc(raw: Any) -> list[str]:
     from .first_article_service import _resolve_machine_codes
 
     return _resolve_machine_codes(raw, _load_cnc_machine_names())
+
+
+def _normalize_subcon_status(raw: Any) -> str:
+    """Status for a process sheet tagged Subcon on Proposed CNC.
+
+    Blank means the sheet is still waiting to be sent. Unknown values raise
+    so a bad save does not land in the notes table.
+    """
+    text = compact_text(raw).lower().replace("-", " ").replace("_", " ")
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    slug = text.replace(" ", "_")
+    slug = _SUBCON_STATUS_ALIASES.get(text, _SUBCON_STATUS_ALIASES.get(slug, slug))
+    if slug in _SUBCON_STATUS_IDS:
+        return slug
+    raise ValueError("subcon_status must be To send, Sent, At subcon, Received, or Done")
+
+
+def _subcon_status_from_row(raw: Any) -> str:
+    try:
+        return _normalize_subcon_status(raw)
+    except ValueError:
+        return ""
 
 
 def _normalize_exception_issue(raw: Any) -> str:
@@ -591,6 +632,7 @@ def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
         out["proposed_cnc_saved"] = None
     else:
         out["proposed_cnc_saved"] = _parse_proposed_cnc(row.get("proposed_cnc"))
+    out["subcon_status"] = _subcon_status_from_row(row.get("subcon_status"))
     return out
 
 
@@ -651,6 +693,12 @@ def _ensure_notes_table(con) -> None:
         """
         ALTER TABLE planner_so_pp_notes
         ADD COLUMN IF NOT EXISTS proposed_cnc TEXT
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS subcon_status TEXT NOT NULL DEFAULT ''
         """
     )
     _ensure_date_history_table(con)
@@ -2005,6 +2053,7 @@ def _apply_assembly_line_machine_visibility(
             child["proposed_cnc"] = _parse_proposed_cnc(saved)
         else:
             child["proposed_cnc"] = list(part_map.get(_part_key(child.get("part_no")), []))
+        child["subcon_status"] = "" if not note else _subcon_status_from_row(note.get("subcon_status"))
 
 
 def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
@@ -2112,7 +2161,7 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
                            quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                            highlighted_partials, exception_issues, proposed_cnc,
-                           material_delay, material_need_date
+                           subcon_status, material_delay, material_need_date
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
@@ -2496,7 +2545,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
                        quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                        highlighted_partials, exception_issues, proposed_cnc,
-                       material_delay, material_need_date
+                       subcon_status, material_delay, material_need_date
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
                 """,
@@ -2538,6 +2587,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             current["material_need_date"] = _parse_material_need_date(patch.pop("material_need_date"))
         if "proposed_cnc" in patch:
             current["proposed_cnc_saved"] = _resolve_proposed_cnc(patch.pop("proposed_cnc"))
+        if "subcon_status" in patch:
+            current["subcon_status"] = _normalize_subcon_status(patch.pop("subcon_status"))
         for key, value in patch.items():
             if key in _NOTE_FIELDS:
                 current[key] = compact_text(value)
@@ -2553,8 +2604,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 pp_voucher_no, material_subcon, mtl_part_order,
                 quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                 highlighted_partials, exception_issues, proposed_cnc,
-                material_delay, material_need_date, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                subcon_status, material_delay, material_need_date, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
@@ -2566,6 +2617,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 highlighted_partials = EXCLUDED.highlighted_partials,
                 exception_issues = EXCLUDED.exception_issues,
                 proposed_cnc = EXCLUDED.proposed_cnc,
+                subcon_status = EXCLUDED.subcon_status,
                 material_delay = EXCLUDED.material_delay,
                 material_need_date = EXCLUDED.material_need_date,
                 updated_at = NOW()
@@ -2582,6 +2634,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 highlighted_text,
                 issues_text,
                 proposed_cnc_text,
+                current.get("subcon_status") or "",
                 current["material_delay"],
                 current["material_need_date"] or None,
             ),
@@ -2738,6 +2791,11 @@ def api_sales_order_notes(pp_voucher_no):
             patch["material_need_date"] = parsed_need_date
     if "proposed_cnc" in data:
         patch["proposed_cnc"] = data.get("proposed_cnc")
+    if "subcon_status" in data:
+        try:
+            patch["subcon_status"] = _normalize_subcon_status(data.get("subcon_status"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     if not patch:
         return jsonify({"error": "No editable fields supplied"}), 400

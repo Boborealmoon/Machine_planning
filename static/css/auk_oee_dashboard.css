@@ -1806,6 +1806,185 @@
   font-size: 12px;
 }
 
+.auk-span {
+  margin: 4px 0 16px;
+}
+
+.auk-span__row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  min-height: 22px;
+}
+
+.auk-span__row--plot {
+  align-items: stretch;
+  min-height: 72px;
+}
+
+.auk-span__row--axis {
+  min-height: 22px;
+  margin-top: 6px;
+}
+
+.auk-span__label {
+  color: #98a2b3;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.auk-span__lane,
+.auk-span__plot,
+.auk-span__scale {
+  position: relative;
+  min-height: 18px;
+}
+
+.auk-span__lane--line {
+  height: 0;
+  min-height: 0;
+  border-top: 1px solid #c5cad3;
+}
+
+.auk-span__row--line {
+  min-height: 14px;
+}
+
+.auk-span__plot {
+  height: 72px;
+  min-height: 72px;
+}
+
+.auk-span__slice {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.auk-span__slice:hover .auk-span__stack {
+  filter: brightness(0.96);
+}
+
+.auk-span__slice.is-selected {
+  z-index: 2;
+  outline: 2px solid #101828;
+  outline-offset: -2px;
+}
+
+.auk-span__stack {
+  display: flex;
+  flex-direction: column-reverse;
+  height: 100%;
+  width: calc(100% - 1px);
+  overflow: hidden;
+}
+
+.auk-span__part {
+  min-height: 0;
+  width: 100%;
+}
+
+.auk-span__part--good { background: #3cb56e; }
+.auk-span__part--warn { background: #f5b431; }
+.auk-span__part--bad { background: #f07167; }
+.auk-span__part--idle { background: #e4e7ec; }
+
+.auk-span__mark {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auk-span__mark--reject {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f07167;
+}
+
+.auk-span__mark--down {
+  width: 3px;
+  height: 14px;
+  border-radius: 1px;
+  background: #101828;
+}
+
+.auk-span__mark--setup,
+.auk-span__mark--stops {
+  width: 3px;
+  height: 14px;
+  border-radius: 1px;
+  background: #98a2b3;
+}
+
+.auk-span__pill {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #e4e7ec;
+  color: #344054;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.auk-span__scale {
+  height: 18px;
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.auk-span__end,
+.auk-span__tick {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+}
+
+.auk-span__end--right {
+  right: 0;
+  left: auto;
+}
+
+.auk-span__tick {
+  transform: translateX(-50%);
+}
+
+.auk-span__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 8px 0 0 72px;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auk-span__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.auk-span__key {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
 .auk-detail {
   margin-top: 14px;
   padding: 16px;

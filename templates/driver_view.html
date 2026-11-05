@@ -30,6 +30,12 @@
     </div>
   </header>
 
+  <nav class="dv-tabs" role="tablist" aria-label="Delivery views">
+    <button type="button" class="dv-tab is-active" id="dv-tab-schedule" role="tab" aria-selected="true" aria-controls="dv-panel-schedule">Week schedule</button>
+    <button type="button" class="dv-tab" id="dv-tab-month" role="tab" aria-selected="false" aria-controls="dv-panel-month">This month</button>
+  </nav>
+
+  <div id="dv-panel-schedule" role="tabpanel" aria-labelledby="dv-tab-schedule">
   <nav class="dv-toolbar" aria-label="Week filter">
     <div class="dv-nav">
       <span class="dv-nav-label">Show weeks</span>
@@ -70,6 +76,53 @@
     <span class="dv-empty-title">No deliveries scheduled</span>
     <span class="dv-empty-copy">Try another week, or refresh the schedule.</span>
   </p>
+  </div>
+
+  <div id="dv-panel-month" role="tabpanel" aria-labelledby="dv-tab-month" hidden>
+    <nav class="dv-toolbar" aria-label="Month plan search">
+      <label class="dv-search">
+        <span class="dv-nav-label">Search</span>
+        <input type="search" id="dv-month-search" placeholder="PS, part, description, stage, PIC" autocomplete="off">
+      </label>
+    </nav>
+
+    <div id="dv-month-loading" class="dv-loading" hidden>
+      <div class="dv-spinner" aria-hidden="true"></div>
+      Loading this month's plan…
+    </div>
+
+    <div id="dv-month-table-wrap" class="dv-table-card" hidden>
+      <div class="dv-table-scroll">
+        <table class="dv-table dv-table--month">
+          <thead>
+            <tr>
+              <th class="dv-col-ps">PS no.</th>
+              <th class="dv-col-part">Part</th>
+              <th class="dv-col-desc">Description</th>
+              <th class="dv-col-qty">Month qty</th>
+              <th class="dv-col-qty">Partial qty</th>
+              <th class="dv-col-status">Stage</th>
+              <th class="dv-col-pic">Programme PIC</th>
+              <th class="dv-col-cnc">Proposed CNC</th>
+              <th class="dv-col-edd">Need date</th>
+              <th class="dv-col-edd">In date</th>
+              <th class="dv-col-edd">PO due</th>
+              <th class="dv-col-edd">Coway EDD</th>
+              <th class="dv-col-edd">Delivered</th>
+              <th class="dv-col-week">Week</th>
+              <th class="dv-col-flag">Okay</th>
+            </tr>
+          </thead>
+          <tbody id="dv-month-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <p id="dv-month-empty" class="dv-empty" hidden>
+      <span class="dv-empty-title">No lines this month</span>
+      <span class="dv-empty-copy">Nothing in this month's delivery plan matches.</span>
+    </p>
+  </div>
 </div>
 {% endblock %}
 

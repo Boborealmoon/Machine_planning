@@ -9,6 +9,7 @@
     pics: '/api/first-article/pics',
     newParts: '/api/first-article/new-parts',
     history: '/api/first-article/history',
+    programmeList: '/api/first-article/programme-list',
     cmmQueue: '/api/first-article/cmm/queue',
     cmmJobs: '/api/first-article/cmm/jobs',
     cmmHistory: '/api/first-article/cmm/history',
@@ -77,6 +78,17 @@
     completedFilter: '',
     completedTypes: new Set(['APS', 'NPS']),
     completedView: makeTableView(),
+    programmes: {
+      loaded: false,
+      prefix: 'BB',
+      status: 'all',
+      search: '',
+      rows: [],
+      stats: null,
+      source: '',
+      lastSynced: '',
+      openPart: '',
+    },
     openFilterCol: '',
     openFilterTable: '',
     filterQuery: '',
@@ -1944,17 +1956,235 @@
     repositionProposedCncPopover();
   }
 
+  const PROG_STATUS_LABEL = { have: 'Have', partial: 'Partial', missing: 'Missing' };
+
+  function programmeSearchText(row) {
+    const chunks = [
+      row.part_no,
+      row.description,
+      row.bom_code,
+      row.status,
+      ...(row.programme_nos || []),
+      ...(row.missing_ops || []),
+    ];
+    (row.boms || []).forEach((bom) => {
+      chunks.push(bom.bom_code);
+      (bom.ops || []).forEach((op) => {
+        chunks.push(op.stage_desc, op.program_no, op.programmer_name);
+      });
+    });
+    (row.other_programmes || []).forEach((prog) => {
+      chunks.push(prog.program_no, prog.bom_code, prog.operation_type, prog.programmer_name);
+    });
+    return chunks.join(' ').toLowerCase();
+  }
+
+  function filteredProgrammeRows() {
+    const view = state.programmes;
+    const query = String(view.search || '').trim().toLowerCase();
+    return (view.rows || []).filter((row) => {
+      if (view.status !== 'all' && row.status !== view.status) return false;
+      if (!query) return true;
+      return programmeSearchText(row).includes(query);
+    });
+  }
+
+  function programmeStatusBadge(status) {
+    const label = PROG_STATUS_LABEL[status] || status || '';
+    return `<span class="fa-prog-badge is-${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+  }
+
+  function programmeFileLink(url) {
+    const href = String(url || '').trim();
+    if (!href) return '';
+    return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">File</a>`;
+  }
+
+  function programmeOpItem(op) {
+    const bits = [
+      programmeStatusBadge(op.collected ? 'have' : 'missing'),
+      `<strong>${escapeHtml(op.stage_desc || op.op_no || 'Op')}</strong>`,
+    ];
+    if (op.program_no) bits.push(escapeHtml(op.program_no));
+    if (op.programmer_name) bits.push(escapeHtml(op.programmer_name));
+    const file = programmeFileLink(op.program_file);
+    if (file) bits.push(file);
+    return `<li class="fa-prog-op">${bits.join(' ')}</li>`;
+  }
+
+  function programmeDetailHtml(row) {
+    const blocks = (row.boms || []).map((bom) => {
+      const title = `${bom.bom_code || 'No BOM'}${bom.current ? ' · latest' : ''} · ${bom.ops_collected}/${bom.ops_required}`;
+      const ops = (bom.ops || []).map(programmeOpItem).join('');
+      return `<p class="fa-prog-bom-label">${escapeHtml(title)}</p><ul class="fa-prog-op-list">${ops}</ul>`;
+    }).join('');
+    const others = (row.other_programmes || []).map((prog) => {
+      const bits = [
+        escapeHtml([prog.operation_type, prog.op_no].filter(Boolean).join(' ') || 'Programme'),
+      ];
+      if (prog.bom_code) bits.push(escapeHtml(prog.bom_code));
+      if (prog.program_no) bits.push(escapeHtml(prog.program_no));
+      const file = programmeFileLink(prog.program_file);
+      if (file) bits.push(file);
+      return `<li class="fa-prog-op">${bits.join(' · ')}</li>`;
+    }).join('');
+    const otherBlock = others
+      ? `<p class="fa-prog-bom-label">On the tracker, not on the latest BOM</p><ul class="fa-prog-op-list">${others}</ul>`
+      : '';
+    return `<tr class="fa-prog-detail"><td colspan="6">${blocks}${otherBlock}</td></tr>`;
+  }
+
+  function renderProgrammeStats() {
+    const host = $('fa-prog-stats');
+    const note = $('fa-prog-note');
+    const stats = state.programmes.stats;
+    if (!host) return;
+    if (!stats) {
+      host.hidden = true;
+      host.innerHTML = '';
+      if (note) note.textContent = '';
+      return;
+    }
+    const prefix = state.programmes.prefix;
+    const scope = prefix ? `${prefix} parts` : 'All parts';
+    host.hidden = false;
+    host.innerHTML = [
+      ['Parts', String(stats.parts), scope],
+      ['Programmes collected', `${stats.pct_programmes}%`, `${stats.ops_collected} of ${stats.ops_required} ops`],
+      ['Parts fully covered', `${stats.pct_parts}%`, `${stats.have} of ${stats.parts}`],
+      ['No programme', String(stats.missing), `${stats.partial} partial`],
+    ].map(([label, value, detail]) => (
+      `<div class="fa-prog-stat">
+        <div class="fa-prog-stat-label">${escapeHtml(label)}</div>
+        <div class="fa-prog-stat-value">${escapeHtml(value)}</div>
+        <div class="fa-prog-stat-note">${escapeHtml(detail)}</div>
+      </div>`
+    )).join('');
+    if (note) {
+      const visible = filteredProgrammeRows().length;
+      const synced = state.programmes.lastSynced ? ` Tracker sync ${state.programmes.lastSynced}.` : '';
+      note.textContent = `Showing ${visible} of ${stats.parts}. Coverage uses the latest BOM code for each part. A programme counts when Program / Tool Tracker has a programme no. or file for that operation.${synced}`;
+    }
+  }
+
+  function updateProgrammeCount() {
+    const badge = $('fa-prog-count');
+    if (!badge) return;
+    const missing = state.programmes.stats ? state.programmes.stats.missing : 0;
+    badge.hidden = !state.programmes.loaded;
+    badge.textContent = String(missing);
+    badge.title = 'Parts with no programme on the latest BOM';
+  }
+
+  function renderProgrammeList() {
+    const host = $('fa-prog-table-host');
+    const body = $('fa-prog-table-body');
+    const empty = $('fa-prog-empty');
+    const rows = filteredProgrammeRows();
+    renderProgrammeStats();
+    updateProgrammeCount();
+    if (state.tab === 'programmes') {
+      const stats = state.programmes.stats;
+      const prefix = state.programmes.prefix === 'BB' ? 'One Subsea (BB)' : (state.programmes.prefix || 'all');
+      if (!state.programmes.loaded) {
+        $('fa-subtitle').textContent = 'Loading programme list...';
+      } else if (stats) {
+        $('fa-subtitle').textContent = `${stats.pct_parts}% of ${stats.parts} ${prefix} part${stats.parts === 1 ? '' : 's'} fully covered · ${stats.pct_programmes}% of programmes collected`;
+      }
+    }
+    if (!state.programmes.loaded || !(state.programmes.rows || []).length) {
+      if (host) host.hidden = true;
+      if (body) body.innerHTML = '';
+      if (empty) {
+        empty.hidden = !state.programmes.loaded;
+        empty.textContent = state.programmes.prefix
+          ? `No machining parts starting with ${state.programmes.prefix}.`
+          : 'No machining parts in inventory BOM.';
+      }
+      return;
+    }
+    if (!rows.length) {
+      if (host) host.hidden = true;
+      if (body) body.innerHTML = '';
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = 'No parts match this filter.';
+      }
+      return;
+    }
+    if (host) host.hidden = false;
+    if (empty) empty.hidden = true;
+    if (!body) return;
+    body.innerHTML = rows.map((row) => {
+      const open = state.programmes.openPart === row.part_no;
+      const programmes = (row.programme_nos || []).slice(0, 3).join(', ');
+      const extra = (row.programme_nos || []).length > 3 ? ` +${row.programme_nos.length - 3}` : '';
+      const missing = (row.missing_ops || []).slice(0, 3).join(', ');
+      const missingExtra = (row.missing_ops || []).length > 3 ? ` +${row.missing_ops.length - 3}` : '';
+      const bomExtra = row.bom_count > 1 ? `<span class="fa-prog-sub">${row.bom_count} BOMs</span>` : '';
+      const detail = open ? programmeDetailHtml(row) : '';
+      return `<tr class="fa-prog-row" data-fa-prog-part="${escapeHtml(row.part_no)}">
+        <td class="fa-prog-part">${escapeHtml(row.part_no)}</td>
+        <td>${escapeHtml(row.description || '')}</td>
+        <td>${programmeStatusBadge(row.status)}</td>
+        <td>${escapeHtml(row.bom_code || '—')}${bomExtra}</td>
+        <td>${escapeHtml(`${row.ops_collected}/${row.ops_required}`)}${programmes ? `<span class="fa-prog-sub">${escapeHtml(programmes + extra)}</span>` : ''}</td>
+        <td class="fa-prog-missing">${escapeHtml(missing + missingExtra)}</td>
+      </tr>${detail}`;
+    }).join('');
+  }
+
+  let programmeLoadToken = 0;
+
+  async function loadProgrammeList() {
+    const empty = $('fa-prog-empty');
+    const token = ++programmeLoadToken;
+    const prefix = state.programmes.prefix;
+    if (state.tab === 'programmes' && empty) empty.hidden = true;
+    showAlert('');
+    return withTabLoad('programmes', async () => {
+      try {
+        const data = await api(`${API.programmeList}?prefix=${encodeURIComponent(prefix)}`, {
+          timeoutMs: 120000,
+          timeoutMessage: 'Timed out loading the programme list',
+        });
+        if (token !== programmeLoadToken) return;
+        state.programmes.rows = data.rows || [];
+        state.programmes.stats = data.stats || null;
+        state.programmes.source = data.source || '';
+        state.programmes.lastSynced = data.last_synced || '';
+        state.programmes.loaded = true;
+        if (state.programmes.openPart && !state.programmes.rows.some((row) => row.part_no === state.programmes.openPart)) {
+          state.programmes.openPart = '';
+        }
+        renderProgrammeList();
+      } catch (err) {
+        if (token !== programmeLoadToken) return;
+        showAlert(err.message || 'Could not load the programme list');
+        state.programmes.loaded = true;
+        if (!(state.programmes.rows || []).length && empty) {
+          empty.hidden = false;
+          empty.textContent = 'Could not load the programme list. Try Refresh.';
+        }
+        renderProgrammeStats();
+        updateProgrammeCount();
+      }
+    });
+  }
+
   function setTab(tab, options) {
     const persistHash = options && options.persistHash;
     const next = tab === 'new'
       ? 'new'
       : (tab === 'history'
         ? 'history'
-        : (tab === 'cmm-history'
-          ? 'cmm-history'
-          : (tab === 'cmm'
-            ? 'cmm'
-            : (tab === 'qa' ? 'qa' : 'flagged'))));
+        : (tab === 'programmes'
+          ? 'programmes'
+          : (tab === 'cmm-history'
+            ? 'cmm-history'
+            : (tab === 'cmm'
+              ? 'cmm'
+              : (tab === 'qa' ? 'qa' : 'flagged')))));
     if (next !== state.tab) {
       closeColumnFilter();
       closeProposedCncPopover();
@@ -1970,17 +2200,20 @@
     const cmm = $('fa-panel-cmm');
     const neu = $('fa-panel-new');
     const hist = $('fa-panel-history');
+    const programmes = $('fa-panel-programmes');
     const cmmHist = $('fa-panel-cmm-history');
     if (flagged) flagged.hidden = next !== 'flagged';
     if (qa) qa.hidden = next !== 'qa';
     if (cmm) cmm.hidden = next !== 'cmm';
     if (neu) neu.hidden = next !== 'new';
     if (hist) hist.hidden = next !== 'history';
+    if (programmes) programmes.hidden = next !== 'programmes';
     if (cmmHist) cmmHist.hidden = next !== 'cmm-history';
     if (persistHash !== false && !document.body.classList.contains('cmm-embedded')) {
       let hash = '#flagged';
       if (next === 'new') hash = '#new';
       else if (next === 'history') hash = '#history';
+      else if (next === 'programmes') hash = '#programmes';
       else if (next === 'cmm-history') hash = '#cmm-history';
       else if (next === 'cmm') hash = '#cmm';
       else if (next === 'qa') hash = '#qa';
@@ -1994,6 +2227,9 @@
     } else if (next === 'history') {
       renderHistoryTable();
       if (!state.completedLoaded) loadCompletedParts();
+    } else if (next === 'programmes') {
+      renderProgrammeList();
+      if (!state.programmes.loaded) loadProgrammeList();
     } else if (next === 'cmm-history') {
       renderCmmHistory();
       if (!state.cmm.historyLoaded) loadCmmHistory();
@@ -2074,13 +2310,16 @@
     if (tab === 'new') return 'Loading new parts...';
     if (tab === 'history') return 'Loading history...';
     if (tab === 'qa') return 'Loading QA review...';
+    if (tab === 'programmes') return 'Loading programme list...';
     return 'Loading NPI tracker...';
   }
 
   function syncLoading() {
     const loading = $('fa-loading');
     if (!loading) return;
-    const tab = state.tab === 'new' || state.tab === 'history' || state.tab === 'qa' ? state.tab : 'flagged';
+    const tab = state.tab === 'new' || state.tab === 'history' || state.tab === 'qa' || state.tab === 'programmes'
+      ? state.tab
+      : 'flagged';
     const key = tab === 'qa' ? 'new' : tab;
     const busy = (loadsInFlight[key] || 0) > 0;
     loading.hidden = !busy;
@@ -3908,6 +4147,30 @@
         value: qaExportValue,
       };
     }
+    if (state.tab === 'programmes') {
+      if (!state.programmes.loaded) return { error: 'The programme list is still loading.' };
+      return {
+        rows: filteredProgrammeRows(),
+        columns: [
+          { id: 'part_no', label: 'Part no.', width: 24 },
+          { id: 'description', label: 'Description', width: 36 },
+          { id: 'status', label: 'Status', width: 12 },
+          { id: 'bom_code', label: 'BOM', width: 24 },
+          { id: 'ops', label: 'Programmes', width: 14 },
+          { id: 'programme_nos', label: 'Programme nos', width: 28 },
+          { id: 'missing_ops', label: 'Missing', width: 36 },
+        ],
+        sheetName: 'Programme list',
+        filename: `npi-programme-list-${stamp}.xlsx`,
+        value: (row, colId) => {
+          if (colId === 'status') return PROG_STATUS_LABEL[row.status] || row.status || '';
+          if (colId === 'ops') return `${row.ops_collected}/${row.ops_required}`;
+          if (colId === 'programme_nos') return (row.programme_nos || []).join(', ');
+          if (colId === 'missing_ops') return (row.missing_ops || []).join(', ');
+          return row[colId] || '';
+        },
+      };
+    }
     return {
       rows: filteredRows(),
       columns: TRACKER_EXPORT_COLUMNS,
@@ -3924,9 +4187,11 @@
       ? 'New parts'
       : (state.tab === 'history'
         ? 'History'
-        : (state.tab === 'cmm-history'
-          ? 'CMM History'
-          : (state.tab === 'cmm' ? 'CMM Queue' : (state.tab === 'qa' ? 'QA Review' : 'NPI Tracker'))));
+        : (state.tab === 'programmes'
+          ? 'Programme list'
+          : (state.tab === 'cmm-history'
+            ? 'CMM History'
+            : (state.tab === 'cmm' ? 'CMM Queue' : (state.tab === 'qa' ? 'QA Review' : 'NPI Tracker')))));
     btn.title = `Download the visible ${label} list as Excel`;
   }
 
@@ -4929,6 +5194,7 @@
       if (state.tab === 'new' || state.tab === 'qa') loadNewParts();
       else if (state.tab === 'cmm') loadCmmQueue();
       else if (state.tab === 'history') loadCompletedParts();
+      else if (state.tab === 'programmes') loadProgrammeList();
       else if (state.tab === 'cmm-history') loadCmmHistory();
       else loadTracker();
     });
@@ -4955,6 +5221,43 @@
       if (!btn || btn.disabled) return;
       const hit = state.exceptionHits[Number(btn.getAttribute('data-index'))];
       addExceptionHit(hit);
+    });
+    $('fa-prog-search')?.addEventListener('input', (event) => {
+      state.programmes.search = event.target.value || '';
+      renderProgrammeList();
+    });
+    $('fa-panel-programmes')?.addEventListener('click', (event) => {
+      const prefixBtn = event.target.closest('[data-fa-prog-prefix]');
+      if (prefixBtn) {
+        const prefix = prefixBtn.getAttribute('data-fa-prog-prefix') || '';
+        if (prefix === state.programmes.prefix && state.programmes.loaded) return;
+        state.programmes.prefix = prefix;
+        state.programmes.loaded = false;
+        state.programmes.rows = [];
+        state.programmes.stats = null;
+        state.programmes.openPart = '';
+        renderProgrammeList();
+        document.querySelectorAll('[data-fa-prog-prefix]').forEach((btn) => {
+          btn.classList.toggle('is-active', btn === prefixBtn);
+        });
+        loadProgrammeList();
+        return;
+      }
+      const statusBtn = event.target.closest('[data-fa-prog-status]');
+      if (statusBtn) {
+        state.programmes.status = statusBtn.getAttribute('data-fa-prog-status') || 'all';
+        document.querySelectorAll('[data-fa-prog-status]').forEach((btn) => {
+          btn.classList.toggle('is-active', btn === statusBtn);
+        });
+        renderProgrammeList();
+        return;
+      }
+      if (event.target.closest('a')) return;
+      const row = event.target.closest('[data-fa-prog-part]');
+      if (!row) return;
+      const part = row.getAttribute('data-fa-prog-part') || '';
+      state.programmes.openPart = state.programmes.openPart === part ? '' : part;
+      renderProgrammeList();
     });
     $('fa-new-filter')?.addEventListener('input', (e) => {
       state.newFilter = e.target.value || '';
@@ -5609,6 +5912,8 @@
     setTab('history', { persistHash: false });
   } else if (bootHash === '#qa') {
     setTab('qa', { persistHash: false });
+  } else if (bootHash === '#programmes') {
+    setTab('programmes', { persistHash: false });
   }
   loadTracker();
 })();

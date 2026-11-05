@@ -41,6 +41,7 @@ _LINE_FIELDS = (
     "material_in_date",
     "delivery_date",
     "delivered",
+    "is_new_part",
 )
 
 
@@ -82,6 +83,19 @@ def _unit(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_qty(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return _round_qty(value)
+
+
+def _optional_money(value: Any) -> float | None:
+    number = _unit(value)
+    if number is None:
+        return None
+    return round(number, 2)
 
 
 def _date_text(value: Any) -> str | None:
@@ -383,7 +397,19 @@ def _joined_row(
     else:
         amount_qty = allocated if public else float(open_qty)
     over = (not no_longer_open) and (not delivered) and allocated > float(open_qty) + QTY_TOLERANCE
+    partial_qty = _optional_qty(source.get("pp_qty"))
+    if partial_qty is None:
+        partial_qty = _optional_qty(source.get("partial_qty"))
+    so_qty = _optional_qty(source.get("so_qty"))
+    order_value = _optional_money(source.get("line_value_home"))
+    if order_value is None and so_qty is not None:
+        order_value = _money(unit, so_qty, exch)
+    if partial_qty is not None:
+        partial_revenue = _money(unit, partial_qty, exch)
+    else:
+        partial_revenue = _optional_money(source.get("pp_value_home"))
     row = {field: source.get(field) for field in _LINE_FIELDS}
+    row["is_new_part"] = bool(source.get("is_new_part"))
     row["delivered"] = delivered
     row["delivery_date"] = _date_text(source.get("delivery_date"))
     row.update(
@@ -391,8 +417,11 @@ def _joined_row(
             "unit_cost": unit,
             "exch_rate": exch,
             "open_qty": _round_qty(open_qty),
+            "partial_qty": partial_qty,
             "allocated_qty": allocated,
             "left_qty": left,
+            "order_value": order_value,
+            "partial_revenue": partial_revenue,
             "amount": _money(unit, amount_qty, exch),
             "slices": public,
             "plan_months": [item["plan_month"] for item in public],
@@ -528,6 +557,126 @@ def month_totals(lines: list[dict[str, Any]], focus: str | None) -> dict[str, An
     }
 
 
+SHOP_PLAN_PS_TYPES = ("APS", "NPS")
+
+_WORK_LINE_KEYS = (
+    "row_id",
+    "ps",
+    "ps_type",
+    "part_no",
+    "part_desc",
+    "month_qty",
+    "partial_qty",
+    "status",
+    "program_pic",
+    "proposed_cnc",
+    "material_need_date",
+    "material_in_date",
+    "due_date",
+    "coway_edd",
+    "delivery_date",
+    "delivered",
+    "week",
+    "okay",
+    "closed",
+)
+
+
+def _slice_for_month(line: dict[str, Any], month: str) -> dict[str, Any] | None:
+    return next(
+        (item for item in line.get("slices") or [] if item.get("plan_month") == month),
+        None,
+    )
+
+
+def _ps_work_label(line: dict[str, Any]) -> str:
+    sheet = _compact(line.get("process_sheet_no") or line.get("pp_voucher_no"))
+    partial = line.get("pp_partial_no")
+    partial_text = ""
+    if partial not in (None, "", 0, "0"):
+        partial_text = f" #{partial}"
+    if sheet:
+        return f"{sheet}{partial_text}"
+    if _compact(line.get("ps_type")).upper() == "NOPP":
+        return "No PP"
+    return ""
+
+
+def _cnc_label(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(part for part in (_compact(item) for item in value) if part)
+    return _compact(value)
+
+
+def line_in_shop_month(line: dict[str, Any], month: str) -> bool:
+    """Same month membership as the monthly plan chip, without money totals."""
+    key = plan_month_key(month)
+    delivered_month = _compact(line.get("delivery_date"))[:7]
+    if line.get("delivered") and delivered_month == key:
+        return True
+    return _slice_for_month(line, key) is not None
+
+
+def shop_month_qty(line: dict[str, Any], month: str) -> float:
+    key = plan_month_key(month)
+    delivered_month = _compact(line.get("delivery_date"))[:7]
+    if line.get("delivered") and delivered_month == key:
+        return _round_qty(line.get("open_qty"))
+    matched = _slice_for_month(line, key)
+    if matched is None:
+        return 0.0
+    return _round_qty(matched.get("qty"))
+
+
+def shop_month_work_lines(
+    lines: list[dict[str, Any]],
+    month: str,
+    *,
+    ps_types: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """This month's plan as work rows. Sales prices and order values are dropped."""
+    key = plan_month_key(month)
+    allowed = {str(item).strip().upper() for item in (ps_types or SHOP_PLAN_PS_TYPES) if str(item).strip()}
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        ps_type = _compact(line.get("ps_type")).upper()
+        if allowed and ps_type not in allowed:
+            continue
+        if not line_in_shop_month(line, key):
+            continue
+        partial_qty = line.get("partial_qty")
+        row = {
+            "row_id": _compact(line.get("row_id")),
+            "ps": _ps_work_label(line),
+            "ps_type": ps_type,
+            "part_no": _compact(line.get("part_no")),
+            "part_desc": _compact(line.get("part_desc")),
+            "month_qty": shop_month_qty(line, key),
+            "partial_qty": None if partial_qty is None else _round_qty(partial_qty),
+            "status": _compact(line.get("status")),
+            "program_pic": _compact(line.get("program_pic")),
+            "proposed_cnc": _cnc_label(line.get("proposed_cnc")),
+            "material_need_date": _date_text(line.get("material_need_date")) or "",
+            "material_in_date": _date_text(line.get("material_in_date")) or "",
+            "due_date": _date_text(line.get("due_date")) or "",
+            "coway_edd": _date_text(line.get("coway_edd")) or "",
+            "delivery_date": _date_text(line.get("delivery_date")) or "",
+            "delivered": bool(line.get("delivered")),
+            "week": _compact(line.get("week")),
+            "okay": bool(line.get("okay")),
+            "closed": bool(line.get("no_longer_open")),
+        }
+        rows.append({field: row[field] for field in _WORK_LINE_KEYS})
+    rows.sort(
+        key=lambda item: (
+            item.get("due_date") or "9999-12-31",
+            item.get("ps") or "",
+            item.get("part_no") or "",
+        )
+    )
+    return rows
+
+
 def build_commitment_view(
     lines: list[dict[str, Any]],
     commitments: list[dict[str, Any]],
@@ -545,6 +694,8 @@ def build_commitment_view(
         "year": year,
         "commitment_rule": "planner_assigned_month",
         "currency_note": (
+            "Order value = unit x S/O qty x exchange rate (full line item). "
+            "Partial revenue = unit x partial qty x exchange rate. "
             "Assigned amount = unit x allocated qty x exchange rate. "
             "Unassigned amount = unit x open qty x exchange rate."
         ),

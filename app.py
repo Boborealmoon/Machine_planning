@@ -2862,9 +2862,125 @@ def api_pp_vouchers_with_ops():
     return jsonify([])
 
 
+def _board_erp_page(*, completed_only, refresh, offset, limit, planner_keys):
+    """Slice cached ERP board rows. Never rebuilds the catalog inside the request."""
+    from planning.process_sheets import process_sheet_board_identity_key
+    from planning.utils import compact_text
+
+    scope = _pp_vouchers_cache_scope(bool(completed_only))
+    cached = _pp_vouchers_board_cache_lookup(scope, allow_stale=True)
+    if cached is None:
+        _schedule_pp_vouchers_with_ops_refresh(scope, bool(completed_only))
+        return [], max(0, int(offset or 0)), False, True
+    if refresh:
+        _schedule_pp_vouchers_with_ops_refresh(scope, bool(completed_only))
+
+    filtered = []
+    for entry in cached:
+        if not compact_text(entry.get("ps_id")):
+            continue
+        shipped = bool(entry.get("shipped_completed"))
+        if completed_only:
+            if not shipped:
+                continue
+        elif shipped:
+            continue
+        if process_sheet_board_identity_key(entry) in planner_keys:
+            continue
+        filtered.append(entry)
+
+    offset = max(0, int(offset or 0))
+    limit = max(1, int(limit or 1))
+    page = filtered[offset:offset + limit]
+    next_offset = offset + len(page)
+    return page, next_offset, next_offset < len(filtered), False
+
+
+def _api_process_sheets_board_chunk():
+    """One page of the process-sheet board.
+
+    Outstanding pages skip SO-shipped sheets. Completed pages are a separate
+    request (`completed_only=1`) so the open queue can paint first.
+    """
+    from planning.helpers import planner_db
+    from planning.process_sheets import (
+        enrich_board_planner_fields,
+        list_process_sheets_payload,
+        planner_board_identity_keys,
+    )
+
+    try:
+        chunk_size = int(request.args.get("chunk_size") or 100)
+    except (TypeError, ValueError):
+        chunk_size = 100
+    chunk_size = max(1, min(chunk_size, 200))
+    try:
+        offset = int(request.args.get("offset") or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        erp_offset = int(request.args.get("erp_offset") or 0)
+    except (TypeError, ValueError):
+        erp_offset = 0
+    completed_only = str(request.args.get("completed_only") or "").lower() in {"1", "true", "yes", "on"}
+    refresh = str(request.args.get("refresh") or "").lower() in {"1", "true", "yes"}
+    page_meta = {}
+    try:
+        with planner_db() as con:
+            planner_items = list_process_sheets_payload(
+                con,
+                offset=max(0, offset),
+                limit=chunk_size,
+                completed_only=completed_only,
+                show_completed=True if completed_only else False,
+                refresh=refresh,
+                page_meta=page_meta,
+            )
+            enrich_board_planner_fields(con, planner_items)
+            planner_keys = planner_board_identity_keys(con)
+        erp_only, erp_next, erp_has_more, erp_pending = _board_erp_page(
+            completed_only=completed_only,
+            refresh=refresh and offset <= 0 and erp_offset <= 0,
+            offset=max(0, erp_offset),
+            limit=chunk_size,
+            planner_keys=planner_keys,
+        )
+        if erp_only:
+            try:
+                from planning.materials import enrich_items_material_inventory_codes
+                from planning.process_sheets import _set_process_sheet_read_timeouts
+
+                with planner_db() as con:
+                    _set_process_sheet_read_timeouts(con)
+                    enrich_board_planner_fields(con, erp_only)
+                    enrich_items_material_inventory_codes(con, erp_only)
+            except Exception as exc:
+                log.warning("process sheet board chunk overlay enrich failed: %s", exc)
+        planner_has_more = bool(page_meta.get("has_more"))
+        return jsonify({
+            "planner": planner_items,
+            "erp_only": erp_only,
+            "next_offset": page_meta.get("next_offset", max(0, offset)),
+            "erp_next_offset": erp_next,
+            "has_more": planner_has_more or erp_has_more,
+            "planner_has_more": planner_has_more,
+            "erp_has_more": erp_has_more,
+            "erp_pending": erp_pending,
+            "completed_only": completed_only,
+            "planner_total": page_meta.get("total", 0),
+        })
+    except Exception as e:
+        from db import planner_db_connect_error
+
+        friendly = planner_db_connect_error(e)
+        return jsonify({"error": friendly or str(e)}), 500
+
+
 @app.get("/api/process-sheets/board")
 def api_process_sheets_board():
     """Single round-trip for Process Sheets: planner rows + ERP-only vouchers."""
+    if request.args.get("chunk_size"):
+        return _api_process_sheets_board_chunk()
     import concurrent.futures
 
     from flask import copy_current_request_context

@@ -7,9 +7,11 @@ from unittest.mock import patch
 
 from app import _filter_pp_vouchers_by_search, app
 from planning.process_sheets import (
+    _cheap_row_shipped_complete,
     _flow_steps_sql,
     _ps_select_search_clause,
     _ps_select_sql,
+    slice_board_source_groups,
     split_process_sheet_search_terms,
 )
 
@@ -217,3 +219,53 @@ def test_catalog_search_attach_subset_includes_related_sr_family():
     other = {"ps_id": "NPS26-0999", "source_ps_id": "NPS26-0999", "part_no": "OTHER"}
     subset = _catalog_rows_for_search_attach([sr, nps, nps_child, other], [sr])
     assert {row["ps_id"] for row in subset} == {"N26-[SR]22", "NPS26-0321", "NPS26-0321-10"}
+
+
+def test_cheap_shipped_complete_skips_temp_and_open_so_lines():
+    assert _cheap_row_shipped_complete({
+        "ps_id": "[Temp]NPS26-1-1",
+        "so_det_qty": 10,
+        "qty_shipped": 10,
+    }) is False
+    assert _cheap_row_shipped_complete({
+        "ps_id": "NPS26-1::1",
+        "so_det_qty": 10,
+        "qty_shipped": 10,
+    }) is True
+    assert _cheap_row_shipped_complete({
+        "ps_id": "NPS26-1::1",
+        "so_det_qty": 10,
+        "qty_shipped": 4,
+    }) is False
+    assert _cheap_row_shipped_complete({
+        "ps_id": "NPS26-1::1",
+        "so_det_qty": None,
+        "qty_shipped": 4,
+    }) is False
+
+
+def test_slice_board_source_groups_keeps_partials_together():
+    rows = [
+        {"ps_id": "A::1", "source_ps_id": "A", "pp_partial_no": 1},
+        {"ps_id": "B::1", "source_ps_id": "B", "pp_partial_no": 1},
+        {"ps_id": "A::2", "source_ps_id": "A", "pp_partial_no": 2},
+        {"ps_id": "C::1", "source_ps_id": "C", "pp_partial_no": 1},
+    ]
+    first, next_offset, has_more = slice_board_source_groups(rows, 0, 1)
+    assert [row["ps_id"] for row in first] == ["A::1", "A::2"]
+    assert next_offset == 1
+    assert has_more is True
+
+    second, next_offset, has_more = slice_board_source_groups(rows, next_offset, 1)
+    assert [row["ps_id"] for row in second] == ["B::1"]
+    assert next_offset == 3
+    assert has_more is True
+
+    third, next_offset, has_more = slice_board_source_groups(rows, next_offset, 1)
+    assert [row["ps_id"] for row in third] == ["C::1"]
+    assert next_offset == 4
+    assert has_more is False
+
+    again, next_offset, has_more = slice_board_source_groups(rows, 2, 10)
+    assert [row["ps_id"] for row in again] == ["C::1"]
+    assert has_more is False

@@ -10,6 +10,7 @@ from app import app
 from planning.sales_coordination_service import (
     build_sales_coordination,
     expand_sales_coordination_lines,
+    normalize_coordination_update,
     parse_material_tracking_fields,
     week_label,
 )
@@ -54,6 +55,7 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(row["customer_po_no"], "3056043022/00")
         self.assertEqual(row["due_date"], "2026-08-19")
         self.assertEqual(row["posted_date"], "2026-07-28")
+        self.assertEqual(row["po_date"], "2026-07-28")
         self.assertEqual(row["proposed_edd"], "2026-08-18")
         self.assertEqual(row["week"], "Week 34 - Tuesday")
         self.assertTrue(row["is_frame_agreement"])
@@ -248,6 +250,68 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(row["material_status"], "Expected")
         self.assertEqual(row["material_in_date"], "2027-01-08")
 
+    def test_po_date_line_item_order_qty_and_erp_remarks(self):
+        orders = [
+            {
+                "sales_order_no": "SO/2601",
+                "order_date": "2026-09-02",
+                "first_posted_datetime": "2026-09-04 08:00:00",
+                "external_remarks": "Ship with the October lot",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "APS26-0245",
+                        "process_sheet_no": "APS26-0245",
+                        "source_line_item_no": "12",
+                        "inventory_code": "D64438EB",
+                        "description": "BUSH",
+                        "customer_po_no": "556385",
+                        "so_det_qty": 12,
+                        "pp_qty": 12,
+                        "due_date": "2026-10-30",
+                        "remarks": "Confirm heat number",
+                        "shipped_completed": False,
+                        "partials": [],
+                    }
+                ],
+            }
+        ]
+        row = expand_sales_coordination_lines(orders)[0]
+        self.assertEqual(row["po_date"], "2026-09-02")
+        self.assertEqual(row["posted_date"], "2026-09-04")
+        self.assertEqual(row["line_item_no"], "12")
+        self.assertEqual(row["customer_po_no"], "556385")
+        self.assertEqual(row["part_no"], "D64438EB")
+        self.assertEqual(row["order_qty"], 12)
+        self.assertEqual(row["customer_remarks"], "Ship with the October lot")
+        self.assertEqual(row["coway_remarks"], "Confirm heat number")
+        self.assertIsNone(row["committed_schedule"])
+        self.assertEqual(row["pp_partial_no"], 1)
+
+    def test_normalize_committed_schedule_and_remarks(self):
+        parsed = normalize_coordination_update(
+            {
+                "pp_voucher_no": " APS26-1 ",
+                "committed_schedule": "30/09/2026",
+                "customer_remarks": "  hold  ",
+            }
+        )
+        self.assertEqual(parsed["pp_voucher_no"], "APS26-1")
+        self.assertEqual(parsed["pp_partial_no"], 1)
+        self.assertEqual(parsed["committed_schedule"], "2026-09-30")
+        self.assertEqual(parsed["customer_remarks"], "hold")
+        self.assertNotIn("coway_remarks", parsed)
+
+        cleared = normalize_coordination_update(
+            {"pp_voucher_no": "NPS26-2", "pp_partial_no": "3", "committed_schedule": "-"}
+        )
+        self.assertEqual(cleared["pp_partial_no"], 3)
+        self.assertIsNone(cleared["committed_schedule"])
+
+        with self.assertRaises(ValueError):
+            normalize_coordination_update(
+                {"pp_voucher_no": "APS26-1", "committed_schedule": "next Friday"}
+            )
+
 
 class SalesCoordinationRouteTests(unittest.TestCase):
     def setUp(self):
@@ -260,21 +324,30 @@ class SalesCoordinationRouteTests(unittest.TestCase):
             response = self.client.get("/sales-coordination")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        self.assertIn("data-sort=\"posted_date\"", html)
-        self.assertIn("data-sort=\"proposed_edd\"", html)
+        self.assertIn("data-sort=\"po_date\"", html)
+        self.assertIn("data-sort=\"committed_schedule\"", html)
         self.assertIn("data-sort=\"due_date\"", html)
+        self.assertIn("data-sort=\"line_item_no\"", html)
+        self.assertIn("data-sort=\"order_qty\"", html)
         self.assertIn("id=\"sc-export\"", html)
         self.assertIn("id=\"sc-select-all\"", html)
         self.assertIn("sc-col-check", html)
-        self.assertIn("Posted date", html)
-        self.assertIn("Proposed EDD", html)
-        self.assertIn("sc-20260922-date-order", html)
-        posted = html.find('data-sort="posted_date"')
+        self.assertIn("PO date", html)
+        self.assertIn("PO number", html)
+        self.assertIn("Inventory code", html)
+        self.assertIn("Customer remarks", html)
+        self.assertIn("Coway remarks", html)
+        self.assertIn("Committed schedule", html)
+        self.assertIn("sc-20261029-compact", html)
+        po_date = html.find('data-sort="po_date"')
+        po_no = html.find('data-sort="customer_po_no"')
+        line = html.find('data-sort="line_item_no"')
         due = html.find('data-sort="due_date"')
-        need = html.find('data-sort="material_need_date"')
-        material_in = html.find('data-sort="material_in_date"')
-        proposed = html.find('data-sort="proposed_edd"')
-        self.assertTrue(posted < due < need < material_in < proposed)
+        qty = html.find('data-sort="order_qty"')
+        customer = html.find('data-sort="customer_remarks"')
+        coway = html.find('data-sort="coway_remarks"')
+        commit = html.find('data-sort="committed_schedule"')
+        self.assertTrue(po_date < po_no < line < due < qty < customer < coway < commit)
 
     def test_api_includes_posted_and_proposed_edd(self):
         payload = {
@@ -313,8 +386,19 @@ class SalesCoordinationRouteTests(unittest.TestCase):
         self.assertEqual(len(data["lines"]), 1)
         row = data["lines"][0]
         self.assertEqual(row["posted_date"], "2026-07-28")
+        self.assertEqual(row["po_date"], "2026-07-28")
         self.assertEqual(row["proposed_edd"], "2026-08-18")
         self.assertEqual(row["due_date"], "2026-08-19")
+        self.assertIsNone(row["committed_schedule"])
+
+    def test_patch_rejects_a_bad_committed_date(self):
+        with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+            response = self.client.patch(
+                "/api/sales-coordination/lines",
+                json={"updates": [{"pp_voucher_no": "APS26-1", "committed_schedule": "next Friday"}]},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not a date", response.get_json()["error"])
 
 
 if __name__ == "__main__":

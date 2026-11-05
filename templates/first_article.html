@@ -3,7 +3,7 @@
 {% block body_class %}fa-view{% endblock %}
 {% block main_class %}app-main--first-article{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-col-keep-20261013">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/first_article.css') }}?v=fa-prog-list-20261104">
 {% endblock %}
 {% block content %}
 <div class="fa-page">
@@ -32,6 +32,10 @@
     <button type="button" class="fa-tab" id="fa-tab-history" data-fa-tab="history"
             role="tab" aria-selected="false" aria-controls="fa-panel-history">
       History <span class="fa-tab-count" id="fa-history-count" hidden>0</span>
+    </button>
+    <button type="button" class="fa-tab" id="fa-tab-programmes" data-fa-tab="programmes"
+            role="tab" aria-selected="false" aria-controls="fa-panel-programmes">
+      Programme list <span class="fa-tab-count" id="fa-prog-count" hidden>0</span>
     </button>
   </div>
 
@@ -247,6 +251,48 @@
     <p id="fa-completed-empty" class="fa-empty" hidden>No completed NEW process sheets yet. When WO / S/O status is complete, the row moves here with PIC, remarks, and commitment date kept.</p>
   </div>
 
+  <div id="fa-panel-programmes" class="fa-panel" role="tabpanel" aria-labelledby="fa-tab-programmes" hidden>
+    <section class="fa-toolbar" aria-label="Filter programme list">
+      <div class="fa-toolbar-group fa-toolbar-group--filter">
+        <label class="fa-filter-wrap">
+          <span class="fa-add-label">Filter</span>
+          <input id="fa-prog-search" class="fa-search-input" type="search"
+                 placeholder="Part no, description, programme..." autocomplete="off">
+        </label>
+        <div class="fa-new-types" id="fa-prog-prefixes" role="group" aria-label="Part prefix">
+          <button type="button" class="fa-type-chip is-active" data-fa-prog-prefix="BB">BB · One Subsea</button>
+          <button type="button" class="fa-type-chip" data-fa-prog-prefix="">All parts</button>
+        </div>
+        <div class="fa-new-types" id="fa-prog-statuses" role="group" aria-label="Programme coverage">
+          <button type="button" class="fa-type-chip is-active" data-fa-prog-status="all">All</button>
+          <button type="button" class="fa-type-chip" data-fa-prog-status="missing">Missing</button>
+          <button type="button" class="fa-type-chip" data-fa-prog-status="partial">Partial</button>
+          <button type="button" class="fa-type-chip" data-fa-prog-status="have">Have</button>
+        </div>
+      </div>
+    </section>
+    <div class="fa-prog-stats" id="fa-prog-stats" hidden></div>
+    <p class="fa-prog-note" id="fa-prog-note"></p>
+    <div id="fa-prog-table-host" class="fa-table-card" hidden>
+      <div class="fa-table-scroll">
+        <table class="fa-table" id="fa-prog-table">
+          <thead>
+            <tr>
+              <th class="fa-col-part">Part no.</th>
+              <th class="fa-col-desc">Description</th>
+              <th>Status</th>
+              <th class="fa-col-bom" title="Latest BOM code for this part. Open the row to see earlier routes.">BOM</th>
+              <th title="Machining ops on the latest BOM that have a programme no. or file">Programmes</th>
+              <th>Missing</th>
+            </tr>
+          </thead>
+          <tbody id="fa-prog-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <p id="fa-prog-empty" class="fa-empty" hidden>No machining parts match this list.</p>
+  </div>
+
 </div>
 
 <div id="fa-bulk-modal" class="fa-modal-backdrop" hidden>
@@ -377,5 +423,5 @@
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=fa-20260825-2"></script>
-<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-col-keep-20261013"></script>
+<script src="{{ url_for('static', filename='js/first_article.js') }}?v=fa-prog-list-20261104"></script>
 {% endblock %}

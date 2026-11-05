@@ -7,6 +7,14 @@
   const PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
   const EM_DASH = '-';
   const PS_VIEWS = new Set(['active', 'no-wo', 'sr']);
+  const SUBCON_VIEW = 'subcon';
+  const SUBCON_STATUSES = [
+    { id: 'to_send', label: 'To send' },
+    { id: 'sent', label: 'Sent' },
+    { id: 'at_subcon', label: 'At subcon' },
+    { id: 'received', label: 'Received' },
+    { id: 'done', label: 'Done' },
+  ];
   const PR_PO_VIEWS = new Set(['pr-enquiry', 'purchase-order']);
   const REQUEST_VIEW = 'part-requests';
   const QC_VIEW = 'qc-checklist';
@@ -23,6 +31,7 @@
   };
   const SECTION_DEFAULTS = {
     jobs: 'active',
+    subcon: SUBCON_VIEW,
     purchasing: 'pr-enquiry',
     'logistics-in': SHIP_IN_VIEW,
     'logistics-out': SHIP_OUT_VIEW,
@@ -45,6 +54,18 @@
       <th class="sol-col-bom">BOM</th>
       <th class="sol-col-material" title="Material in">In</th>
       <th class="sol-col-notes" title="Mtl / Part Order">Notes</th>
+    </tr>`;
+  const SUBCON_TABLE_HEAD = `
+    <tr>
+      <th class="sol-col-order">S/O</th>
+      <th class="sol-col-ps">PS</th>
+      <th class="sol-col-part">Part</th>
+      <th class="sol-col-qty">Qty</th>
+      <th class="sol-col-due">Due</th>
+      <th class="sol-col-stage">Stage</th>
+      <th>Proposed CNC</th>
+      <th class="sol-col-status">Subcon status</th>
+      <th class="sol-col-notes" title="Same notes as S/O Management">Notes</th>
     </tr>`;
   const BLANK_SUPPLIER = '(Blank)';
   const PR_PO_COLUMNS = [
@@ -103,17 +124,22 @@
     { key: 'receiving_location_code', label: 'Location' },
   ];
   const SHIP_IN_COLUMNS = [
-    { key: 'shipment_voucher_no', label: 'Shipment' },
-    { key: 'grn_no', label: 'GRN' },
-    { key: 'source_voucher_no', label: 'Source' },
-    { key: 'supplier_do_no', label: 'Supplier DO' },
-    { key: 'shipment_date', label: 'ESD', type: 'date' },
-    { key: 'arrival_date', label: 'EAD', type: 'date' },
-    { key: 'goods_receipt_date', label: 'CRD', type: 'date' },
+    { key: 'shipment_voucher_no', label: 'Shipment', mono: true },
+    {
+      key: 'segment_1_code',
+      label: 'Segment',
+      hint: 'ERP segment on the shipment, such as PPS, NPS, or APS. Use the filter to trace one.',
+    },
+    { key: 'grn_no', label: 'GRN', mono: true },
+    { key: 'source_voucher_no', label: 'Source', mono: true },
+    { key: 'supplier_do_no', label: 'Supplier DO', mono: true },
+    { key: 'shipment_date', label: 'Expected ship', hint: 'Expected shipment date. When the supplier is expected to send the goods.', type: 'date' },
+    { key: 'arrival_date', label: 'Expected arrival', hint: 'Expected arrival date. When the shipment is expected to reach us.', type: 'date' },
+    { key: 'goods_receipt_date', label: 'Goods received', hint: 'Goods receipt date. When the goods were actually received. Empty until then.', type: 'date' },
     { key: 'priority', label: 'Priority' },
     { key: 'mode', label: 'Mode' },
     { key: 'subject', label: 'Subject' },
-    { key: 'reference_no', label: 'Reference' },
+    { key: 'reference_no', label: 'Reference', mono: true },
     { key: 'location_name', label: 'Receiving location' },
     { key: 'party_name', label: 'Supplier' },
     { key: 'created_by_name', label: 'Created by' },
@@ -122,17 +148,22 @@
     { key: 'last_updated_datetime', label: 'Updated', type: 'date' },
   ];
   const SHIP_OUT_COLUMNS = [
-    { key: 'shipment_voucher_no', label: 'Shipment' },
-    { key: 'do_no', label: 'DO' },
-    { key: 'invoice_no', label: 'Invoice' },
-    { key: 'source_voucher_no', label: 'Source' },
-    { key: 'shipment_date', label: 'ESD', type: 'date' },
-    { key: 'arrival_date', label: 'EAD', type: 'date' },
-    { key: 'shipment_date_actual', label: 'Shipped', type: 'date' },
+    { key: 'shipment_voucher_no', label: 'Shipment', mono: true },
+    {
+      key: 'segment_1_code',
+      label: 'Segment',
+      hint: 'ERP segment on the shipment, such as PPS, NPS, or APS. Use the filter to trace one.',
+    },
+    { key: 'do_no', label: 'DO', mono: true },
+    { key: 'invoice_no', label: 'Invoice', mono: true },
+    { key: 'source_voucher_no', label: 'Source', mono: true },
+    { key: 'shipment_date', label: 'Expected ship', hint: 'Expected shipment date. When we expect to send the goods.', type: 'date' },
+    { key: 'arrival_date', label: 'Expected arrival', hint: 'Expected arrival date. When the customer is expected to receive the goods.', type: 'date' },
+    { key: 'shipment_date_actual', label: 'Shipped', hint: 'Actual ship date.', type: 'date' },
     { key: 'priority', label: 'Priority' },
     { key: 'mode', label: 'Mode' },
     { key: 'subject', label: 'Subject' },
-    { key: 'reference_no', label: 'Reference' },
+    { key: 'reference_no', label: 'Reference', mono: true },
     { key: 'location_name', label: 'Ship to' },
     { key: 'party_name', label: 'Customer' },
     { key: 'created_by_name', label: 'Created by' },
@@ -150,6 +181,7 @@
     pendingLoad: '',
     loadControllers: { sales: null, prpo: null, qc: null, ship: null },
     view: 'active',
+    subconBucket: 'all',
     prPoBucket: 'ost',
     search: '',
     selectedSbu: new Set(['MFG']),
@@ -222,6 +254,7 @@
 
   function sectionForView(view) {
     const current = view || state.view;
+    if (current === SUBCON_VIEW) return 'subcon';
     if (isPrPoView(current) || isRequestView(current)) return 'purchasing';
     if (isQcView(current) || current === SHIP_IN_VIEW) return 'logistics-in';
     if (current === SHIP_OUT_VIEW) return 'logistics-out';
@@ -230,6 +263,45 @@
 
   function isPsView(view) {
     return PS_VIEWS.has(view || state.view);
+  }
+
+  function isSubconView(view) {
+    return (view || state.view) === SUBCON_VIEW;
+  }
+
+  function usesSalesOrders(view) {
+    return isPsView(view) || isSubconView(view);
+  }
+
+  function isSubconTag(raw) {
+    return String(raw || '').trim().replace(/[\s_-]+/g, '').toUpperCase() === 'SUBCON';
+  }
+
+  function normalizeSubconStatus(raw) {
+    const key = String(raw || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+    if (key === 'in_process') return 'at_subcon';
+    if (key === 'completed' || key === 'complete') return 'done';
+    return SUBCON_STATUSES.some(item => item.id === key) ? key : 'to_send';
+  }
+
+  function subconStatusLabel(status) {
+    const id = normalizeSubconStatus(status);
+    return SUBCON_STATUSES.find(item => item.id === id)?.label || 'To send';
+  }
+
+  function proposedMachinesOf(leaf) {
+    const fromPp = leaf?.pp?.proposed_cnc;
+    if (Array.isArray(fromPp)) return fromPp.filter(Boolean);
+    const fromPartial = leaf?.partial?.proposed_cnc;
+    if (Array.isArray(fromPartial)) return fromPartial.filter(Boolean);
+    return [];
+  }
+
+  function subconStatusOptionsHtml(selected) {
+    const current = normalizeSubconStatus(selected);
+    return SUBCON_STATUSES.map(item => (
+      `<option value="${item.id}"${item.id === current ? ' selected' : ''}>${item.label}</option>`
+    )).join('');
   }
 
   function scopeForView(view) {
@@ -492,6 +564,10 @@
       material_delay: Boolean(child.material_delay),
       material_in: Boolean(child.material_in),
       material_in_date: child.material_in_date || null,
+      proposed_cnc: Array.isArray(child.proposed_cnc) ? child.proposed_cnc.slice() : [],
+      subcon_status: Object.prototype.hasOwnProperty.call(child, 'subcon_status')
+        ? String(child.subcon_status || '')
+        : String(parentPp.subcon_status || ''),
     });
   }
 
@@ -527,7 +603,15 @@
         mtl_part_order: childLeaf.pp?.mtl_part_order || '',
         material_need_date: childLeaf.pp?.material_need_date || '',
         material_delay: Boolean(childLeaf.pp?.material_delay),
+        proposed_cnc: Array.isArray(childLeaf.pp?.proposed_cnc) ? childLeaf.pp.proposed_cnc.slice() : [],
+        subcon_status: String(childLeaf.pp?.subcon_status || ''),
       };
+    if (!Array.isArray(assemblyChild.proposed_cnc) && Array.isArray(childLeaf.pp?.proposed_cnc)) {
+      assemblyChild.proposed_cnc = childLeaf.pp.proposed_cnc.slice();
+    }
+    if (!Object.prototype.hasOwnProperty.call(assemblyChild, 'subcon_status')) {
+      assemblyChild.subcon_status = String(childLeaf.pp?.subcon_status || '');
+    }
     return {
       ...childLeaf,
       pp: bomChildPp(childLeaf.pp, assemblyChild),
@@ -1600,58 +1684,43 @@
     return `<td class="sol-date">${escapeHtml(formatDate(value))}</td>`;
   }
 
-  function renderShipRow(row) {
-    const party = String(row.party_name || '').trim() || EM_DASH;
-    const subject = String(row.subject || '').trim();
-    const location = String(row.location_name || '').trim();
-    if (shipDirection() === 'out') {
-      return `
-        <tr>
-          <td class="sol-mono">${escapeHtml(cellText(row.shipment_voucher_no))}</td>
-          <td class="sol-mono">${escapeHtml(cellText(row.do_no))}</td>
-          <td class="sol-mono">${escapeHtml(cellText(row.invoice_no))}</td>
-          <td class="sol-mono">${escapeHtml(cellText(row.source_voucher_no))}</td>
-          ${shipDateCell(row.shipment_date)}
-          ${shipDateCell(row.arrival_date)}
-          ${shipDateCell(row.shipment_date_actual)}
-          <td>${escapeHtml(cellText(row.priority))}</td>
-          <td>${escapeHtml(cellText(row.mode))}</td>
-          ${renderDescCell(subject)}
-          <td class="sol-mono">${escapeHtml(cellText(row.reference_no))}</td>
-          <td title="${escapeHtml(location)}">${escapeHtml(location || EM_DASH)}</td>
-          <td title="${escapeHtml(party)}">${escapeHtml(party)}</td>
-          <td>${escapeHtml(cellText(row.created_by_name))}</td>
-          ${shipDateCell(row.created_datetime)}
-          <td>${escapeHtml(cellText(row.last_updated_by_name))}</td>
-          ${shipDateCell(row.last_updated_datetime)}
-        </tr>`;
+  function segmentCell(row) {
+    const code = String(row.segment_1_code || '').trim();
+    if (!code) return `<td>${EM_DASH}</td>`;
+    const desc = String(row.segment_desc || '').trim();
+    const title = desc && desc.toUpperCase() !== code.toUpperCase() ? `${code} — ${desc}` : code;
+    const known = ['PPS', 'NPS', 'APS'].includes(code.toUpperCase())
+      ? ` sol-segment-pill--${code.toLowerCase()}`
+      : '';
+    return `<td title="${escapeHtml(title)}"><span class="sol-segment-pill${known}">${escapeHtml(code)}</span></td>`;
+  }
+
+  function shipCellHtml(row, col) {
+    const raw = columnRaw(row, col);
+    if (col.key === 'grn_no') {
+      const grn = String(raw || '').trim();
+      return `<td class="sol-mono">${grn ? `<span class="sol-qc-grn">${escapeHtml(grn)}</span>` : EM_DASH}</td>`;
     }
-    const grn = String(row.grn_no || '').trim();
-    return `
-      <tr>
-        <td class="sol-mono">${escapeHtml(cellText(row.shipment_voucher_no))}</td>
-        <td class="sol-mono">${grn ? `<span class="sol-qc-grn">${escapeHtml(grn)}</span>` : EM_DASH}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.source_voucher_no))}</td>
-        <td class="sol-mono">${escapeHtml(cellText(row.supplier_do_no))}</td>
-        ${shipDateCell(row.shipment_date)}
-        ${shipDateCell(row.arrival_date)}
-        ${shipDateCell(row.goods_receipt_date)}
-        <td>${escapeHtml(cellText(row.priority))}</td>
-        <td>${escapeHtml(cellText(row.mode))}</td>
-        ${renderDescCell(subject)}
-        <td class="sol-mono">${escapeHtml(cellText(row.reference_no))}</td>
-        <td title="${escapeHtml(location)}">${escapeHtml(location || EM_DASH)}</td>
-        <td title="${escapeHtml(party)}">${escapeHtml(party)}</td>
-        <td>${escapeHtml(cellText(row.created_by_name))}</td>
-        ${shipDateCell(row.created_datetime)}
-        <td>${escapeHtml(cellText(row.last_updated_by_name))}</td>
-        ${shipDateCell(row.last_updated_datetime)}
-      </tr>`;
+    if (col.key === 'segment_1_code') return segmentCell(row);
+    if (col.type === 'date') return shipDateCell(raw);
+    if (col.key === 'subject') return renderDescCell(raw);
+    if (col.key === 'location_name' || col.key === 'party_name') {
+      const text = String(raw || '').trim();
+      return `<td title="${escapeHtml(text)}">${escapeHtml(text || EM_DASH)}</td>`;
+    }
+    const cls = col.mono ? ' class="sol-mono"' : '';
+    return `<td${cls}>${escapeHtml(cellText(raw))}</td>`;
+  }
+
+  function renderShipRow(row) {
+    return `<tr>${shipColumns().map(col => shipCellHtml(row, col)).join('')}</tr>`;
   }
 
   function shipSearchText(row) {
     return [
       row.shipment_voucher_no,
+      row.segment_1_code,
+      row.segment_desc,
       row.grn_no,
       row.do_no,
       row.invoice_no,
@@ -1677,7 +1746,13 @@
   }
 
   function shipColumns() {
-    return shipDirection() === 'out' ? SHIP_OUT_COLUMNS : SHIP_IN_COLUMNS;
+    const inbound = shipDirection() !== 'out';
+    const columns = inbound ? SHIP_IN_COLUMNS : SHIP_OUT_COLUMNS;
+    if (inbound && state.shipBucket === 'outstanding') {
+      delete state.shipFilters.grn_no;
+      return columns.filter(col => col.key !== 'grn_no');
+    }
+    return columns;
   }
 
   function isBlankDisplay(value) {
@@ -1933,7 +2008,7 @@
   }
 
   function setSaveStatus(control, status, message) {
-    const el = control?.closest('.so-editable-cell, .so-material-subcon-cell, .sol-need-date-cell')?.querySelector('.so-editable-status');
+    const el = control?.closest('.so-editable-cell, .so-material-subcon-cell, .sol-need-date-cell, .sol-subcon-status-cell')?.querySelector('.so-editable-status');
     if (!el) return;
     el.className = `so-editable-status${status ? ` is-${status}` : ''}`;
     el.textContent = message || '';
@@ -2203,6 +2278,7 @@
     setChipCount('sol-active-count', activeJobs);
     setChipCount('sol-no-wo-count', noWoJobs);
     setChipCount('sol-sr-count', srJobs);
+    updateSubconChipCounts();
     updatePrPoChipCounts();
     setStatPills([
       { label: 'Shown', value: rows.length },
@@ -2304,7 +2380,7 @@
       el.hidden = !requests;
     });
     document.querySelectorAll('.sol-edd-filter').forEach(el => {
-      el.hidden = prPo || qc || ship;
+      el.hidden = prPo || qc || ship || isSubconView();
     });
 
     if (prpoToolbar) prpoToolbar.hidden = !prPo;
@@ -2327,6 +2403,12 @@
       btn.setAttribute('aria-selected', active ? 'true' : 'false');
     });
 
+    document.querySelectorAll('[data-sol-subcon-status]').forEach(btn => {
+      const active = isSubconView() && btn.getAttribute('data-sol-subcon-status') === state.subconBucket;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
     const clearFilters = document.getElementById('sol-clear-col-filters');
     if (clearFilters) {
       const filtering = (ship && columnFiltersActive(state.shipFilters))
@@ -2335,7 +2417,11 @@
     }
 
     if (search) {
-      const shipLabel = shipDirection() === 'out' ? 'DO, invoice, customer' : 'GRN, supplier DO, supplier';
+      const shipLabel = shipDirection() === 'out'
+        ? 'segment, DO, invoice, customer'
+        : state.shipBucket === 'outstanding'
+          ? 'segment, supplier DO, supplier'
+          : 'segment, GRN, supplier DO, supplier';
       search.placeholder = prPo
         ? 'Search item, PR, PO, supplier, remarks...'
         : requests
@@ -2344,18 +2430,26 @@
             ? 'Search shipment, PO, GRN, supplier, item...'
             : ship
               ? `Search shipment, source, ${shipLabel}...`
-              : state.view === 'sr'
-                ? 'Search [SR] sheet, SO, part, sub-assembly...'
-                : 'Search SO, PP, part, sub-assembly...';
+              : isSubconView()
+                ? 'Search SO, PS, part, subcon status...'
+                : state.view === 'sr'
+                  ? 'Search [SR] sheet, SO, part, sub-assembly...'
+                  : 'Search SO, PP, part, sub-assembly...';
     }
     if (legend) {
       legend.hidden = prPo;
-      if (ship) {
+      if (isSubconView()) {
+        legend.innerHTML = `
+          Sheets appear here when <strong>Subcon</strong> is tagged under Proposed CNC on S/O Management.
+          Status is the same field on both pages: <strong>To send</strong>, <strong>Sent</strong>, <strong>At subcon</strong>, <strong>Received</strong>, <strong>Done</strong>.
+          Removing the Subcon tag takes the sheet off this list.
+        `;
+      } else if (ship) {
         const inbound = shipDirection() === 'in';
         const sortHint = ' Click a column heading to sort. Use the filter icon to narrow that column.';
         legend.innerHTML = inbound
-          ? `Inbound shipments from ERP. <strong>Outstanding</strong> has no GRN yet, <strong>GRN</strong> is still open with a receipt, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. Ready for QC and Awaiting GRN are the inspection queues.${sortHint}`
-          : `Outbound shipments from ERP. <strong>Outstanding</strong> is still open, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. History shows the latest 500 vouchers.${sortHint}`;
+          ? `Inbound shipments from ERP. <strong>Segment</strong> is PPS, NPS, APS, and the other ERP segments — filter that column to trace one. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Goods received</strong> is when the goods actually came in, and stays empty until then. Outstanding has no GRN yet, so that column is hidden there. <strong>GRN</strong> is still open with a receipt, <strong>History</strong> is posted, <strong>Cancelled</strong> is void.${sortHint}`
+          : `Outbound shipments from ERP. <strong>Segment</strong> is PPS, NPS, APS, and the other ERP segments. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Shipped</strong> is the actual ship date. <strong>Outstanding</strong> is still open, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. History shows the latest 500 vouchers.${sortHint}`;
       } else if (qc) {
         legend.innerHTML = `
           <span class="sol-legend-item sol-legend-item--qc-ready">Green GRN</span> material ready for QC &middot;
@@ -2410,7 +2504,8 @@
         : '';
       const title = columnFilterTitle(col, selected);
       const expanded = state.colFilterKey === col.key ? 'true' : 'false';
-      return `<th class="${classes}" data-sort="${escapeHtml(col.key)}"${dir}${aria} title="Sort by ${escapeHtml(col.label)}"><span class="sol-th-row"><span class="sol-th-label">${escapeHtml(col.label)}${ind}</span><button type="button" class="sol-th-filter${filtering ? ' is-active' : ''}" data-col-filter="${escapeHtml(col.key)}" aria-label="${escapeHtml(title)}" aria-expanded="${expanded}" title="${escapeHtml(title)}"><svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-5 6.1V13.2l-3-1.4V8.6l-5-6.1z"/></svg></button></span></th>`;
+      const sortTitle = col.hint ? `${col.hint} Click to sort.` : `Sort by ${col.label}`;
+      return `<th class="${classes}" data-sort="${escapeHtml(col.key)}"${dir}${aria} title="${escapeHtml(sortTitle)}"><span class="sol-th-row"><span class="sol-th-label">${escapeHtml(col.label)}${ind}</span><button type="button" class="sol-th-filter${filtering ? ' is-active' : ''}" data-col-filter="${escapeHtml(col.key)}" aria-label="${escapeHtml(title)}" aria-expanded="${expanded}" title="${escapeHtml(title)}"><svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-5 6.1V13.2l-3-1.4V8.6l-5-6.1z"/></svg></button></span></th>`;
     }).join('')}</tr>`;
   }
 
@@ -2435,9 +2530,11 @@
         ? 'req'
         : isQcView()
           ? 'qc'
-          : isShipView()
+            : isShipView()
             ? (shipDirection() === 'out' ? 'ship-out' : 'ship-in')
-            : 'ps';
+            : isSubconView()
+              ? 'subcon'
+              : 'ps';
     if (table) table.dataset.mode = mode;
     const html = mode === 'prpo'
       ? prPoTableHeadHtml()
@@ -2445,15 +2542,230 @@
         ? REQUEST_TABLE_HEAD
         : mode === 'qc'
           ? columnTableHeadHtml(QC_COLUMNS, state.qcSortKey, state.qcSortDir, state.qcFilters)
-          : mode === 'ship-in'
-            ? columnTableHeadHtml(SHIP_IN_COLUMNS, state.shipSortKey, state.shipSortDir, state.shipFilters)
-            : mode === 'ship-out'
-              ? columnTableHeadHtml(SHIP_OUT_COLUMNS, state.shipSortKey, state.shipSortDir, state.shipFilters)
+          : mode === 'ship-in' || mode === 'ship-out'
+            ? columnTableHeadHtml(shipColumns(), state.shipSortKey, state.shipSortDir, state.shipFilters)
+            : mode === 'subcon'
+              ? SUBCON_TABLE_HEAD
               : PS_TABLE_HEAD;
     if (head.dataset.mode === mode && head.dataset.headHtml === html) return;
     head.dataset.mode = mode;
     head.dataset.headHtml = html;
     head.innerHTML = html;
+  }
+
+  function collectSubconLeaves() {
+    const leaves = [];
+    state.active.forEach(order => {
+      leafRows(order).forEach(leaf => leaves.push(leaf));
+    });
+    const seen = new Set();
+    const rows = [];
+    nestAndExplodeLeaves(leaves).forEach(leaf => {
+      const machines = proposedMachinesOf(leaf);
+      if (!machines.some(isSubconTag)) return;
+      const ppNo = String(leaf.pp?.pp_voucher_no || '').trim();
+      if (!ppNo || seen.has(ppNo)) return;
+      seen.add(ppNo);
+      rows.push({ ...leaf, proposedMachines: machines });
+    });
+    rows.sort((a, b) => {
+      const soCmp = String(a.order.sales_order_no || '').localeCompare(String(b.order.sales_order_no || ''));
+      if (soCmp) return soCmp;
+      return psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
+    });
+    return rows;
+  }
+
+  function subconSearchText(leaf) {
+    const { order, pp, partial, assemblyChild, proposedMachines } = leaf;
+    return [
+      order.sales_order_no,
+      order.customer_name,
+      order.customer_short_name,
+      pp.process_sheet_no,
+      pp.pp_voucher_no,
+      partNoForRow(pp, partial, assemblyChild),
+      pp.description,
+      assemblyChild?.description,
+      subconStatusLabel(pp.subcon_status),
+      ...(proposedMachines || []),
+      pp.mtl_part_order,
+    ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
+  }
+
+  function visibleSubconRows() {
+    const q = String(state.search || '').trim().toLowerCase();
+    return collectSubconLeaves().filter(leaf => {
+      const status = normalizeSubconStatus(leaf.pp?.subcon_status);
+      if (state.subconBucket !== 'all' && status !== state.subconBucket) return false;
+      if (q && !subconSearchText(leaf).includes(q)) return false;
+      return true;
+    });
+  }
+
+  function updateSubconChipCounts() {
+    const rows = state.salesOrdersLoaded ? collectSubconLeaves() : [];
+    const counts = { all: rows.length };
+    SUBCON_STATUSES.forEach(item => { counts[item.id] = 0; });
+    rows.forEach(leaf => {
+      const status = normalizeSubconStatus(leaf.pp?.subcon_status);
+      counts[status] = (counts[status] || 0) + 1;
+    });
+    setChipCount('sol-subcon-count', counts.all);
+    setChipCount('sol-subcon-all-count', counts.all);
+    SUBCON_STATUSES.forEach(item => setChipCount(`sol-subcon-${item.id}-count`, counts[item.id]));
+  }
+
+  function renderProposedCncCell(machines) {
+    const list = (machines || []).filter(Boolean);
+    if (!list.length) return `<td>${EM_DASH}</td>`;
+    const pills = list.map(name => {
+      const other = isSubconTag(name) || String(name).replace(/[\s_-]+/g, '').toUpperCase() === 'WIRECUT'
+        ? ' sol-cnc-pill--other'
+        : '';
+      return `<span class="sol-cnc-pill${other}">${escapeHtml(String(name))}</span>`;
+    }).join('');
+    return `<td class="sol-cnc-cell"><span class="sol-cnc-pills">${pills}</span></td>`;
+  }
+
+  function renderSubconStatusCell(pp) {
+    const ppNo = String(pp?.pp_voucher_no || '').trim();
+    const status = normalizeSubconStatus(pp?.subcon_status);
+    return `
+      <td class="sol-subcon-status-cell">
+        <select
+          class="sol-subcon-status sol-subcon-status--${status}"
+          data-pp-voucher-no="${escapeHtml(ppNo)}"
+          data-last-saved="${escapeHtml(status)}"
+          aria-label="Subcon status">
+          ${subconStatusOptionsHtml(status)}
+        </select>
+        <span class="so-editable-status" aria-live="polite"></span>
+      </td>`;
+  }
+
+  function renderSubconRow(leaf) {
+    const { order, pp, partial, assemblyChild } = leaf;
+    return `
+      <tr>
+        ${renderOrderCell(order)}
+        <td class="sol-mono sol-col-ps">
+          <div class="sol-ps-line">${typeTagHtml(getPsType(pp))}<span>${escapeHtml(psDisplayForPartial(pp, partial))}</span></div>
+        </td>
+        ${renderPartCell(pp, partial, assemblyChild)}
+        ${renderQtyCell(pp, partial, assemblyChild)}
+        <td class="sol-date sol-col-due">${escapeHtml(formatDate(pp.due_date))}</td>
+        ${renderStageCell(pp, partial)}
+        ${renderProposedCncCell(leaf.proposedMachines)}
+        ${renderSubconStatusCell(pp)}
+        ${renderNotesCell(pp)}
+      </tr>`;
+  }
+
+  function writeSubconStatus(ppNo, status) {
+    const key = psBaseKey(ppNo);
+    if (!key) return;
+    state.active.forEach(order => {
+      (order.pp_vouchers || []).forEach(pp => {
+        if (psBaseKey(pp.pp_voucher_no) === key || psBaseKey(pp.process_sheet_no) === key) {
+          pp.subcon_status = status;
+        }
+        (pp.assembly_line_items || []).forEach(child => {
+          if (psBaseKey(child.process_sheet_no) === key) child.subcon_status = status;
+        });
+      });
+    });
+    patchAssemblyChildNotes(ppNo, { subcon_status: status });
+  }
+
+  async function saveSubconStatus(select) {
+    const ppNo = String(select?.dataset?.ppVoucherNo || '').trim();
+    if (!ppNo) return;
+    const next = normalizeSubconStatus(select.value);
+    const lastSaved = normalizeSubconStatus(select.dataset.lastSaved || 'to_send');
+    if (next === lastSaved) return;
+    const key = `${ppNo}::subcon_status`;
+    if (state.saveInFlight.has(key)) return;
+    state.saveInFlight.add(key);
+    select.disabled = true;
+    setSaveStatus(select, 'saving', 'Saving...');
+    try {
+      const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+        subcon_status: next,
+      });
+      const saved = normalizeSubconStatus(data.subcon_status || next);
+      writeSubconStatus(ppNo, saved);
+      select.dataset.lastSaved = saved;
+      select.value = saved;
+      select.className = `sol-subcon-status sol-subcon-status--${saved}`;
+      setSaveStatus(select, 'saved', 'Saved');
+      updateSubconChipCounts();
+      if (isSubconView() && state.subconBucket !== 'all' && state.subconBucket !== saved) {
+        render();
+        return;
+      }
+      window.setTimeout(() => {
+        if (select.dataset.lastSaved === saved) setSaveStatus(select, '', '');
+      }, 1500);
+    } catch (err) {
+      select.value = lastSaved;
+      select.className = `sol-subcon-status sol-subcon-status--${lastSaved}`;
+      setSaveStatus(select, 'error', err.message || 'Save failed');
+    } finally {
+      select.disabled = false;
+      state.saveInFlight.delete(key);
+    }
+  }
+
+  function renderSubcon() {
+    const rows = visibleSubconRows();
+    const body = document.getElementById('sol-table-body');
+    const host = document.getElementById('sol-table-host');
+    const empty = document.getElementById('sol-empty');
+    const loading = document.getElementById('sol-loading');
+    const meta = document.getElementById('sol-meta');
+    const subtitle = document.getElementById('sol-subtitle');
+    const allRows = collectSubconLeaves();
+    const bucketLabel = state.subconBucket === 'all' ? 'Subcon' : subconStatusLabel(state.subconBucket);
+
+    if (loading) loading.hidden = true;
+    ensureTableHead();
+    updateSubconChipCounts();
+    if (subtitle) {
+      subtitle.textContent = rows.length === allRows.length
+        ? `${rows.length} subcon ${rows.length === 1 ? 'sheet' : 'sheets'} tagged from Proposed CNC`
+        : `${rows.length} of ${allRows.length} ${bucketLabel} subcon sheets shown`;
+    }
+    setStatPills([
+      { label: 'Shown', value: rows.length },
+      { label: 'Tagged', value: allRows.length },
+      { label: 'To send', value: allRows.filter(leaf => normalizeSubconStatus(leaf.pp?.subcon_status) === 'to_send').length },
+      { label: 'At subcon', value: allRows.filter(leaf => normalizeSubconStatus(leaf.pp?.subcon_status) === 'at_subcon').length },
+    ]);
+
+    if (!rows.length) {
+      const msg = allRows.length
+        ? 'No subcon sheets match this status or search.'
+        : 'No sheets are tagged Subcon yet. Tag Subcon under Proposed CNC on S/O Management.';
+      if (body) body.innerHTML = '';
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = msg;
+      }
+    } else {
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = rows.map(renderSubconRow).join('');
+        bindInputs();
+      }
+    }
+
+    if (meta) {
+      meta.hidden = !state.salesOrdersLoaded;
+      meta.textContent = `Status saves on change | ${allRows.length} tagged Subcon | cached ${state.cachedAt || EM_DASH}`;
+    }
   }
 
   function renderPs() {
@@ -2709,7 +3021,7 @@
     updateShipChipCounts();
     if (state.pendingLoad && (
       (state.pendingLoad === 'prpo' && isPrPoView())
-      || (state.pendingLoad === 'ps' && isPsView())
+      || (state.pendingLoad === 'ps' && usesSalesOrders())
       || (state.pendingLoad === 'req' && isRequestView())
       || (state.pendingLoad === 'qc' && isQcView())
       || (state.pendingLoad === 'ship' && isShipView())
@@ -2720,6 +3032,7 @@
     else if (isRequestView()) renderRequests();
     else if (isQcView()) renderQc();
     else if (isShipView()) renderShip();
+    else if (isSubconView()) renderSubcon();
     else renderPs();
   }
 
@@ -2736,6 +3049,7 @@
     if (isQcView(view)) return 'qc';
     if ((view || state.view) === SHIP_OUT_VIEW) return 'ship-out';
     if ((view || state.view) === SHIP_IN_VIEW) return 'ship-in';
+    if ((view || state.view) === SUBCON_VIEW) return 'subcon';
     return 'ps';
   }
 
@@ -2752,7 +3066,7 @@
   }
 
   function setView(view) {
-    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === REQUEST_VIEW || view === QC_VIEW || SHIP_VIEWS.has(view)
+    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === SUBCON_VIEW || view === REQUEST_VIEW || view === QC_VIEW || SHIP_VIEWS.has(view)
       ? view
       : 'active';
     const nextIsPrPo = isPrPoView(next);
@@ -3264,6 +3578,12 @@
     });
 
     body.addEventListener('change', e => {
+      const statusSelect = e.target.closest('.sol-subcon-status');
+      if (statusSelect) {
+        e.stopPropagation();
+        saveSubconStatus(statusSelect);
+        return;
+      }
       const delayInput = e.target.closest('.sol-delay-input');
       if (delayInput) {
         e.stopPropagation();
@@ -3371,7 +3691,7 @@
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) return;
       state.assemblyJobs = indexAssemblyJobs(payload.items);
-      if (isPsView()) render();
+      if (usesSalesOrders()) render();
     } catch (_err) {
       state.assemblyJobs = state.assemblyJobs || new Map();
     }
@@ -3382,7 +3702,7 @@
     const baseLabel = refresh
       ? 'Refreshing from ERP...'
       : 'Loading process sheets from ERP...';
-    if (isPsView()) beginViewLoad('ps', baseLabel);
+    if (usesSalesOrders()) beginViewLoad('ps', baseLabel);
 
     const params = new URLSearchParams({ active_only: '1' });
     if (refresh) params.set('refresh', '1');
@@ -3395,7 +3715,7 @@
     let elapsed = 0;
     const tickId = window.setInterval(() => {
       elapsed += 1;
-      if (isPsView() && subtitle) subtitle.textContent = `${baseLabel} ${elapsed}s`;
+      if (usesSalesOrders() && subtitle) subtitle.textContent = `${baseLabel} ${elapsed}s`;
     }, 1000);
 
     try {
@@ -3411,17 +3731,17 @@
       state.partialCount = Number(payload.partial_count) || 0;
       state.salesOrdersLoaded = true;
       if (state.pendingLoad === 'ps') state.pendingLoad = '';
-      if (isPsView()) render();
+      if (usesSalesOrders()) render();
       loadAssemblyJobs({ refresh });
       return true;
     } catch (err) {
       if (err && err.name === 'AbortError') {
-        if (state.loadControllers.sales === ac && isPsView()) {
+        if (state.loadControllers.sales === ac && usesSalesOrders()) {
           showLoadError(new Error('Timed out waiting for ERP. Click Refresh to retry.'));
         }
         return false;
       }
-      if (isPsView()) showLoadError(err);
+      if (usesSalesOrders()) showLoadError(err);
       return false;
     } finally {
       if (state.loadControllers.sales === ac) state.loadControllers.sales = null;
@@ -4208,7 +4528,7 @@
     window.addEventListener('focus', () => fetchNotifications());
     window.addEventListener('pp-vouchers-synced', () => {
       fetchNotifications({ force: true });
-      if (isPsView()) loadSalesOrders({ refresh: true });
+      if (usesSalesOrders()) loadSalesOrders({ refresh: true });
     });
   }
 
@@ -4242,6 +4562,15 @@
 
     document.querySelectorAll('[data-sol-bucket]').forEach(btn => {
       btn.addEventListener('click', () => setBucket(btn.getAttribute('data-sol-bucket')));
+    });
+
+    document.querySelectorAll('[data-sol-subcon-status]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const next = String(btn.getAttribute('data-sol-subcon-status') || 'all');
+        state.subconBucket = SUBCON_STATUSES.some(item => item.id === next) || next === 'all' ? next : 'all';
+        if (state.view !== SUBCON_VIEW) setView(SUBCON_VIEW);
+        else render();
+      });
     });
 
     document.getElementById('sol-search')?.addEventListener('input', e => {

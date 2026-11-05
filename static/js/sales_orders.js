@@ -600,6 +600,13 @@ function soRenderProposedCncHtml(machines) {
 }
 
 const SO_NON_CNC_OPTIONS = ['Subcon', 'Wirecut'];
+const SO_SUBCON_STATUSES = [
+  { id: 'to_send', label: 'To send' },
+  { id: 'sent', label: 'Sent' },
+  { id: 'at_subcon', label: 'At subcon' },
+  { id: 'received', label: 'Received' },
+  { id: 'done', label: 'Done' },
+];
 
 function soCncMachineNumber(code) {
   const match = String(code || '').trim().match(/(\d+)\s*$/);
@@ -613,6 +620,29 @@ function soNonCncOptionKey(raw) {
 function soIsNonCncOption(raw) {
   const key = soNonCncOptionKey(raw);
   return key === 'SUBCON' || key === 'WIRECUT';
+}
+
+function soIsSubconTag(raw) {
+  return soNonCncOptionKey(raw) === 'SUBCON';
+}
+
+function soHasSubconTag(machines) {
+  return (machines || []).some(soIsSubconTag);
+}
+
+function soNormalizeSubconStatus(raw) {
+  const key = String(raw || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (key === 'in_process' || key === 'completed' || key === 'complete') {
+    return key === 'in_process' ? 'at_subcon' : 'done';
+  }
+  return SO_SUBCON_STATUSES.some(item => item.id === key) ? key : 'to_send';
+}
+
+function soSubconStatusOptionsHtml(selected) {
+  const current = soNormalizeSubconStatus(selected);
+  return SO_SUBCON_STATUSES.map(item => (
+    `<option value="${item.id}"${item.id === current ? ' selected' : ''}>${item.label}</option>`
+  )).join('');
 }
 
 function soNormalizeCncMachine(raw) {
@@ -1874,9 +1904,13 @@ function soBomChildPp(parentPp, child, { synthetic = true } = {}) {
     if (!soMachineList(out.proposed_cnc).length && childProposed.length) {
       out.proposed_cnc = childProposed.slice();
     }
+    if (child && Object.prototype.hasOwnProperty.call(child, 'subcon_status')) {
+      out.subcon_status = String(child.subcon_status || '');
+    }
     return out;
   }
   out.assembly_synthetic = true;
+  out.subcon_status = String(child?.subcon_status || '');
   out.partials = [];
   out.partial_count = 0;
   out.queued_machines = childQueued.slice();
@@ -2784,6 +2818,15 @@ function soRenderProposedCncCell(pp, partial) {
         }</span>
         <span class="so-proposed-cnc-btn-caret" aria-hidden="true">▾</span>
       </button>
+      <select
+        class="so-subcon-status so-subcon-status--${soNormalizeSubconStatus(pp.subcon_status)}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-last-saved="${escapeHtml(soNormalizeSubconStatus(pp.subcon_status))}"
+        aria-label="Subcon status"
+        title="Subcon status — same list as Supply Chain View"
+        ${soHasSubconTag(machines) ? '' : 'hidden'}>
+        ${soSubconStatusOptionsHtml(pp.subcon_status)}
+      </select>
       <span class="so-proposed-cnc-status so-editable-status" aria-live="polite"></span>
     </td>
   `;
@@ -4220,7 +4263,64 @@ function soSyncProposedCncButtons(ppNo, machines) {
     btn.classList.toggle('has-value', machines.length > 0);
     btn.classList.toggle('is-open', menuOpen);
     btn.setAttribute('aria-expanded', menuOpen ? 'true' : 'false');
+    const select = btn.parentElement?.querySelector('.so-subcon-status');
+    if (select) select.hidden = !soHasSubconTag(machines);
   });
+}
+
+function soWriteSubconStatus(ppNo, status) {
+  const key = soPsBaseKey(ppNo);
+  if (!key) return;
+  soAllOrders().forEach(order => {
+    (order.pp_vouchers || []).forEach(pp => {
+      if (soPsBaseKey(pp.pp_voucher_no) === key || soPsBaseKey(pp.process_sheet_no) === key) {
+        pp.subcon_status = status;
+      }
+      (pp.assembly_line_items || []).forEach(child => {
+        if (soPsBaseKey(child.process_sheet_no) === key) child.subcon_status = status;
+      });
+    });
+  });
+  soPatchAssemblyChildNotes(ppNo, { subcon_status: status });
+}
+
+function soSyncSubconStatusControls(ppNo, status) {
+  const current = soNormalizeSubconStatus(status);
+  document.querySelectorAll(`.so-subcon-status[data-pp-voucher-no="${CSS.escape(ppNo)}"]`).forEach(select => {
+    select.value = current;
+    select.dataset.lastSaved = current;
+    select.className = `so-subcon-status so-subcon-status--${current}`;
+  });
+}
+
+async function soSaveSubconStatus(select) {
+  const ppNo = String(select?.dataset?.ppVoucherNo || '').trim();
+  if (!ppNo) return;
+  const next = soNormalizeSubconStatus(select.value);
+  const lastSaved = soNormalizeSubconStatus(select.dataset.lastSaved || 'to_send');
+  if (next === lastSaved) return;
+  const key = `${ppNo}::subcon_status`;
+  if (soState.saveInFlight.has(key)) return;
+  soState.saveInFlight.add(key);
+  select.disabled = true;
+  soSetProposedCncStatus(ppNo, 'saving', 'Saving…');
+  try {
+    const data = await soPostJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+      subcon_status: next,
+    });
+    const saved = soNormalizeSubconStatus(data.subcon_status || next);
+    soWriteSubconStatus(ppNo, saved);
+    soSyncSubconStatusControls(ppNo, saved);
+    soSetProposedCncStatus(ppNo, 'saved', 'Saved');
+    window.setTimeout(() => soSetProposedCncStatus(ppNo, '', ''), 1500);
+  } catch (err) {
+    select.value = lastSaved;
+    select.className = `so-subcon-status so-subcon-status--${lastSaved}`;
+    soSetProposedCncStatus(ppNo, 'error', err.message || 'Save failed');
+  } finally {
+    select.disabled = false;
+    soState.saveInFlight.delete(key);
+  }
 }
 
 function soWriteProposedCncSources(ppNo, machines) {
@@ -4451,10 +4551,20 @@ function soBindProposedCncPicker() {
   if (body && body.dataset.proposedCncBound !== '1') {
     body.dataset.proposedCncBound = '1';
     body.addEventListener('click', e => {
+      if (e.target.closest('.so-subcon-status')) {
+        e.stopPropagation();
+        return;
+      }
       const btn = e.target.closest('.so-proposed-cnc-btn');
       if (!btn) return;
       e.stopPropagation();
       soOpenProposedCncPopover(btn);
+    });
+    body.addEventListener('change', e => {
+      const select = e.target.closest('.so-subcon-status');
+      if (!select) return;
+      e.stopPropagation();
+      soSaveSubconStatus(select);
     });
   }
 

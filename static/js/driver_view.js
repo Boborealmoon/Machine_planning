@@ -10,6 +10,13 @@
     loading: false,
     weekOptions: [],
     selectedWeekKeys: new Set(),
+    tab: 'schedule',
+    monthItems: [],
+    monthLabel: '',
+    monthKey: '',
+    monthQuery: '',
+    monthLoading: false,
+    monthLoaded: false,
   };
 
   const els = {
@@ -21,6 +28,15 @@
     empty: document.getElementById('dv-empty'),
     refresh: document.getElementById('dv-refresh'),
     exportBtn: document.getElementById('dv-export'),
+    tabSchedule: document.getElementById('dv-tab-schedule'),
+    tabMonth: document.getElementById('dv-tab-month'),
+    panelSchedule: document.getElementById('dv-panel-schedule'),
+    panelMonth: document.getElementById('dv-panel-month'),
+    monthSearch: document.getElementById('dv-month-search'),
+    monthLoading: document.getElementById('dv-month-loading'),
+    monthTableWrap: document.getElementById('dv-month-table-wrap'),
+    monthBody: document.getElementById('dv-month-body'),
+    monthEmpty: document.getElementById('dv-month-empty'),
   };
 
   function escapeHtml(value) {
@@ -400,7 +416,7 @@
     const items = visibleItems();
     const total = state.items.length;
 
-    if (els.stats) {
+    if (state.tab === 'schedule' && els.stats) {
       const weekCount = state.selectedWeekKeys.size;
       const readyCount = items.filter(isRowReady).length;
       const exceptionCount = items.filter(isException).length;
@@ -440,7 +456,7 @@
   function setLoading(loading) {
     state.loading = loading;
     if (els.loading) els.loading.hidden = !loading;
-    if (els.refresh) els.refresh.disabled = loading;
+    if (els.refresh) els.refresh.disabled = loading || state.monthLoading;
   }
 
   async function loadSchedule() {
@@ -459,7 +475,9 @@
       renderTable();
     } catch (err) {
       console.error(err);
-      if (els.stats) els.stats.textContent = 'Failed to load delivery schedule — try Refresh';
+      if (state.tab === 'schedule' && els.stats) {
+        els.stats.textContent = 'Failed to load delivery schedule — try Refresh';
+      }
       if (els.empty) {
         els.empty.hidden = false;
         els.empty.textContent = 'Could not load delivery schedule. Check connection and try again.';
@@ -567,6 +585,220 @@
     }
   }
 
+  function formatMonthQty(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    return formatQty(value);
+  }
+
+  function monthSearchOk(item) {
+    const query = state.monthQuery.trim().toLowerCase();
+    if (!query) return true;
+    const hay = [
+      item.ps,
+      item.part_no,
+      item.part_desc,
+      item.status,
+      item.program_pic,
+      item.proposed_cnc,
+      item.week,
+    ].join(' ').toLowerCase();
+    return hay.includes(query);
+  }
+
+  function visibleMonthItems() {
+    return (state.monthItems || []).filter(monthSearchOk);
+  }
+
+  function okayHtml(item) {
+    if (!item.okay) return '<span class="dv-remarks-empty">—</span>';
+    return '<span class="dv-badge dv-badge--ok">Okay</span>';
+  }
+
+  function stageWorkHtml(item) {
+    const stage = String(item.status || '').trim();
+    const closed = item.closed ? '<span class="dv-badge dv-badge--muted">Closed</span>' : '';
+    const text = stage ? `<span class="dv-stage">${escapeHtml(stage)}</span>` : '<span class="dv-remarks-empty">—</span>';
+    if (!closed) return text;
+    return `<div class="dv-status-cell">${text}${closed}</div>`;
+  }
+
+  function renderMonth() {
+    const items = visibleMonthItems();
+    const total = state.monthItems.length;
+    const qty = items.reduce((sum, item) => sum + (Number(item.month_qty) || 0), 0);
+    if (state.tab === 'month' && els.stats) {
+      const label = state.monthLabel || 'This month';
+      const matched = state.monthQuery.trim() && items.length !== total
+        ? `${items.length} of ${total} lines`
+        : `${total} line${total === 1 ? '' : 's'}`;
+      els.stats.textContent = total
+        ? `${label} · ${matched} · ${formatQty(qty)} qty`
+        : `${label} · no lines on the delivery plan`;
+    }
+    if (els.monthBody) {
+      els.monthBody.innerHTML = items.map((item) => `
+        <tr class="dv-row${item.okay ? ' is-okay' : ''}">
+          <td class="dv-ps">${escapeHtml(item.ps || '—')}</td>
+          <td>${escapeHtml(item.part_no || '—')}</td>
+          <td>${escapeHtml(item.part_desc || '—')}</td>
+          <td class="dv-num">${escapeHtml(formatMonthQty(item.month_qty))}</td>
+          <td class="dv-num">${escapeHtml(formatMonthQty(item.partial_qty))}</td>
+          <td>${stageWorkHtml(item)}</td>
+          <td>${escapeHtml(item.program_pic || '—')}</td>
+          <td>${escapeHtml(item.proposed_cnc || '—')}</td>
+          <td>${escapeHtml(formatDate(item.material_need_date))}</td>
+          <td>${escapeHtml(formatDate(item.material_in_date))}</td>
+          <td>${escapeHtml(formatDate(item.due_date))}</td>
+          <td>${escapeHtml(formatDate(item.coway_edd))}</td>
+          <td>${escapeHtml(formatDate(item.delivery_date))}</td>
+          <td>${escapeHtml(item.week || '—')}</td>
+          <td class="dv-flag-cell">${okayHtml(item)}</td>
+        </tr>
+      `).join('');
+    }
+    const hasRows = items.length > 0;
+    if (els.monthTableWrap) els.monthTableWrap.hidden = !hasRows;
+    if (els.monthEmpty) els.monthEmpty.hidden = hasRows || state.monthLoading;
+  }
+
+  function setMonthLoading(loading) {
+    state.monthLoading = loading;
+    if (els.monthLoading) els.monthLoading.hidden = !loading;
+    if (els.refresh) els.refresh.disabled = loading || state.loading;
+  }
+
+  async function loadMonthPlan() {
+    setMonthLoading(true);
+    if (els.monthTableWrap) els.monthTableWrap.hidden = true;
+    if (els.monthEmpty) els.monthEmpty.hidden = true;
+    if (state.tab === 'month' && els.stats) els.stats.textContent = "Loading this month's delivery plan…";
+
+    try {
+      const response = await fetch('/api/trial/delivery-schedule/month-plan?refresh=1', {
+        cache: 'no-store',
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      state.monthItems = Array.isArray(data.lines) ? data.lines : [];
+      state.monthLabel = String(data.month_label || '').trim();
+      state.monthKey = String(data.month || '').trim();
+      state.monthLoaded = true;
+      renderMonth();
+    } catch (err) {
+      console.error(err);
+      state.monthItems = [];
+      state.monthLoaded = false;
+      if (state.tab === 'month' && els.stats) {
+        els.stats.textContent = "Failed to load this month's plan — try Refresh";
+      }
+      if (els.monthEmpty) {
+        els.monthEmpty.hidden = false;
+        const title = els.monthEmpty.querySelector('.dv-empty-title');
+        const copy = els.monthEmpty.querySelector('.dv-empty-copy');
+        if (title) title.textContent = 'Could not load this month';
+        if (copy) copy.textContent = 'Check the connection and try Refresh.';
+      }
+    } finally {
+      setMonthLoading(false);
+    }
+  }
+
+  function showTab(tab) {
+    state.tab = tab === 'month' ? 'month' : 'schedule';
+    const month = state.tab === 'month';
+    if (els.panelSchedule) els.panelSchedule.hidden = month;
+    if (els.panelMonth) els.panelMonth.hidden = !month;
+    if (els.tabSchedule) {
+      els.tabSchedule.classList.toggle('is-active', !month);
+      els.tabSchedule.setAttribute('aria-selected', month ? 'false' : 'true');
+    }
+    if (els.tabMonth) {
+      els.tabMonth.classList.toggle('is-active', month);
+      els.tabMonth.setAttribute('aria-selected', month ? 'true' : 'false');
+    }
+    if (els.exportBtn) {
+      els.exportBtn.title = month
+        ? "Download this month's line items as Excel (.xlsx)"
+        : 'Download the selected forecast weeks as Excel (.xlsx)';
+    }
+    if (month) {
+      renderMonth();
+      if (!state.monthLoaded && !state.monthLoading) loadMonthPlan();
+    } else {
+      renderTable();
+    }
+  }
+
+  async function exportMonthToExcel() {
+    const items = visibleMonthItems();
+    if (!items.length) {
+      window.alert('No lines in this month to export.');
+      return;
+    }
+    if (els.exportBtn) els.exportBtn.disabled = true;
+    try {
+      const ExcelJS = await ensureExcelJs();
+      const workbook = new ExcelJS.Workbook();
+      workbook.creator = 'Production Planner';
+      workbook.created = new Date();
+      const sheet = workbook.addWorksheet('Month plan');
+      const headers = [
+        'PS no.', 'Part', 'Description', 'Month qty', 'Partial qty', 'Stage',
+        'Programme PIC', 'Proposed CNC', 'Need date', 'In date', 'PO due',
+        'Coway EDD', 'Delivered', 'Week', 'Okay',
+      ];
+      const headerRow = sheet.addRow(headers);
+      headerRow.font = { bold: true, size: 11 };
+      headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+      items.forEach((item) => {
+        sheet.addRow([
+          item.ps || '',
+          item.part_no || '',
+          item.part_desc || '',
+          Number.isFinite(Number(item.month_qty)) ? Number(item.month_qty) : '',
+          item.partial_qty == null || item.partial_qty === '' ? '' : Number(item.partial_qty),
+          item.status || '',
+          item.program_pic || '',
+          item.proposed_cnc || '',
+          formatDate(item.material_need_date) === '—' ? '' : formatDate(item.material_need_date),
+          formatDate(item.material_in_date) === '—' ? '' : formatDate(item.material_in_date),
+          formatDate(item.due_date) === '—' ? '' : formatDate(item.due_date),
+          formatDate(item.coway_edd) === '—' ? '' : formatDate(item.coway_edd),
+          formatDate(item.delivery_date) === '—' ? '' : formatDate(item.delivery_date),
+          item.week || '',
+          item.okay ? 'Yes' : '',
+        ]);
+      });
+      sheet.columns.forEach((col, i) => {
+        let max = headers[i]?.length || 10;
+        col.eachCell({ includeEmpty: false }, (cell) => {
+          const len = String(cell.value ?? '').length;
+          if (len > max) max = len;
+        });
+        col.width = Math.min(Math.max(max + 2, 10), 48);
+      });
+      sheet.views = [{ state: 'frozen', ySplit: 1, xSplit: 0, activeCell: 'A2' }];
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const stamp = state.monthKey || new Date().toISOString().slice(0, 7);
+      link.download = `delivery-plan-${stamp}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      window.alert(`Export failed: ${err.message}`);
+    } finally {
+      if (els.exportBtn) els.exportBtn.disabled = false;
+    }
+  }
+
   function onWeekChipClick(event) {
     const btn = event.target.closest('[data-week-key]');
     if (!btn) return;
@@ -587,10 +819,28 @@
     els.weekFilters.addEventListener('click', onWeekChipClick);
   }
   if (els.refresh) {
-    els.refresh.addEventListener('click', () => loadSchedule());
+    els.refresh.addEventListener('click', () => {
+      if (state.tab === 'month') loadMonthPlan();
+      else loadSchedule();
+    });
   }
   if (els.exportBtn) {
-    els.exportBtn.addEventListener('click', () => exportToExcel());
+    els.exportBtn.addEventListener('click', () => {
+      if (state.tab === 'month') exportMonthToExcel();
+      else exportToExcel();
+    });
+  }
+  if (els.tabSchedule) {
+    els.tabSchedule.addEventListener('click', () => showTab('schedule'));
+  }
+  if (els.tabMonth) {
+    els.tabMonth.addEventListener('click', () => showTab('month'));
+  }
+  if (els.monthSearch) {
+    els.monthSearch.addEventListener('input', () => {
+      state.monthQuery = els.monthSearch.value || '';
+      renderMonth();
+    });
   }
 
   initWeekFilters();

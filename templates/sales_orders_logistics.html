@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-layout-20261005">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-subcon-20261103">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -53,6 +53,10 @@
   <nav class="sol-toolbar" aria-label="Supply chain sections">
     <div class="sol-sections" role="tablist" aria-label="Supply chain sections">
       <button type="button" class="sol-section is-active" data-sol-section="jobs" role="tab" aria-selected="true">Jobs</button>
+      <button type="button" class="sol-section" data-sol-section="subcon" role="tab" aria-selected="false"
+              title="Process sheets tagged Subcon under Proposed CNC">
+        Subcon <span class="sol-chip-count" id="sol-subcon-count" hidden>0</span>
+      </button>
       <button type="button" class="sol-section" data-sol-section="purchasing" role="tab" aria-selected="false">Purchasing</button>
       <button type="button" class="sol-section" data-sol-section="logistics-in" role="tab" aria-selected="false">Logistics In</button>
       <button type="button" class="sol-section" data-sol-section="logistics-out" role="tab" aria-selected="false">Logistics Out</button>
@@ -69,6 +73,26 @@
         <button type="button" class="sol-chip sol-chip--sr" data-sol-view="sr" role="tab" aria-selected="false"
                 title="Outstanding [SR] special process sheets (e.g. N26-[SR]22), with each sub-assembly finished good as its own line">
           [SR] <span class="sol-chip-count" id="sol-sr-count" hidden>0</span>
+        </button>
+      </div>
+      <div class="sol-nav-group" data-sol-section-panel="subcon" role="tablist" aria-label="Subcon status" hidden>
+        <button type="button" class="sol-chip is-active" data-sol-subcon-status="all" role="tab" aria-selected="true">
+          All <span class="sol-chip-count" id="sol-subcon-all-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-subcon-status="to_send" role="tab" aria-selected="false">
+          To send <span class="sol-chip-count" id="sol-subcon-to_send-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-subcon-status="sent" role="tab" aria-selected="false">
+          Sent <span class="sol-chip-count" id="sol-subcon-sent-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-subcon-status="at_subcon" role="tab" aria-selected="false">
+          At subcon <span class="sol-chip-count" id="sol-subcon-at_subcon-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-subcon-status="received" role="tab" aria-selected="false">
+          Received <span class="sol-chip-count" id="sol-subcon-received-count" hidden>0</span>
+        </button>
+        <button type="button" class="sol-chip" data-sol-subcon-status="done" role="tab" aria-selected="false">
+          Done <span class="sol-chip-count" id="sol-subcon-done-count" hidden>0</span>
         </button>
       </div>
       <div class="sol-nav-group" data-sol-section-panel="purchasing" role="tablist" aria-label="Purchasing" hidden>
@@ -298,5 +322,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-layout-20261005"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-subcon-20261103"></script>
 {% endblock %}

@@ -1,11 +1,14 @@
-"""Sales-coordination view - read-only process-sheet delivery commitments."""
+"""Sales-coordination view - APS/NPS delivery commitments."""
 from __future__ import annotations
 
 import logging
 
 from flask import Blueprint, jsonify, render_template, request
 
-from .sales_coordination_service import build_sales_coordination
+from .sales_coordination_service import (
+    build_sales_coordination,
+    save_sales_coordination_edits,
+)
 from .utils import compact_text
 
 logger = logging.getLogger(__name__)
@@ -35,3 +38,19 @@ def api_sales_coordination():
     except Exception as exc:
         logger.exception("sales coordination failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@sales_coordination_bp.patch("/api/sales-coordination/lines")
+def api_sales_coordination_lines():
+    data = request.get_json(force=True, silent=True) or {}
+    updates = data.get("updates")
+    if not isinstance(updates, list) or not updates:
+        return jsonify({"ok": False, "error": "No updates."}), 400
+    try:
+        saved = save_sales_coordination_edits(updates)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.exception("sales coordination save failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True, "lines": saved})

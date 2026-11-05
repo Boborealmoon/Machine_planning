@@ -2,7 +2,7 @@
 {% block title %}Monthly Delivery Plan{% endblock %}
 {% block main_class %}app-main--mdp{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261022b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/monthly_delivery_plan.css') }}?v=mdp-20261029a">
 {% endblock %}
 {% block content %}
 <div class="mdp-page">
@@ -104,7 +104,7 @@
             <th data-sort="process_sheet_no" data-col="process_sheet_no" class="mdp-th-filterable">
               <span class="mdp-th-inner">
                 <span>PS</span>
-                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="ps_type" title="Filter PS type" aria-label="Filter PS type">
+                <button type="button" class="mdp-col-filter-btn" data-mdp-filter="ps_type" title="Filter PS type and New" aria-label="Filter PS type and New">
                   <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-4.5 5.2V13l-4 2V7.7L1.5 2.5z"/></svg>
                   <span class="mdp-filter-badge" hidden></span>
                 </button>
@@ -120,11 +120,14 @@
               </span>
             </th>
             <th data-sort="part_desc" data-col="part_desc" class="mdp-desc">Description</th>
-            <th class="mdp-num" data-sort="open_qty" data-col="open_qty">Open qty</th>
+            <th class="mdp-num" data-sort="open_qty" data-col="open_qty" title="Leftover of this partial after shipped quantity">Open qty</th>
+            <th class="mdp-num" data-sort="partial_qty" data-col="partial_qty" title="Quantity on this process-sheet partial">Partial qty</th>
             <th class="mdp-num" data-sort="allocated_qty" data-col="allocated_qty">Allocated</th>
             <th class="mdp-num" data-sort="left_qty" data-col="left_qty">Left</th>
             <th class="mdp-num" data-sort="unit_cost" data-col="unit_cost">U/Cost</th>
-            <th class="mdp-num" data-sort="amount" data-col="amount">Amount</th>
+            <th class="mdp-num" data-sort="order_value" data-col="order_value" title="Total amount of the S/O line item (unit × S/O qty × exchange rate). The same line repeats this amount on each partial.">Order value</th>
+            <th class="mdp-num" data-sort="partial_revenue" data-col="partial_revenue" title="Revenue from this partial qty (unit × partial qty × exchange rate)">Partial revenue</th>
+            <th class="mdp-num" data-sort="amount" data-col="amount" title="Revenue of the quantity in this view: the month slice, the leftover, or the open quantity">Amount</th>
             <th data-sort="status" data-col="status" class="mdp-th-filterable mdp-stage">
               <span class="mdp-th-inner">
                 <span>Stage</span>
@@ -193,5 +196,5 @@
 <div id="mdp-col-filter-popover" class="mdp-col-filter-popover" hidden></div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261022b"></script>
+<script src="{{ url_for('static', filename='js/monthly_delivery_plan.js') }}?v=mdp-20261102a"></script>
 {% endblock %}

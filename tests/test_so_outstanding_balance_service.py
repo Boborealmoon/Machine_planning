@@ -53,6 +53,7 @@ class SoOutstandingBalanceTests(unittest.TestCase):
                         "qty_shipped": 4,
                         "unit_selling_price": 100,
                         "shipped_completed": False,
+                        "is_new_part": True,
                         "partials": [
                             {
                                 "pp_partial_no": 1,
@@ -102,6 +103,7 @@ class SoOutstandingBalanceTests(unittest.TestCase):
         self.assertEqual(row["week"], "Week 31 - Sat")
         self.assertEqual(row["proposed_edd"], "2026-08-01")
         self.assertEqual(row["coway_edd"], "2026-08-01")
+        self.assertTrue(row["is_new_part"])
 
         payload = build_outstanding_balance(orders, pricing)
         self.assertEqual(payload["summary"]["line_count"], 1)
