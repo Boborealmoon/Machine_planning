@@ -127,6 +127,7 @@ class SoKpiBuilderTests(unittest.TestCase):
         self.assertEqual(row["posted_date"], "2026-01-08")
         self.assertEqual(row["due_date"], "2026-04-15")
         self.assertEqual(row["edd_date"], "2026-05-01")
+        self.assertEqual(row["exception_tags"], ["supply_chain", "qlty"])
         self.assertEqual(row["exception_label"], "Supply Chain, Qlty")
         self.assertEqual(row["delivery_date"], "2026-03-20")
         self.assertEqual(row["mtl_part_order"], "AM/0719/23 CUAL1NI5FE5*2_D25.4")
@@ -137,6 +138,7 @@ class SoKpiBuilderTests(unittest.TestCase):
 
     def test_flagged_partial_without_issue_list_is_others(self):
         report = build_so_kpi([_order(highlighted_partials=[1], exception_issues={})])
+        self.assertEqual(report["exception_rows"][0]["exception_tags"], ["others"])
         self.assertEqual(report["exception_rows"][0]["exception_label"], "Others")
         self.assertEqual(report["exception_rows"][0]["edd_date"], "2026-04-20")
 
@@ -159,7 +161,10 @@ class SoKpiRouteTests(unittest.TestCase):
         self.assertIn("Material dates", html)
         self.assertIn("Exceptions", html)
         self.assertIn('id="kpi-typebar"', html)
+        self.assertIn('id="kpi-deptbar"', html)
         self.assertIn('id="kpi-col-value"', html)
+        self.assertIn('data-col-filter="exception_label"', html)
+        self.assertIn('data-dept="supply_chain"', html)
         self.assertIn(">Resolved<", html)
 
     def test_api_builds_both_extracts_from_active_orders(self):

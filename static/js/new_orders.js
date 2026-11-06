@@ -285,36 +285,43 @@ function newOrdersDateOnly(value) {
 }
 
 function newOrdersFormatPosted(value) {
-  const text = String(value || '').trim();
+  const text = String(value || '').trim().replace('T', ' ');
   if (!text) return '—';
-  return trialFormatDt(text);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+  if (!match) return text;
+  const clock = match[4] ? ` ${match[4]}:${match[5]}` : '';
+  return `${match[3]}/${match[2]}/${match[1]}${clock}`;
 }
 
-function newOrdersIsReposted(rowOrGroup) {
+function newOrdersUpdatedAt(rowOrGroup) {
+  const explicit = String(rowOrGroup?.updated_datetime || '').trim();
+  if (explicit) return explicit;
   const first = String(rowOrGroup?.first_posted_datetime || '').trim();
   const latest = String(rowOrGroup?.latest_posted_datetime || '').trim();
-  return Boolean(first && latest && first !== latest);
+  if (!first || !latest || first.slice(0, 19) === latest.slice(0, 19)) return '';
+  return latest;
 }
 
 function newOrdersPostedDetailFields(rowOrGroup) {
   const fields = [
-    newOrdersDetailField('First posted', newOrdersFormatPosted(rowOrGroup.first_posted_datetime)),
+    newOrdersDetailField('Posted', newOrdersFormatPosted(rowOrGroup.first_posted_datetime)),
   ];
-  if (newOrdersIsReposted(rowOrGroup)) {
-    fields.push(newOrdersDetailField('Latest post', newOrdersFormatPosted(rowOrGroup.latest_posted_datetime)));
+  const updated = newOrdersUpdatedAt(rowOrGroup);
+  if (updated) {
+    fields.push(newOrdersDetailField('Updated', newOrdersFormatPosted(updated)));
   }
   return fields.join('');
 }
 
 function newOrdersRenderPostedSideRail(rowOrGroup) {
   const first = newOrdersFormatPosted(rowOrGroup.first_posted_datetime);
-  const reposted = newOrdersIsReposted(rowOrGroup);
-  const latestBlock = reposted
-    ? `<div class="new-orders-side-reposted"><span class="new-orders-side-posted-label">Latest post</span> ${escapeHtml(newOrdersFormatPosted(rowOrGroup.latest_posted_datetime))}</div>`
+  const updated = newOrdersUpdatedAt(rowOrGroup);
+  const updatedBlock = updated
+    ? `<div class="new-orders-side-reposted"><span class="new-orders-side-posted-label">Updated</span> ${escapeHtml(newOrdersFormatPosted(updated))}</div>`
     : '';
   return `
-    <div class="new-orders-side-posted"><span class="new-orders-side-posted-label">First posted</span> ${escapeHtml(first)}</div>
-    ${latestBlock}
+    <div class="new-orders-side-posted"><span class="new-orders-side-posted-label">Posted</span> ${escapeHtml(first)}</div>
+    ${updatedBlock}
   `;
 }
 
@@ -541,6 +548,7 @@ function newOrdersBuildGroups(rows) {
         sales_order_no: key,
         first_posted_datetime: row.first_posted_datetime,
         latest_posted_datetime: row.latest_posted_datetime,
+        updated_datetime: row.updated_datetime,
         customer_po_no: row.customer_po_no,
         customer_code: row.customer_code,
         reference_no: row.reference_no,
@@ -674,7 +682,7 @@ function newOrdersRenderTable() {
     if (emptyText) {
       emptyText.textContent = newOrdersState.rows.length
         ? 'No rows match your filters.'
-        : `No orders first posted ${newOrdersState.rangeLabel || 'for this range'}.`;
+        : `No orders posted or updated ${newOrdersState.rangeLabel || 'for this range'}.`;
     }
   } else {
     empty.hidden = true;

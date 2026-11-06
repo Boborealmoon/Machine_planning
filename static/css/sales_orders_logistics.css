@@ -775,11 +775,29 @@ body.sol-view .app-main--sales-logistics {
   content: none;
 }
 
+.sol-table[data-mode="ps"] thead th,
+.sol-table[data-mode="subcon"] thead th,
+.sol-table[data-mode="prpo"] thead th,
+.sol-table[data-mode="qc"] thead th,
+.sol-table[data-mode="ship-in"] thead th,
+.sol-table[data-mode="ship-out"] thead th {
+  overflow: visible;
+}
+
 .sol-th-row {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.sol-th-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .sol-th-ind {
@@ -1048,7 +1066,7 @@ body.sol-view .app-main--sales-logistics {
 .sol-table[data-mode="ps"] {
   table-layout: fixed;
   width: 100%;
-  min-width: 80rem;
+  min-width: 86rem;
   max-width: none;
 }
 
@@ -1065,7 +1083,9 @@ body.sol-view .app-main--sales-logistics {
 .sol-table[data-mode="ps"] th.sol-col-material,
 .sol-table[data-mode="ps"] td.so-material-subcon-cell,
 .sol-table[data-mode="ps"] th.sol-col-due,
-.sol-table[data-mode="ps"] td.sol-col-due {
+.sol-table[data-mode="ps"] td.sol-col-due,
+.sol-table[data-mode="ps"] th.sol-col-posted,
+.sol-table[data-mode="ps"] td.sol-col-posted {
   overflow: hidden;
 }
 
@@ -1258,15 +1278,16 @@ body.sol-view .app-main--sales-logistics {
   padding-right: 4px;
 }
 .sol-table[data-mode="ps"] .sol-col-order { width: 7%; }
-.sol-table[data-mode="ps"] .sol-col-ps { width: 11.5%; }
+.sol-table[data-mode="ps"] .sol-col-ps { width: 11%; }
 .sol-table[data-mode="ps"] .sol-col-qty { width: 5.5%; }
-.sol-table[data-mode="ps"] .sol-col-stage { width: 9%; }
-.sol-table[data-mode="ps"] .sol-col-part { width: 12.5%; }
+.sol-table[data-mode="ps"] .sol-col-stage { width: 8.5%; }
+.sol-table[data-mode="ps"] .sol-col-part { width: 11%; }
 .sol-table[data-mode="ps"] .sol-col-due { width: 6.5%; }
-.sol-table[data-mode="ps"] .sol-col-need { width: 10.5%; }
+.sol-table[data-mode="ps"] .sol-col-posted { width: 6.5%; }
+.sol-table[data-mode="ps"] .sol-col-need { width: 10%; }
 .sol-table[data-mode="ps"] .sol-col-bom { width: 4%; }
-.sol-table[data-mode="ps"] .sol-col-material { width: 14%; }
-.sol-table[data-mode="ps"] .sol-col-notes { width: 15%; }
+.sol-table[data-mode="ps"] .sol-col-material { width: 12.5%; }
+.sol-table[data-mode="ps"] .sol-col-notes { width: 13%; }
 
 .sol-delay-cell {
   text-align: center;
@@ -1468,7 +1489,8 @@ body.sol-view .app-main--sales-logistics {
 }
 
 .sol-col-partial,
-.sol-col-due {
+.sol-col-due,
+.sol-col-posted {
   white-space: nowrap;
 }
 

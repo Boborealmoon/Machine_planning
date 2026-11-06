@@ -2,7 +2,7 @@
 {% block title %}KPI{% endblock %}
 {% block main_class %}app-main--kpi{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-board-20261012">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-exceptions-20261105">
 {% endblock %}
 {% block content %}
 <div class="kpi-page" data-screen="qc">
@@ -23,6 +23,7 @@
 
   <div class="kpi-screenbar">
     <p class="kpi-subtitle" id="kpi-subtitle"></p>
+    <div class="kpi-deptbar" id="kpi-deptbar" role="group" aria-label="Department" hidden></div>
     <div class="kpi-screenbar-tools">
       <div class="kpi-typebar" id="kpi-typebar" role="group" aria-label="Process sheet type"></div>
       <div class="kpi-colbar">
@@ -30,12 +31,6 @@
           <input type="checkbox" id="kpi-hide-resolved">
           <span>Hide resolved</span>
         </label>
-        <label class="kpi-colpick">
-          <span>Filter column</span>
-          <select id="kpi-col-key"></select>
-          <input type="search" id="kpi-col-value" placeholder="Contains..." autocomplete="off">
-        </label>
-        <div id="kpi-col-chips" class="kpi-col-chips"></div>
       </div>
     </div>
   </div>
@@ -89,14 +84,14 @@
         <thead>
           <tr>
             <th class="kpi-resolved-col">Resolved</th>
-            <th><button type="button" data-kpi-sort="ps_id">Job</button></th>
-            <th><button type="button" data-kpi-sort="part_no">Part</button></th>
-            <th><button type="button" data-kpi-sort="current_stage_desc">Stage</button></th>
-            <th><button type="button" data-kpi-sort="due_date">Due</button></th>
-            <th><button type="button" data-kpi-sort="pushed_at">Arrived at QC</button></th>
-            <th><button type="button" data-kpi-sort="left_at">Left QC</button></th>
-            <th class="kpi-num"><button type="button" data-kpi-sort="days_at_qc">QC TAT</button></th>
-            <th><button type="button" data-kpi-sort="qc_state">Status</button></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="ps_id">Job</button><button type="button" class="kpi-col-filter-btn" data-col-filter="ps_id" title="Filter Job" aria-label="Filter Job">▾</button></span></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="part_no">Part</button><button type="button" class="kpi-col-filter-btn" data-col-filter="part_no" title="Filter Part" aria-label="Filter Part">▾</button></span></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="current_stage_desc">Stage</button><button type="button" class="kpi-col-filter-btn" data-col-filter="current_stage_desc" title="Filter Stage" aria-label="Filter Stage">▾</button></span></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="due_date">Due</button><button type="button" class="kpi-col-filter-btn" data-col-filter="due_date" title="Filter Due" aria-label="Filter Due">▾</button></span></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="pushed_at">Arrived at QC</button><button type="button" class="kpi-col-filter-btn" data-col-filter="pushed_at" title="Filter Arrived at QC" aria-label="Filter Arrived at QC">▾</button></span></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="left_at">Left QC</button><button type="button" class="kpi-col-filter-btn" data-col-filter="left_at" title="Filter Left QC" aria-label="Filter Left QC">▾</button></span></th>
+            <th class="kpi-num"><span class="kpi-th"><button type="button" data-kpi-sort="days_at_qc">QC TAT</button><button type="button" class="kpi-col-filter-btn" data-col-filter="days_at_qc" title="Filter QC TAT" aria-label="Filter QC TAT">▾</button></span></th>
+            <th><span class="kpi-th"><button type="button" data-kpi-sort="qc_state">Status</button><button type="button" class="kpi-col-filter-btn" data-col-filter="qc_state" title="Filter Status" aria-label="Filter Status">▾</button></span></th>
           </tr>
         </thead>
         <tbody id="kpi-body"></tbody>
@@ -121,28 +116,28 @@
           <thead>
             <tr>
               <th class="kpi-resolved-col">Resolved</th>
-              <th><button type="button" data-so-sort="process_sheet_no">Process sheet</button></th>
-              <th><button type="button" data-so-sort="part_no">Part</button></th>
-              <th><button type="button" data-so-sort="description">Description</button></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="process_sheet_no">Process sheet</button><button type="button" class="kpi-col-filter-btn" data-col-filter="process_sheet_no" title="Filter Process sheet" aria-label="Filter Process sheet">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="part_no">Part</button><button type="button" class="kpi-col-filter-btn" data-col-filter="part_no" title="Filter Part" aria-label="Filter Part">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="description">Description</button><button type="button" class="kpi-col-filter-btn" data-col-filter="description" title="Filter Description" aria-label="Filter Description">▾</button></span></th>
               <th class="kpi-datehead kpi-datehead--need" title="Date the material was needed">
-                <button type="button" data-so-sort="material_need_date"><span class="kpi-datehead-tag">Need</span><span class="kpi-datehead-name">Material need date</span></button>
+                <span class="kpi-th"><button type="button" data-so-sort="material_need_date"><span class="kpi-datehead-tag">Need</span><span class="kpi-datehead-name">Material need date</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="material_need_date" title="Filter Material need date" aria-label="Filter Material need date">▾</button></span>
               </th>
               <th class="kpi-datehead kpi-datehead--arrival" title="Material in date from S/O management">
-                <button type="button" data-so-sort="material_arrival_date"><span class="kpi-datehead-tag">Arrived</span><span class="kpi-datehead-name">Material arrival</span></button>
+                <span class="kpi-th"><button type="button" data-so-sort="material_arrival_date"><span class="kpi-datehead-tag">Arrived</span><span class="kpi-datehead-name">Material arrival</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="material_arrival_date" title="Filter Material arrival" aria-label="Filter Material arrival">▾</button></span>
               </th>
               <th class="kpi-datehead kpi-datehead--gap kpi-num" title="How many days after the need date the material arrived">
-                <button type="button" data-so-sort="day_gap"><span class="kpi-datehead-tag">Gap</span><span class="kpi-datehead-name">Days late</span></button>
+                <span class="kpi-th"><button type="button" data-so-sort="day_gap"><span class="kpi-datehead-tag">Gap</span><span class="kpi-datehead-name">Days late</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="day_gap" title="Filter Days late" aria-label="Filter Days late">▾</button></span>
               </th>
               <th class="kpi-datehead kpi-datehead--due" title="Customer PO due date">
-                <button type="button" data-so-sort="due_date"><span class="kpi-datehead-tag">PO due</span><span class="kpi-datehead-name">PO due date</span></button>
+                <span class="kpi-th"><button type="button" data-so-sort="due_date"><span class="kpi-datehead-tag">PO due</span><span class="kpi-datehead-name">PO due date</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="due_date" title="Filter PO due date" aria-label="Filter PO due date">▾</button></span>
               </th>
               <th class="kpi-datehead kpi-datehead--edd" title="Planner proposed EDD from S/O management">
-                <button type="button" data-so-sort="edd_date"><span class="kpi-datehead-tag">EDD</span><span class="kpi-datehead-name">Proposed EDD</span></button>
+                <span class="kpi-th"><button type="button" data-so-sort="edd_date"><span class="kpi-datehead-tag">EDD</span><span class="kpi-datehead-name">Proposed EDD</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="edd_date" title="Filter Proposed EDD" aria-label="Filter Proposed EDD">▾</button></span>
               </th>
-              <th><button type="button" data-so-sort="mtl_part_order">Mtl / Part Order</button></th>
-              <th><button type="button" data-so-sort="quality_doc">Quality Doc</button></th>
-              <th><button type="button" data-so-sort="ops_notes">Ops</button></th>
-              <th><button type="button" data-so-sort="sales_notes">Sales</button></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="mtl_part_order">Mtl / Part Order</button><button type="button" class="kpi-col-filter-btn" data-col-filter="mtl_part_order" title="Filter Mtl / Part Order" aria-label="Filter Mtl / Part Order">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="quality_doc">Quality Doc</button><button type="button" class="kpi-col-filter-btn" data-col-filter="quality_doc" title="Filter Quality Doc" aria-label="Filter Quality Doc">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="ops_notes">Ops</button><button type="button" class="kpi-col-filter-btn" data-col-filter="ops_notes" title="Filter Ops" aria-label="Filter Ops">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="sales_notes">Sales</button><button type="button" class="kpi-col-filter-btn" data-col-filter="sales_notes" title="Filter Sales" aria-label="Filter Sales">▾</button></span></th>
             </tr>
           </thead>
           <tbody id="kpi-material-body"></tbody>
@@ -167,19 +162,19 @@
           <thead>
             <tr>
               <th class="kpi-resolved-col">Resolved</th>
-              <th><button type="button" data-so-sort="process_sheet_no">Process sheet</button></th>
-              <th><button type="button" data-so-sort="partial_no">Partial</button></th>
-              <th><button type="button" data-so-sort="part_no">Part</button></th>
-              <th><button type="button" data-so-sort="description">Description</button></th>
-              <th><button type="button" data-so-sort="posted_date">Posted</button></th>
-              <th><button type="button" data-so-sort="due_date">Due</button></th>
-              <th><button type="button" data-so-sort="edd_date">EDD</button></th>
-              <th><button type="button" data-so-sort="exception_label">Exception</button></th>
-              <th><button type="button" data-so-sort="delivery_date">Delivered</button></th>
-              <th><button type="button" data-so-sort="mtl_part_order">Mtl / Part Order</button></th>
-              <th><button type="button" data-so-sort="quality_doc">Quality Doc</button></th>
-              <th><button type="button" data-so-sort="ops_notes">Ops</button></th>
-              <th><button type="button" data-so-sort="sales_notes">Sales</button></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="process_sheet_no">Process sheet</button><button type="button" class="kpi-col-filter-btn" data-col-filter="process_sheet_no" title="Filter Process sheet" aria-label="Filter Process sheet">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="partial_no">Partial</button><button type="button" class="kpi-col-filter-btn" data-col-filter="partial_no" title="Filter Partial" aria-label="Filter Partial">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="part_no">Part</button><button type="button" class="kpi-col-filter-btn" data-col-filter="part_no" title="Filter Part" aria-label="Filter Part">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="description">Description</button><button type="button" class="kpi-col-filter-btn" data-col-filter="description" title="Filter Description" aria-label="Filter Description">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="posted_date">Posted</button><button type="button" class="kpi-col-filter-btn" data-col-filter="posted_date" title="Filter Posted" aria-label="Filter Posted">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="due_date">Due</button><button type="button" class="kpi-col-filter-btn" data-col-filter="due_date" title="Filter Due" aria-label="Filter Due">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="edd_date">EDD</button><button type="button" class="kpi-col-filter-btn" data-col-filter="edd_date" title="Filter EDD" aria-label="Filter EDD">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="exception_label">Exception</button><button type="button" class="kpi-col-filter-btn" data-col-filter="exception_label" title="Filter Exception" aria-label="Filter Exception">▾</button></span></th>
+              <th><span class="kpi-th"><button type="button" data-so-sort="delivery_date">Delivered</button><button type="button" class="kpi-col-filter-btn" data-col-filter="delivery_date" title="Filter Delivered" aria-label="Filter Delivered">▾</button></span></th>
+              <th data-dept="supply_chain" title="Supply Chain remarks"><span class="kpi-th"><button type="button" data-so-sort="mtl_part_order"><span class="kpi-datehead-tag">Supply Chain</span><span class="kpi-datehead-name">Mtl / Part Order</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="mtl_part_order" title="Filter Mtl / Part Order" aria-label="Filter Mtl / Part Order">▾</button></span></th>
+              <th data-dept="qlty" title="Quality remarks"><span class="kpi-th"><button type="button" data-so-sort="quality_doc"><span class="kpi-datehead-tag">Qlty</span><span class="kpi-datehead-name">Quality Doc</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="quality_doc" title="Filter Quality Doc" aria-label="Filter Quality Doc">▾</button></span></th>
+              <th data-dept="process_engr" title="Process / Engr remarks"><span class="kpi-th"><button type="button" data-so-sort="ops_notes"><span class="kpi-datehead-tag">Process / Engr</span><span class="kpi-datehead-name">Ops</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="ops_notes" title="Filter Ops" aria-label="Filter Ops">▾</button></span></th>
+              <th data-dept="sales" title="Sales remarks"><span class="kpi-th"><button type="button" data-so-sort="sales_notes"><span class="kpi-datehead-tag">Sales</span><span class="kpi-datehead-name">Remarks</span></button><button type="button" class="kpi-col-filter-btn" data-col-filter="sales_notes" title="Filter Sales" aria-label="Filter Sales">▾</button></span></th>
             </tr>
           </thead>
           <tbody id="kpi-exception-body"></tbody>
@@ -188,8 +183,16 @@
       <div id="kpi-exception-empty" class="kpi-empty" hidden>No active S/O lines are flagged with an exception.</div>
     </section>
   </div>
+
+  <div id="kpi-col-popover" class="kpi-col-popover" hidden>
+    <div class="kpi-col-popover-title" id="kpi-col-popover-title">Filter</div>
+    <input type="search" id="kpi-col-value" placeholder="Contains..." autocomplete="off">
+    <div class="kpi-col-popover-actions">
+      <button type="button" class="btn btn-light btn-sm" id="kpi-col-clear">Clear</button>
+    </div>
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-board-20261012"></script>
+<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-exceptions-20261105"></script>
 {% endblock %}

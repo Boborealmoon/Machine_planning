@@ -41,46 +41,20 @@
     ready_qc: 'Ready for QC',
     awaiting_grn: 'Awaiting GRN',
   };
-  const PS_TABLE_HEAD = `
-    <tr>
-      <th class="sol-col-delay" title="Material arrival delay">Flag</th>
-      <th class="sol-col-order">S/O</th>
-      <th class="sol-col-ps">PS</th>
-      <th class="sol-col-qty" title="Partial · SO qty / Partial qty">Qty</th>
-      <th class="sol-col-stage">Stage</th>
-      <th class="sol-col-part">Part</th>
-      <th class="sol-col-due">Due</th>
-      <th class="sol-col-need" title="Set on S/O Management — read only here">Need date</th>
-      <th class="sol-col-bom">BOM</th>
-      <th class="sol-col-material" title="Material in">In</th>
-      <th class="sol-col-notes" title="Mtl / Part Order">Notes</th>
-    </tr>`;
-  const SUBCON_TABLE_HEAD = `
-    <tr>
-      <th class="sol-col-order">S/O</th>
-      <th class="sol-col-ps">PS</th>
-      <th class="sol-col-part">Part</th>
-      <th class="sol-col-qty">Qty</th>
-      <th class="sol-col-due">Due</th>
-      <th class="sol-col-stage">Stage</th>
-      <th>Proposed CNC</th>
-      <th class="sol-col-status">Subcon status</th>
-      <th class="sol-col-notes" title="Same notes as S/O Management">Notes</th>
-    </tr>`;
   const BLANK_SUPPLIER = '(Blank)';
   const PR_PO_COLUMNS = [
     { key: 'status', label: 'Status' },
     { key: 'purchase_requisition_no', label: 'PR No' },
     { key: 'pr_date', label: 'PR Date', type: 'date' },
     { key: 'item_code', label: 'Item', cls: 'sol-col-item' },
-    { key: 'description', label: 'Description', cls: 'sol-desc' },
-    { key: 'remarks', label: 'Remarks', cls: 'sol-desc' },
+    { key: 'description', label: 'Description', cls: 'sol-desc', value: row => String(row.line_item_description || row.item_description || '').trim() },
+    { key: 'remarks', label: 'Remarks', cls: 'sol-desc', value: row => String(row.remarks || row.internal_remarks || '').trim() },
     { key: 'qty', label: 'Qty', type: 'num', cls: 'sol-col-qty' },
     { key: 'required_arrival_date', label: 'Required arrival', type: 'date' },
     { key: 'purchase_order_no', label: 'PO No' },
     { key: 'po_date', label: 'PO Date', type: 'date' },
     { key: 'estimated_arrival_date', label: 'Est. arrival', type: 'date' },
-    { key: 'supplier', label: 'Supplier' },
+    { key: 'supplier', label: 'Supplier', value: row => String(row.supplier_name || row.supplier_code || '').trim() },
     { key: 'project_no', label: 'Project' },
     { key: 'sbu_code', label: 'SBU' },
     { key: 'created_by', label: 'Created by' },
@@ -186,8 +160,8 @@
     search: '',
     selectedSbu: new Set(['MFG']),
     selectedSuppliers: new Set(),
-    sortKey: 'pr_date',
-    sortDir: 'desc',
+    prPoSorts: [{ key: 'pr_date', dir: 'desc' }],
+    prPoFilters: {},
     materialFilter: 'all',
     ppTypes: new Set(['APS', 'NPS']),
     saveInFlight: new Set(),
@@ -214,13 +188,15 @@
     shipTotal: 0,
     shipTruncated: false,
     shipCache: {},
-    shipSortKey: '',
-    shipSortDir: 'asc',
+    shipSorts: [],
     shipFilters: {},
     shipFilterDir: '',
-    qcSortKey: '',
-    qcSortDir: 'asc',
+    qcSorts: [],
     qcFilters: {},
+    jobSorts: [],
+    jobFilters: {},
+    subconSorts: [],
+    subconFilters: {},
     colFilterKey: '',
     colFilterKind: '',
     assemblyJobs: new Map(),
@@ -311,6 +287,112 @@
   function formatDate(value) {
     return typeof trialFormatDate === 'function' ? trialFormatDate(value) : String(value || EM_DASH);
   }
+
+  function postedDateOf(order, pp) {
+    return order?.first_posted_datetime
+      || pp?.order_date
+      || order?.order_date
+      || pp?.posted_date
+      || '';
+  }
+
+  function renderPostedDateCell(order, pp) {
+    return `<td class="sol-date sol-col-posted" title="S/O posted date">${escapeHtml(formatDate(postedDateOf(order, pp)))}</td>`;
+  }
+
+  function jobSoText(leaf) {
+    const so = String(leaf.order?.sales_order_no || '').trim();
+    const customer = String(leaf.order?.customer_name || leaf.order?.customer_short_name || leaf.order?.customer_code || '').trim();
+    return [so, customer].filter(Boolean).join(' ');
+  }
+
+  function jobPsText(leaf) {
+    const type = getPsType(leaf.pp);
+    const label = type === 'SR' ? '[SR]' : type;
+    return [label, psDisplayForPartial(leaf.pp, leaf.partial)].filter(Boolean).join(' ');
+  }
+
+  function jobQtyText(leaf) {
+    if (leaf.assemblyChild) return `BOM ${formatQty(leaf.assemblyChild.qty)}`;
+    return `${partialNo(leaf.partial)} ${soQtyDisplay(leaf.pp)}/${partialQtyDisplay(leaf.partial, leaf.pp)}`;
+  }
+
+  function jobQtySort(leaf) {
+    const raw = leaf.assemblyChild
+      ? leaf.assemblyChild.qty
+      : (leaf.partial?.partial_qty ?? leaf.pp?.so_det_qty);
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function jobStageText(leaf) {
+    const stage = partialStage(leaf.partial);
+    const parts = [];
+    if (stage.desc) parts.push(stage.desc);
+    else if (stage.mode === 'unassigned') parts.push('No WO');
+    else if (stage.mode === 'completed') parts.push('All complete');
+    if (stage.status) parts.push(stage.status);
+    const pending = ppPendingWoQty(leaf.pp);
+    if (pending > 0.0001) parts.push(`${pending} WO`);
+    return parts.join(' ');
+  }
+
+  function jobPartText(leaf) {
+    const part = partNoForRow(leaf.pp, leaf.partial, leaf.assemblyChild);
+    const desc = leaf.assemblyChild
+      ? String(leaf.assemblyChild.description || '').trim()
+      : String(leaf.pp?.description || '').trim();
+    return [part, desc].filter(Boolean).join(' ');
+  }
+
+  function jobMaterialText(leaf) {
+    const parsed = parseMaterialSubcon(effectiveMaterialSubcon(leaf.pp));
+    if (parsed.arrived && parsed.date) return `Arrived ${formatDate(parsed.date)}`;
+    if (parsed.arrived) return 'Arrived';
+    if (parsed.date) return formatDate(parsed.date);
+    return parsed.legacy || '';
+  }
+
+  function jobMaterialSort(leaf) {
+    const parsed = parseMaterialSubcon(effectiveMaterialSubcon(leaf.pp));
+    return parsed.date ? dateSortValue(parsed.date) : null;
+  }
+
+  function jobBomText(leaf) {
+    const part = partNoForRow(leaf.pp, leaf.partial, leaf.assemblyChild);
+    if (!part) return '';
+    const bom = leaf.assemblyChild
+      ? (leaf.assemblyChild.selected_bom_code || leaf.assemblyChild.resolved_bom_code)
+      : leaf.pp?.bom_code;
+    return String(bom || '').trim() || 'BOM';
+  }
+
+  const JOB_COLUMNS = [
+    { key: 'delay', label: 'Flag', cls: 'sol-col-delay', title: 'Material arrival delay', value: leaf => (leaf.pp?.material_delay ? 'Flagged' : '') },
+    { key: 'so', label: 'S/O', cls: 'sol-col-order', value: jobSoText, sortValue: leaf => String(leaf.order?.sales_order_no || '').trim().toLowerCase() },
+    { key: 'ps', label: 'PS', cls: 'sol-col-ps', value: jobPsText },
+    { key: 'qty', label: 'Qty', cls: 'sol-col-qty', title: 'Partial · SO qty / Partial qty', value: jobQtyText, sortValue: jobQtySort },
+    { key: 'stage', label: 'Stage', cls: 'sol-col-stage', value: jobStageText },
+    { key: 'part', label: 'Part', cls: 'sol-col-part', value: jobPartText, sortValue: leaf => String(partNoForRow(leaf.pp, leaf.partial, leaf.assemblyChild) || '').trim().toLowerCase() },
+    { key: 'due', label: 'Due', cls: 'sol-col-due', type: 'date', title: 'PO due date', value: leaf => leaf.pp?.due_date || '' },
+    { key: 'posted', label: 'Posted', cls: 'sol-col-posted', type: 'date', title: 'S/O posted date', value: leaf => postedDateOf(leaf.order, leaf.pp) },
+    { key: 'need', label: 'Need date', cls: 'sol-col-need', type: 'date', title: 'Set on S/O Management — read only here', value: leaf => leaf.pp?.material_need_date || '' },
+    { key: 'bom', label: 'BOM', cls: 'sol-col-bom', value: jobBomText },
+    { key: 'material', label: 'In', cls: 'sol-col-material', title: 'Material in', value: jobMaterialText, sortValue: jobMaterialSort },
+    { key: 'notes', label: 'Notes', cls: 'sol-col-notes', title: 'Mtl / Part Order', value: leaf => String(leaf.pp?.mtl_part_order || '').trim() },
+  ];
+  const SUBCON_COLUMNS = [
+    { key: 'so', label: 'S/O', cls: 'sol-col-order', value: jobSoText, sortValue: leaf => String(leaf.order?.sales_order_no || '').trim().toLowerCase() },
+    { key: 'ps', label: 'PS', cls: 'sol-col-ps', value: jobPsText },
+    { key: 'part', label: 'Part', cls: 'sol-col-part', value: jobPartText, sortValue: leaf => String(partNoForRow(leaf.pp, leaf.partial, leaf.assemblyChild) || '').trim().toLowerCase() },
+    { key: 'qty', label: 'Qty', cls: 'sol-col-qty', value: jobQtyText, sortValue: jobQtySort },
+    { key: 'due', label: 'Due', cls: 'sol-col-due', type: 'date', title: 'PO due date', value: leaf => leaf.pp?.due_date || '' },
+    { key: 'posted', label: 'Posted', cls: 'sol-col-posted', type: 'date', title: 'S/O posted date', value: leaf => postedDateOf(leaf.order, leaf.pp) },
+    { key: 'stage', label: 'Stage', cls: 'sol-col-stage', value: jobStageText },
+    { key: 'cnc', label: 'Proposed CNC', value: leaf => (leaf.proposedMachines || proposedMachinesOf(leaf)).filter(Boolean).join(', ') },
+    { key: 'status', label: 'Subcon status', cls: 'sol-col-status', value: leaf => subconStatusLabel(leaf.pp?.subcon_status) },
+    { key: 'notes', label: 'Notes', cls: 'sol-col-notes', title: 'Same notes as S/O Management', value: leaf => String(leaf.pp?.mtl_part_order || '').trim() },
+  ];
 
   function formatQty(value) {
     const num = Number(value);
@@ -857,6 +939,8 @@
       pp.mtl_part_order,
       pp.material_need_date,
       formatDate(pp.material_need_date),
+      postedDateOf(order, pp),
+      formatDate(postedDateOf(order, pp)),
       materialSubconDisplay(effectiveMaterialSubcon(pp)),
       ...assemblySearchBits(pp, assemblyChild),
     ];
@@ -925,26 +1009,32 @@
     return true;
   }
 
-  function visibleLeaves() {
-    const rows = [];
+  function collectFilteredLeaves() {
     const leaves = [];
     state.active.forEach(order => {
       leafRows(order).forEach(leaf => leaves.push(leaf));
     });
+    const rows = [];
     nestAndExplodeLeaves(leaves).forEach(expanded => {
       if (passesFilters(expanded)) rows.push(expanded);
     });
-    rows.sort((a, b) => {
-      const soCmp = String(a.order.sales_order_no || '').localeCompare(String(b.order.sales_order_no || ''));
-      if (soCmp) return soCmp;
-      const psCmp = psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
-      if (psCmp) return psCmp;
-      const childA = Number.isInteger(a.assemblyChildIndex) ? a.assemblyChildIndex : -1;
-      const childB = Number.isInteger(b.assemblyChildIndex) ? b.assemblyChildIndex : -1;
-      if (childA !== childB) return childA - childB;
-      return partialNo(a.partial) - partialNo(b.partial);
-    });
     return rows;
+  }
+
+  function compareJobLeaves(a, b) {
+    const soCmp = String(a.order.sales_order_no || '').localeCompare(String(b.order.sales_order_no || ''));
+    if (soCmp) return soCmp;
+    const psCmp = psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
+    if (psCmp) return psCmp;
+    const childA = Number.isInteger(a.assemblyChildIndex) ? a.assemblyChildIndex : -1;
+    const childB = Number.isInteger(b.assemblyChildIndex) ? b.assemblyChildIndex : -1;
+    if (childA !== childB) return childA - childB;
+    return partialNo(a.partial) - partialNo(b.partial);
+  }
+
+  function visibleLeaves() {
+    const rows = applyStackedFilters(collectFilteredLeaves(), JOB_COLUMNS, state.jobFilters);
+    return sortRowsBySorts(rows, JOB_COLUMNS, state.jobSorts, compareJobLeaves);
   }
 
   function supplierKey(row) {
@@ -989,20 +1079,6 @@
     return Number.isFinite(ts) ? ts : null;
   }
 
-  function prPoSortValue(row, key) {
-    if (key === 'description') {
-      return String(row.line_item_description || row.item_description || '').trim().toLowerCase();
-    }
-    if (key === 'supplier') return supplierKey(row).toLowerCase();
-    if (key === 'qty') {
-      const num = Number(row.qty);
-      return Number.isFinite(num) ? num : null;
-    }
-    const col = PR_PO_COLUMNS.find(c => c.key === key);
-    if (col && col.type === 'date') return dateSortValue(row[key]);
-    return String(row[key] == null ? '' : row[key]).trim().toLowerCase();
-  }
-
   function compareSortValues(a, b, dir) {
     const aEmpty = a == null || a === '';
     const bEmpty = b == null || b === '';
@@ -1013,20 +1089,15 @@
     return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' }) * dir;
   }
 
-  function sortPrPoRows(rows) {
-    const key = state.sortKey || 'pr_date';
-    const dir = state.sortDir === 'asc' ? 1 : -1;
-    return rows.slice().sort((a, b) => compareSortValues(prPoSortValue(a, key), prPoSortValue(b, key), dir));
+  function prPoBaseRows() {
+    return state.prPoRows.filter(row => (
+      passesSbuFilter(row) && passesSupplierFilter(row) && passesPrPoTextSearch(row)
+    ));
   }
 
   function visiblePrPoRows() {
-    const rows = state.prPoRows.filter(row => {
-      if (!passesSbuFilter(row)) return false;
-      if (!passesSupplierFilter(row)) return false;
-      if (!passesPrPoTextSearch(row)) return false;
-      return true;
-    });
-    return sortPrPoRows(rows);
+    const rows = applyStackedFilters(prPoBaseRows(), PR_PO_COLUMNS, state.prPoFilters);
+    return sortRowsBySorts(rows, PR_PO_COLUMNS, state.prPoSorts);
   }
 
   function qcSearchText(row) {
@@ -1050,8 +1121,8 @@
   function visibleQcRows() {
     const q = String(state.search || '').trim().toLowerCase();
     let rows = q ? state.qcRows.filter(row => qcSearchText(row).includes(q)) : state.qcRows.slice();
-    rows = rows.filter(row => passesColumnFilters(row, QC_COLUMNS, state.qcFilters));
-    return sortRowsByColumn(rows, QC_COLUMNS, state.qcSortKey, state.qcSortDir);
+    rows = applyStackedFilters(rows, QC_COLUMNS, state.qcFilters);
+    return sortRowsBySorts(rows, QC_COLUMNS, state.qcSorts);
   }
 
   function findPp(ppVoucherNo) {
@@ -1614,6 +1685,7 @@
         ${renderStageCell(pp, partial)}
         ${renderPartCell(pp, partial, assemblyChild)}
         <td class="sol-date sol-col-due">${escapeHtml(formatDate(pp.due_date))}</td>
+        ${renderPostedDateCell(order, pp)}
         ${renderNeedDateCell(pp)}
         ${renderMaterialsCell(pp, partial, assemblyChild)}
         ${renderMaterialCell(pp)}
@@ -1741,8 +1813,8 @@
     const columns = shipColumns();
     const q = String(state.search || '').trim().toLowerCase();
     let rows = q ? state.shipRows.filter(row => shipSearchText(row).includes(q)) : state.shipRows.slice();
-    rows = rows.filter(row => passesColumnFilters(row, columns, state.shipFilters));
-    return sortRowsByColumn(rows, columns, state.shipSortKey, state.shipSortDir);
+    rows = applyStackedFilters(rows, columns, state.shipFilters);
+    return sortRowsBySorts(rows, columns, state.shipSorts);
   }
 
   function shipColumns() {
@@ -1780,6 +1852,7 @@
   }
 
   function columnSortValue(row, col) {
+    if (typeof col.sortValue === 'function') return col.sortValue(row);
     const raw = columnRaw(row, col);
     if (col.type === 'date') return dateSortValue(raw);
     if (col.type === 'num') {
@@ -1790,24 +1863,45 @@
     return text ? text.toLowerCase() : '';
   }
 
-  function passesColumnFilters(row, columns, filters) {
-    return columns.every(col => {
-      const selected = filters[col.key];
+  function applyStackedFilters(rows, columns, filters, skipKey) {
+    return rows.filter(row => columns.every(col => {
+      if (skipKey && col.key === skipKey) return true;
+      const selected = filters && filters[col.key];
       if (!selected || !selected.size) return true;
       return selected.has(columnFilterKey(row, col));
+    }));
+  }
+
+  function sortRowsBySorts(rows, columns, sorts, tieBreak) {
+    const active = (sorts || [])
+      .map(sort => ({ sort, col: columns.find(col => col.key === sort.key) }))
+      .filter(item => item.col);
+    return rows.slice().sort((a, b) => {
+      for (let i = 0; i < active.length; i += 1) {
+        const dir = active[i].sort.dir === 'desc' ? -1 : 1;
+        const cmp = compareSortValues(columnSortValue(a, active[i].col), columnSortValue(b, active[i].col), dir);
+        if (cmp) return cmp;
+      }
+      return tieBreak ? tieBreak(a, b) : 0;
     });
   }
 
-  function sortRowsByColumn(rows, columns, sortKey, sortDir) {
-    if (!sortKey) return rows;
-    const col = columns.find(item => item.key === sortKey);
-    if (!col) return rows;
-    const dir = sortDir === 'desc' ? -1 : 1;
-    return rows.slice().sort((a, b) => compareSortValues(
-      columnSortValue(a, col),
-      columnSortValue(b, col),
-      dir,
-    ));
+  function toggleStackedSort(sorts, key, { additive = false, preferDesc = false } = {}) {
+    const next = (sorts || []).map(sort => ({
+      key: sort.key,
+      dir: sort.dir === 'desc' ? 'desc' : 'asc',
+    }));
+    const initial = preferDesc ? 'desc' : 'asc';
+    if (additive) {
+      const existing = next.find(sort => sort.key === key);
+      if (existing) existing.dir = existing.dir === 'asc' ? 'desc' : 'asc';
+      else next.push({ key, dir: initial });
+      return next;
+    }
+    if (next.length === 1 && next[0].key === key) {
+      return [{ key, dir: next[0].dir === 'asc' ? 'desc' : 'asc' }];
+    }
+    return [{ key, dir: initial }];
   }
 
   function columnFiltersActive(filters) {
@@ -1831,60 +1925,89 @@
       .map(entry => entry[0]);
   }
 
+  function columnFilterBag(kind) {
+    if (kind === 'qc') return state.qcFilters;
+    if (kind === 'jobs') return state.jobFilters;
+    if (kind === 'subcon') return state.subconFilters;
+    if (kind === 'prpo') return state.prPoFilters;
+    return state.shipFilters;
+  }
+
+  function subconBaseRows() {
+    const q = String(state.search || '').trim().toLowerCase();
+    return collectSubconLeaves().filter(leaf => {
+      const status = normalizeSubconStatus(leaf.pp?.subcon_status);
+      if (state.subconBucket !== 'all' && status !== state.subconBucket) return false;
+      if (q && !subconSearchText(leaf).includes(q)) return false;
+      return true;
+    });
+  }
+
+  function rowsForColumnFilter(kind, skipKey) {
+    if (kind === 'jobs') return applyStackedFilters(collectFilteredLeaves(), JOB_COLUMNS, state.jobFilters, skipKey);
+    if (kind === 'subcon') return applyStackedFilters(subconBaseRows(), SUBCON_COLUMNS, state.subconFilters, skipKey);
+    if (kind === 'prpo') return applyStackedFilters(prPoBaseRows(), PR_PO_COLUMNS, state.prPoFilters, skipKey);
+    if (kind === 'qc') {
+      const q = String(state.search || '').trim().toLowerCase();
+      const rows = q ? state.qcRows.filter(row => qcSearchText(row).includes(q)) : state.qcRows.slice();
+      return applyStackedFilters(rows, QC_COLUMNS, state.qcFilters, skipKey);
+    }
+    const columns = shipColumns();
+    const q = String(state.search || '').trim().toLowerCase();
+    const rows = q ? state.shipRows.filter(row => shipSearchText(row).includes(q)) : state.shipRows.slice();
+    return applyStackedFilters(rows, columns, state.shipFilters, skipKey);
+  }
+
   function activeColumnContext() {
     if (isShipView()) {
-      return {
-        kind: 'ship',
-        columns: shipColumns(),
-        rows: state.shipRows,
-        filters: state.shipFilters,
-        sortKey: state.shipSortKey,
-        sortDir: state.shipSortDir,
-      };
+      return { kind: 'ship', columns: shipColumns(), filters: state.shipFilters, sorts: state.shipSorts };
     }
     if (isQcView()) {
-      return {
-        kind: 'qc',
-        columns: QC_COLUMNS,
-        rows: state.qcRows,
-        filters: state.qcFilters,
-        sortKey: state.qcSortKey,
-        sortDir: state.qcSortDir,
-      };
+      return { kind: 'qc', columns: QC_COLUMNS, filters: state.qcFilters, sorts: state.qcSorts };
+    }
+    if (isPrPoView()) {
+      return { kind: 'prpo', columns: PR_PO_COLUMNS, filters: state.prPoFilters, sorts: state.prPoSorts };
+    }
+    if (isSubconView()) {
+      return { kind: 'subcon', columns: SUBCON_COLUMNS, filters: state.subconFilters, sorts: state.subconSorts };
+    }
+    if (PS_VIEWS.has(state.view)) {
+      return { kind: 'jobs', columns: JOB_COLUMNS, filters: state.jobFilters, sorts: state.jobSorts };
     }
     return null;
   }
 
   function resetShipColumnControls() {
-    state.shipSortKey = '';
-    state.shipSortDir = 'asc';
+    state.shipSorts = [];
     state.shipFilters = {};
   }
 
-  function toggleColumnSort(kind, key) {
-    const columns = kind === 'qc' ? QC_COLUMNS : shipColumns();
-    const col = columns.find(item => item.key === key);
+  function toggleColumnSort(kind, key, additive) {
+    const ctx = activeColumnContext();
+    if (!ctx || ctx.kind !== kind) return;
+    const col = ctx.columns.find(item => item.key === key);
     if (!col) return;
-    const keyName = kind === 'qc' ? 'qcSortKey' : 'shipSortKey';
-    const dirName = kind === 'qc' ? 'qcSortDir' : 'shipSortDir';
-    if (state[keyName] === key) {
-      state[dirName] = state[dirName] === 'asc' ? 'desc' : 'asc';
-    } else {
-      state[keyName] = key;
-      state[dirName] = col.type === 'date' || col.type === 'num' ? 'desc' : 'asc';
-    }
+    const preferDesc = col.type === 'date' || col.type === 'num';
+    const next = toggleStackedSort(ctx.sorts, key, { additive, preferDesc });
+    if (kind === 'qc') state.qcSorts = next;
+    else if (kind === 'jobs') state.jobSorts = next;
+    else if (kind === 'subcon') state.subconSorts = next;
+    else if (kind === 'prpo') state.prPoSorts = next;
+    else state.shipSorts = next;
   }
 
   function setColumnFilter(kind, key, values) {
-    const filters = kind === 'qc' ? state.qcFilters : state.shipFilters;
+    const filters = columnFilterBag(kind);
     if (!values.size) delete filters[key];
     else filters[key] = values;
     render();
   }
 
   function clearActiveColumnFilters() {
-    if (isShipView()) state.shipFilters = {};
-    if (isQcView()) state.qcFilters = {};
+    const ctx = activeColumnContext();
+    if (!ctx) return;
+    const filters = columnFilterBag(ctx.kind);
+    Object.keys(filters).forEach(key => { delete filters[key]; });
     render();
   }
 
@@ -2412,7 +2535,10 @@
     const clearFilters = document.getElementById('sol-clear-col-filters');
     if (clearFilters) {
       const filtering = (ship && columnFiltersActive(state.shipFilters))
-        || (qc && columnFiltersActive(state.qcFilters));
+        || (qc && columnFiltersActive(state.qcFilters))
+        || (prPo && columnFiltersActive(state.prPoFilters))
+        || (isSubconView() && columnFiltersActive(state.subconFilters))
+        || (!ship && !qc && !prPo && !requests && !isSubconView() && columnFiltersActive(state.jobFilters));
       clearFilters.hidden = !filtering;
     }
 
@@ -2443,10 +2569,11 @@
           Sheets appear here when <strong>Subcon</strong> is tagged under Proposed CNC on S/O Management.
           Status is the same field on both pages: <strong>To send</strong>, <strong>Sent</strong>, <strong>At subcon</strong>, <strong>Received</strong>, <strong>Done</strong>.
           Removing the Subcon tag takes the sheet off this list.
+          Click a heading to sort. Shift-click to stack sorts. Filter icons stack.
         `;
       } else if (ship) {
         const inbound = shipDirection() === 'in';
-        const sortHint = ' Click a column heading to sort. Use the filter icon to narrow that column.';
+        const sortHint = ' Click a heading to sort. Shift-click to stack sorts. Filter icons stack.';
         legend.innerHTML = inbound
           ? `Inbound shipments from ERP. <strong>Segment</strong> is PPS, NPS, APS, and the other ERP segments — filter that column to trace one. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Goods received</strong> is when the goods actually came in, and stays empty until then. Outstanding has no GRN yet, so that column is hidden there. <strong>GRN</strong> is still open with a receipt, <strong>History</strong> is posted, <strong>Cancelled</strong> is void.${sortHint}`
           : `Outbound shipments from ERP. <strong>Segment</strong> is PPS, NPS, APS, and the other ERP segments. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Shipped</strong> is the actual ship date. <strong>Outstanding</strong> is still open, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. History shows the latest 500 vouchers.${sortHint}`;
@@ -2455,7 +2582,7 @@
           <span class="sol-legend-item sol-legend-item--qc-ready">Green GRN</span> material ready for QC &middot;
           <span class="sol-legend-item sol-legend-item--qc-awaiting">Amber row</span> received, GRN not generated in ERP &middot;
           Source: outstanding inbound shipments (<code>lg_in_shm_ost</code>) &middot;
-          Click a column heading to sort. Use the filter icon to narrow that column.
+          Click a heading to sort. Shift-click to stack sorts. Filter icons stack.
         `;
       } else if (requests) {
         legend.innerHTML = `
@@ -2474,7 +2601,8 @@
           Click <strong>Flag</strong> for material arrival delay &middot;
           Click <strong>BOM</strong> for materials + inventory enquiry &middot;
           <span class="sol-legend-item sol-legend-item--sr">[SR]</span> special process sheets &middot;
-          Assembly sub-assembly finished goods appear as separate lines
+          Assembly sub-assembly finished goods appear as separate lines &middot;
+          Click a heading to sort. Shift-click to stack sorts. Filter icons stack.
         `;
       }
     }
@@ -2487,9 +2615,13 @@
     return `${col.label}: ${shown}`;
   }
 
-  function columnTableHeadHtml(columns, sortKey, sortDir, filters) {
+  function columnTableHeadHtml(columns, sorts, filters) {
+    const list = Array.isArray(sorts) ? sorts : [];
     return `<tr>${columns.map(col => {
-      const sorted = sortKey === col.key;
+      const index = list.findIndex(sort => sort.key === col.key);
+      const sorted = index >= 0;
+      const sortDir = sorted ? list[index].dir : '';
+      const rank = list.length > 1 && sorted ? String(index + 1) : '';
       const selected = filters[col.key];
       const filtering = Boolean(selected && selected.size);
       const classes = [col.cls, 'is-sortable', sorted ? 'is-sorted' : '', filtering ? 'has-filter' : '']
@@ -2500,23 +2632,13 @@
         ? ` aria-sort="${sortDir === 'desc' ? 'descending' : 'ascending'}"`
         : ' aria-sort="none"';
       const ind = sorted
-        ? `<span class="sol-th-ind" aria-hidden="true">${sortDir === 'desc' ? '▼' : '▲'}</span>`
+        ? `<span class="sol-th-ind" aria-hidden="true">${sortDir === 'desc' ? '▼' : '▲'}${rank}</span>`
         : '';
       const title = columnFilterTitle(col, selected);
       const expanded = state.colFilterKey === col.key ? 'true' : 'false';
-      const sortTitle = col.hint ? `${col.hint} Click to sort.` : `Sort by ${col.label}`;
+      const hint = col.hint || col.title || '';
+      const sortTitle = `${hint ? `${hint}. ` : ''}Click to sort. Shift-click to stack another sort.`;
       return `<th class="${classes}" data-sort="${escapeHtml(col.key)}"${dir}${aria} title="${escapeHtml(sortTitle)}"><span class="sol-th-row"><span class="sol-th-label">${escapeHtml(col.label)}${ind}</span><button type="button" class="sol-th-filter${filtering ? ' is-active' : ''}" data-col-filter="${escapeHtml(col.key)}" aria-label="${escapeHtml(title)}" aria-expanded="${expanded}" title="${escapeHtml(title)}"><svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13l-5 6.1V13.2l-3-1.4V8.6l-5-6.1z"/></svg></button></span></th>`;
-    }).join('')}</tr>`;
-  }
-
-  function prPoTableHeadHtml() {
-    return `<tr>${PR_PO_COLUMNS.map(col => {
-      const sorted = state.sortKey === col.key;
-      const classes = [col.cls, 'is-sortable', sorted ? 'is-sorted' : '']
-        .filter(Boolean)
-        .join(' ');
-      const dir = sorted ? ` data-sort-dir="${escapeHtml(state.sortDir)}"` : '';
-      return `<th class="${classes}" data-sort="${escapeHtml(col.key)}"${dir} title="Sort by ${escapeHtml(col.label)}">${escapeHtml(col.label)}</th>`;
     }).join('')}</tr>`;
   }
 
@@ -2537,16 +2659,16 @@
               : 'ps';
     if (table) table.dataset.mode = mode;
     const html = mode === 'prpo'
-      ? prPoTableHeadHtml()
+      ? columnTableHeadHtml(PR_PO_COLUMNS, state.prPoSorts, state.prPoFilters)
       : mode === 'req'
         ? REQUEST_TABLE_HEAD
         : mode === 'qc'
-          ? columnTableHeadHtml(QC_COLUMNS, state.qcSortKey, state.qcSortDir, state.qcFilters)
+          ? columnTableHeadHtml(QC_COLUMNS, state.qcSorts, state.qcFilters)
           : mode === 'ship-in' || mode === 'ship-out'
-            ? columnTableHeadHtml(shipColumns(), state.shipSortKey, state.shipSortDir, state.shipFilters)
+            ? columnTableHeadHtml(shipColumns(), state.shipSorts, state.shipFilters)
             : mode === 'subcon'
-              ? SUBCON_TABLE_HEAD
-              : PS_TABLE_HEAD;
+              ? columnTableHeadHtml(SUBCON_COLUMNS, state.subconSorts, state.subconFilters)
+              : columnTableHeadHtml(JOB_COLUMNS, state.jobSorts, state.jobFilters);
     if (head.dataset.mode === mode && head.dataset.headHtml === html) return;
     head.dataset.mode = mode;
     head.dataset.headHtml = html;
@@ -2568,11 +2690,6 @@
       seen.add(ppNo);
       rows.push({ ...leaf, proposedMachines: machines });
     });
-    rows.sort((a, b) => {
-      const soCmp = String(a.order.sales_order_no || '').localeCompare(String(b.order.sales_order_no || ''));
-      if (soCmp) return soCmp;
-      return psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
-    });
     return rows;
   }
 
@@ -2593,14 +2710,15 @@
     ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
   }
 
+  function compareSubconLeaves(a, b) {
+    const soCmp = String(a.order.sales_order_no || '').localeCompare(String(b.order.sales_order_no || ''));
+    if (soCmp) return soCmp;
+    return psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
+  }
+
   function visibleSubconRows() {
-    const q = String(state.search || '').trim().toLowerCase();
-    return collectSubconLeaves().filter(leaf => {
-      const status = normalizeSubconStatus(leaf.pp?.subcon_status);
-      if (state.subconBucket !== 'all' && status !== state.subconBucket) return false;
-      if (q && !subconSearchText(leaf).includes(q)) return false;
-      return true;
-    });
+    const rows = applyStackedFilters(subconBaseRows(), SUBCON_COLUMNS, state.subconFilters);
+    return sortRowsBySorts(rows, SUBCON_COLUMNS, state.subconSorts, compareSubconLeaves);
   }
 
   function updateSubconChipCounts() {
@@ -2655,6 +2773,7 @@
         ${renderPartCell(pp, partial, assemblyChild)}
         ${renderQtyCell(pp, partial, assemblyChild)}
         <td class="sol-date sol-col-due">${escapeHtml(formatDate(pp.due_date))}</td>
+        ${renderPostedDateCell(order, pp)}
         ${renderStageCell(pp, partial)}
         ${renderProposedCncCell(leaf.proposedMachines)}
         ${renderSubconStatusCell(pp)}
@@ -3389,7 +3508,7 @@
       return;
     }
     panel.hidden = false;
-    fillColFilterPanel(col, ctx.rows, ctx.filters[col.key]);
+    fillColFilterPanel(col, rowsForColumnFilter(ctx.kind, col.key), ctx.filters[col.key]);
     btn.setAttribute('aria-expanded', 'true');
     positionColFilter(btn);
   }
@@ -3412,7 +3531,7 @@
     if (list) delete list.dataset.signature;
     if (search) search.value = '';
     panel.hidden = false;
-    fillColFilterPanel(col, ctx.rows, ctx.filters[key]);
+    fillColFilterPanel(col, rowsForColumnFilter(ctx.kind, key), ctx.filters[key]);
     document.querySelectorAll('.sol-th-filter[aria-expanded="true"]').forEach(el => {
       if (el !== btn) el.setAttribute('aria-expanded', 'false');
     });
@@ -3498,26 +3617,10 @@
       const th = e.target.closest('th[data-sort]');
       if (!th) return;
       const key = th.getAttribute('data-sort');
-      if (isPrPoView()) {
-        if (state.sortKey === key) {
-          state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
-        } else {
-          state.sortKey = key;
-          const col = PR_PO_COLUMNS.find(c => c.key === key);
-          state.sortDir = col && (col.type === 'date' || col.type === 'num') ? 'desc' : 'asc';
-        }
-        render();
-        return;
-      }
-      if (isShipView()) {
-        toggleColumnSort('ship', key);
-        render();
-        return;
-      }
-      if (isQcView()) {
-        toggleColumnSort('qc', key);
-        render();
-      }
+      const ctx = activeColumnContext();
+      if (!ctx) return;
+      toggleColumnSort(ctx.kind, key, e.shiftKey);
+      render();
     });
   }
 
@@ -4214,18 +4317,26 @@
     return Number.isFinite(t) ? t : 0;
   }
 
+  function notifAbsTime(value) {
+    const text = String(value || '').trim().replace('T', ' ');
+    if (!text) return '';
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+    if (!match) return text;
+    const clock = match[4] ? ` ${match[4]}:${match[5]}` : '';
+    return `${match[3]}/${match[2]}/${match[1]}${clock}`;
+  }
+
   function notifFmtTime(iso) {
     if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return String(iso);
-    const diffMin = Math.round((Date.now() - d.getTime()) / 60000);
+    const ms = notifToMs(iso);
+    if (!ms) return notifAbsTime(iso);
+    const diffMin = Math.round((Date.now() - ms) / 60000);
     let rel;
     if (diffMin < 1) rel = 'just now';
     else if (diffMin < 60) rel = `${diffMin} min ago`;
     else if (diffMin < 1440) rel = `${Math.round(diffMin / 60)} hr ago`;
     else rel = `${Math.round(diffMin / 1440)} d ago`;
-    const abs = d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    return `${rel} · ${abs}`;
+    return `${rel} · ${notifAbsTime(iso)}`;
   }
 
   function psTypeFromId(ps) {
@@ -4364,8 +4475,10 @@
     state.newOrders.forEach(order => {
       const parts = visibleNotifParts(order);
       if (!parts.length) return;
-      const postedAt = order.postedAt || order.latestPostedAt || order.firstPostedAt;
-      const ms = notifToMs(postedAt);
+      const postedAt = order.firstPostedAt || order.postedAt;
+      const updatedAt = order.updatedAt || '';
+      const activityAt = updatedAt || order.postedAt || order.latestPostedAt || postedAt;
+      const ms = notifToMs(activityAt);
       maxSoTime = Math.max(maxSoTime, ms);
       const isUnread = ms > 0 && ms > lastSeen;
       const soKey = String(order.so || '').trim().toUpperCase();
@@ -4404,7 +4517,8 @@
           ${order.customer ? `<p class="sol-notif-customer">from ${escapeHtml(order.customer)}</p>` : ''}
           <ul class="sol-notif-parts">${partsHtml}</ul>
           ${extra > 0 ? `<p class="sol-notif-part-more">+${extra} more process sheets</p>` : ''}
-          <p class="sol-notif-time">${escapeHtml(notifFmtTime(postedAt))}</p>
+          <p class="sol-notif-time">Posted ${escapeHtml(notifAbsTime(postedAt))}</p>
+          ${updatedAt ? `<p class="sol-notif-time">Updated ${escapeHtml(notifAbsTime(updatedAt))}</p>` : `<p class="sol-notif-time">${escapeHtml(notifFmtTime(postedAt))}</p>`}
         </article>`);
     });
 

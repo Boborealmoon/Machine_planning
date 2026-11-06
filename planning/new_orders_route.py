@@ -30,8 +30,8 @@ new_orders_bp = Blueprint("new_orders", __name__)
 _CACHE_TTL_SEC = 300
 _NOTIF_CACHE_TTL_SEC = 60
 _ENRICH_LOOKUP_TTL_SEC = 60
-_ROWS_SCHEMA_VERSION = 3
-_NOTIF_SCHEMA_VERSION = 3
+_ROWS_SCHEMA_VERSION = 4
+_NOTIF_SCHEMA_VERSION = 4
 _cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _notif_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _queued_lookup_cache: tuple[float, set[str], dict[str, list[str]]] | None = None
@@ -523,22 +523,30 @@ def _coerce_datetime(value: Any) -> datetime | None:
     return parsed.replace(microsecond=0)
 
 
+def _later_post(first_posted: Any, latest_posted: Any) -> Any:
+    """Return the latest post only when it is strictly after the first post."""
+    first_dt = _coerce_datetime(first_posted)
+    latest_dt = _coerce_datetime(latest_posted)
+    if first_dt is None or latest_dt is None or latest_dt <= first_dt:
+        return None
+    return latest_posted
+
+
 def _so_event_kind(
     first_posted: Any,
     latest_posted: Any,
     *,
     week_from: date | None = None,
-    created_at: Any = None,
 ) -> str:
-    """'updated' when the SO already existed or was posted again; otherwise 'new'."""
+    """'updated' only when ERP posted the order again after the first post.
+
+    A draft created on an earlier day and posted for the first time this week
+    is still new. created_datetime is not a post.
+    """
     first_dt = _coerce_datetime(first_posted)
     latest_dt = _coerce_datetime(latest_posted)
-    created_dt = _coerce_datetime(created_at)
-    if week_from is not None:
-        if first_dt is not None and first_dt.date() < week_from:
-            return "updated"
-        if created_dt is not None and created_dt.date() < week_from:
-            return "updated"
+    if week_from is not None and first_dt is not None and first_dt.date() < week_from:
+        return "updated"
     if first_dt is None or latest_dt is None:
         return "new"
     return "updated" if latest_dt > first_dt else "new"
@@ -573,14 +581,16 @@ def _build_notif_orders(
             continue
         first_at = _serialize_notif_posted_at(row.get("first_posted_datetime"))
         latest_at = _serialize_notif_posted_at(row.get("latest_posted_datetime")) or first_at
+        updated_at = _serialize_notif_posted_at(
+            _later_post(row.get("first_posted_datetime"), row.get("latest_posted_datetime"))
+        )
         created_at = _serialize_notif_posted_at(row.get("created_datetime"))
         kind = _so_event_kind(
             row.get("first_posted_datetime"),
             row.get("latest_posted_datetime"),
             week_from=week_from,
-            created_at=row.get("created_datetime"),
         )
-        event_at = latest_at if kind == "updated" else first_at
+        event_at = (updated_at or latest_at) if kind == "updated" else first_at
         group = by_so.get(so)
         if group is None:
             group = {
@@ -590,6 +600,7 @@ def _build_notif_orders(
                 "postedAt": event_at,
                 "firstPostedAt": first_at,
                 "latestPostedAt": latest_at,
+                "updatedAt": updated_at,
                 "createdAt": created_at,
                 "parts": [],
             }
@@ -606,8 +617,11 @@ def _build_notif_orders(
                 group["firstPostedAt"] = first_at
             if latest_at and latest_at > str(group.get("latestPostedAt") or ""):
                 group["latestPostedAt"] = latest_at
+                group["updatedAt"] = _serialize_notif_posted_at(
+                    _later_post(group.get("firstPostedAt"), latest_at)
+                )
             group["postedAt"] = (
-                group.get("latestPostedAt")
+                group.get("updatedAt") or group.get("latestPostedAt")
                 if group.get("kind") == "updated"
                 else group.get("firstPostedAt")
             )
@@ -691,7 +705,12 @@ def _resolve_posted_in_range(
         if not so_no:
             continue
         latest_posted = row.get("posted_datetime")
-        first_posted = first_posted_by_so.get(so_no) or latest_posted
+        history_first = first_posted_by_so.get(so_no)
+        first_posted = history_first or latest_posted
+        first_dt = _coerce_datetime(first_posted)
+        latest_dt = _coerce_datetime(latest_posted)
+        if first_dt is not None and latest_dt is not None and latest_dt < first_dt:
+            first_posted = latest_posted
         if not _so_in_posted_window(
             _coerce_date(first_posted),
             _coerce_date(latest_posted),
@@ -703,6 +722,7 @@ def _resolve_posted_in_range(
         posted[so_no] = {
             "first_posted_datetime": first_posted,
             "latest_posted_datetime": latest_posted,
+            "updated_datetime": _later_post(first_posted, latest_posted),
             "created_datetime": row.get("created_datetime"),
             "customer_code": row.get("customer_code"),
             "reference_no": row.get("reference_no"),
@@ -783,7 +803,11 @@ def _attach_posted_headers(
         enriched.append(merged)
     enriched.sort(
         key=lambda row: (
-            compact_text(row.get("first_posted_datetime")),
+            compact_text(
+                row.get("updated_datetime")
+                or row.get("latest_posted_datetime")
+                or row.get("first_posted_datetime")
+            ),
             compact_text(row.get("source_voucher_no")),
             compact_text(row.get("source_voucher_line_item_no")),
         ),
@@ -898,13 +922,13 @@ def api_new_orders():
 
     try:
         rows, queued_ps_bases = _enrich_new_orders_repeat_info(
-            _fetch_new_orders(from_d, to_d, refresh=refresh)
+            _fetch_new_orders(from_d, to_d, refresh=refresh, include_reposts=True)
         )
     except Exception as exc:
         logger.exception("new orders ERP query failed")
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
 
-    cached = _cache.get(_cache_key(from_d, to_d))
+    cached = _cache.get(_cache_key(from_d, to_d, include_reposts=True))
     cached_at = cached[0] if cached else time.time()
 
     if week in {"this_week", "last_week"}:

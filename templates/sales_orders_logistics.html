@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-subcon-20261103">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-col-sort-20261105">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -244,7 +244,8 @@
             <th class="sol-col-qty" title="Partial · SO qty / Partial qty">Qty</th>
             <th class="sol-col-stage">Stage</th>
             <th class="sol-col-part">Part</th>
-            <th class="sol-col-due">Due</th>
+            <th class="sol-col-due" title="PO due date">Due</th>
+            <th class="sol-col-posted" title="S/O posted date">Posted</th>
             <th class="sol-col-need" title="Set on S/O Management — read only here">Need date</th>
             <th class="sol-col-bom">BOM</th>
             <th class="sol-col-material" title="Material in">In</th>
@@ -322,5 +323,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-subcon-20261103"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-col-sort-20261105"></script>
 {% endblock %}

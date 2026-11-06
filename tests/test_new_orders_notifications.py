@@ -6,6 +6,7 @@ from datetime import date, datetime
 
 from planning.new_orders_route import (
     _build_notif_orders,
+    _later_post,
     _so_event_kind,
     _so_in_posted_window,
 )
@@ -46,15 +47,21 @@ class NewOrdersNotificationTests(unittest.TestCase):
             "updated",
         )
 
-    def test_so_event_kind_updated_when_so_was_created_before_this_week(self):
+    def test_so_event_kind_new_when_draft_was_created_before_this_week(self):
         self.assertEqual(
             _so_event_kind(
                 "2026-08-25 09:56:50",
                 "2026-08-25 09:56:50",
                 week_from=WEEK_FROM,
-                created_at="2026-03-06 14:58:31",
             ),
-            "updated",
+            "new",
+        )
+
+    def test_later_post_ignores_same_timestamp(self):
+        self.assertIsNone(_later_post("2026-08-25 09:56:50", "2026-08-25 09:56:50"))
+        self.assertEqual(
+            _later_post("2026-08-10 09:00:00", "2026-08-25 11:00:00"),
+            "2026-08-25 11:00:00",
         )
 
     def test_so_event_kind_new_when_created_and_posted_this_week(self):
@@ -63,7 +70,6 @@ class NewOrdersNotificationTests(unittest.TestCase):
                 "2026-08-25 11:07:44",
                 "2026-08-25 11:07:44",
                 week_from=WEEK_FROM,
-                created_at="2026-08-25 11:04:24",
             ),
             "new",
         )
@@ -146,9 +152,15 @@ class NewOrdersNotificationTests(unittest.TestCase):
         by_so = {row["so"]: row for row in orders}
         self.assertEqual(by_so["SO/2600001"]["kind"], "new")
         self.assertEqual(by_so["SO/2600001"]["postedAt"], "2026-08-25 09:00:00")
+        self.assertEqual(by_so["SO/2600001"]["firstPostedAt"], "2026-08-25 09:00:00")
+        self.assertIsNone(by_so["SO/2600001"]["updatedAt"])
         self.assertEqual(by_so["SO/2600002"]["kind"], "updated")
+        self.assertEqual(by_so["SO/2600002"]["firstPostedAt"], "2026-08-10 09:00:00")
+        self.assertEqual(by_so["SO/2600002"]["updatedAt"], "2026-08-25 11:00:00")
         self.assertEqual(by_so["SO/2600002"]["postedAt"], "2026-08-25 11:00:00")
-        self.assertEqual(by_so["SO/2600737"]["kind"], "updated")
+        self.assertEqual(by_so["SO/2600737"]["kind"], "new")
+        self.assertEqual(by_so["SO/2600737"]["firstPostedAt"], "2026-08-25 09:56:50")
+        self.assertIsNone(by_so["SO/2600737"]["updatedAt"])
         self.assertEqual(orders[0]["so"], "SO/2600002")
 
 

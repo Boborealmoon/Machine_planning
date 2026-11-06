@@ -103,6 +103,7 @@ def _exception_rows(order: dict[str, Any], pp: dict[str, Any]) -> list[dict[str,
                 "posted_date": _as_iso(order.get("first_posted_datetime") or order.get("order_date")),
                 "due_date": _as_iso(pp.get("due_date")),
                 "edd_date": _edd_date(pp, partial),
+                "exception_tags": _exception_tags(pp, partial_no),
                 "exception_label": _exception_label(pp, partial_no),
                 **_remarks(order, pp),
             }
@@ -204,7 +205,7 @@ def _edd_date(pp: dict[str, Any], partial: dict[str, Any] | None) -> str:
     return _as_iso(pp.get("coway_proposed_edd"))
 
 
-def _exception_label(pp: dict[str, Any], partial_no: int) -> str:
+def _exception_tags(pp: dict[str, Any], partial_no: int) -> list[str]:
     issues = pp.get("exception_issues") or {}
     raw = None
     if isinstance(issues, dict):
@@ -217,8 +218,11 @@ def _exception_label(pp: dict[str, Any], partial_no: int) -> str:
         key = compact_text(item).lower().replace("-", "_").replace(" ", "_")
         if key in _ISSUE_LABELS:
             selected.add(key)
-    ordered = [key for key in _ISSUE_ORDER if key in selected] or ["others"]
-    return ", ".join(_ISSUE_LABELS[key] for key in ordered)
+    return [key for key in _ISSUE_ORDER if key in selected] or ["others"]
+
+
+def _exception_label(pp: dict[str, Any], partial_no: int) -> str:
+    return ", ".join(_ISSUE_LABELS[key] for key in _exception_tags(pp, partial_no))
 
 
 def _gap_label(day_gap: int) -> str:

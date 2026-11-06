@@ -2,7 +2,7 @@
   const SUBTITLES = {
     qc: "Time in QC, from the Final Inspection scan to the packing scan. Jobs still at QC stay at the top, and their TAT clock keeps running.",
     material: "Active S/O lines where the material arrived after the need date. Need is the material need date. Arrival is the Material in date. Gap is how many days late. PO due is the customer due date. Proposed EDD is the planner date from S/O management.",
-    exceptions: "Active S/O lines flagged with an exception. Each row is one partial, with the part description, posted date, due date, proposed EDD, and the remarks from S/O management.",
+    exceptions: "Active S/O exceptions, one partial per row. All shows every department. Pick one or more departments to keep those partials and only the remark columns they own. Each column header sorts and filters.",
   };
 
   const state = {
@@ -21,6 +21,9 @@
     psTypes: new Set(),
     colFilters: { qc: {}, material: {}, exceptions: {} },
     filterTimer: 0,
+    openFilter: "",
+    deptMode: "all",
+    deptTags: new Set(),
     tatTicker: 0,
     resolved: { qc: {}, material: {}, exceptions: {} },
     hideResolved: false,
@@ -69,6 +72,21 @@
   };
 
   const PS_ORDER = ["MPS", "APS", "NPS", "PPS", "CPS", "SR", "TEMP", "Other"];
+
+  const DEPTS = [
+    { id: "supply_chain", label: "Supply Chain" },
+    { id: "process_engr", label: "Process / Engr" },
+    { id: "qlty", label: "Qlty" },
+    { id: "sales", label: "Sales" },
+    { id: "others", label: "Others" },
+  ];
+
+  const DEPT_COLUMNS = [
+    { key: "mtl_part_order", dept: "supply_chain", label: "Mtl / Part Order" },
+    { key: "quality_doc", dept: "qlty", label: "Quality Doc" },
+    { key: "ops_notes", dept: "process_engr", label: "Ops" },
+    { key: "sales_notes", dept: "sales", label: "Sales" },
+  ];
 
   const COLUMN_FIELDS = {
     qc: {
@@ -416,26 +434,65 @@
     );
   }
 
-  function renderColFilter() {
-    const select = $("kpi-col-key");
-    const input = $("kpi-col-value");
-    const chips = $("kpi-col-chips");
-    const options = COLUMN_LABELS[state.tab] || [];
+  function columnLabel(view, key) {
+    const found = (COLUMN_LABELS[view] || []).find(([name]) => name === key);
+    return found ? found[1] : key;
+  }
+
+  function paintColumnFilters() {
+    const panel = document.querySelector('[data-kpi-panel="' + state.tab + '"]');
     const filters = state.colFilters[state.tab] || {};
-    if (select && select.dataset.tab !== state.tab) {
-      select.innerHTML = options.map(([key, label]) => '<option value="' + esc(key) + '">' + esc(label) + "</option>").join("");
-      select.dataset.tab = state.tab;
-      const active = options.find(([key]) => filters[key]);
-      select.value = active ? active[0] : (options[0] ? options[0][0] : "");
-      if (input) input.value = filters[select.value] || "";
+    document.querySelectorAll("[data-col-filter]").forEach((btn) => {
+      const inView = !panel || panel.contains(btn);
+      const key = btn.getAttribute("data-col-filter");
+      const on = inView && !!filters[key];
+      btn.classList.toggle("is-on", on);
+      btn.classList.toggle("is-open", inView && state.openFilter === key);
+    });
+  }
+
+  function closeColFilter() {
+    state.openFilter = "";
+    const pop = $("kpi-col-popover");
+    if (pop) pop.hidden = true;
+    paintColumnFilters();
+  }
+
+  function openColFilter(btn) {
+    const key = btn.getAttribute("data-col-filter");
+    const pop = $("kpi-col-popover");
+    if (!key || !pop) return;
+    if (state.openFilter === key && !pop.hidden) {
+      closeColFilter();
+      return;
     }
-    if (!chips) return;
-    const labels = Object.fromEntries(options);
-    const activeKeys = Object.keys(filters).filter((key) => filters[key]);
-    chips.innerHTML = activeKeys.map((key) => (
-      '<button type="button" class="kpi-filter-chip" data-clear-filter="' + esc(key) + '">' +
-        esc(labels[key] || key) + ": " + esc(filters[key]) + " ×</button>"
-    )).join("");
+    state.openFilter = key;
+    const title = $("kpi-col-popover-title");
+    if (title) title.textContent = "Filter " + columnLabel(state.tab, key);
+    const input = $("kpi-col-value");
+    if (input) input.value = (state.colFilters[state.tab] || {})[key] || "";
+    pop.hidden = false;
+    const rect = btn.getBoundingClientRect();
+    const width = 240;
+    let left = Math.min(rect.left, window.innerWidth - width - 8);
+    if (left < 8) left = 8;
+    pop.style.left = left + "px";
+    pop.style.top = Math.min(rect.bottom + 6, window.innerHeight - 120) + "px";
+    paintColumnFilters();
+    if (input) input.focus();
+  }
+
+  function setColumnFilter(key, value) {
+    if (!key) return;
+    if (!state.colFilters[state.tab]) state.colFilters[state.tab] = {};
+    const query = String(value || "").trim().toLowerCase();
+    if (query) state.colFilters[state.tab][key] = query;
+    else delete state.colFilters[state.tab][key];
+    window.clearTimeout(state.filterTimer);
+    state.filterTimer = window.setTimeout(() => {
+      paintColumnFilters();
+      rerenderActive();
+    }, 120);
   }
 
   function toggleType(type) {
@@ -466,12 +523,19 @@
     return typeOn(rowType(row));
   }
 
+  function columnVisible(view, key) {
+    if (view !== "exceptions" || state.deptMode === "all") return true;
+    const spec = DEPT_COLUMNS.find((item) => item.key === key);
+    if (!spec) return true;
+    return state.deptTags.has(spec.dept);
+  }
+
   function matchesColumns(row, view) {
     const filters = state.colFilters[view] || {};
     const fields = COLUMN_FIELDS[view] || {};
     return Object.keys(filters).every((key) => {
       const query = filters[key];
-      if (!query) return true;
+      if (!query || !columnVisible(view, key)) return true;
       const names = fields[key] || [key];
       const hay = names.map((name) => String(row[name] == null ? "" : row[name])).join(" ").toLowerCase();
       return hay.includes(query);
@@ -666,6 +730,7 @@
     }).join("");
     ensureTatTicker();
     tickTatClocks();
+    paintColumnFilters();
   }
 
   function render(payload) {
@@ -729,7 +794,6 @@
     ["ops_notes", "Ops"],
     ["sales_notes", "Sales"],
   ];
-  const REMARK_COLUMNS = [["delivery_date", "Delivered"]].concat(NOTE_COLUMNS);
 
   function withResolved(view, rows) {
     return rows.map((row) => Object.assign({}, row, { resolved: isResolved(view, row) ? "Yes" : "" }));
@@ -774,7 +838,13 @@
           ["due_date", "Due date"],
           ["edd_date", "EDD"],
           ["exception_label", "Exception"],
-        ].concat(REMARK_COLUMNS),
+        ].concat(
+          [["delivery_date", "Delivered"]].concat(
+            DEPT_COLUMNS
+              .filter((col) => state.deptMode !== "custom" || state.deptTags.has(col.dept))
+              .map((col) => [col.key, col.label])
+          )
+        ),
         withResolved("exceptions", exceptionRows())
       );
       return;
@@ -816,9 +886,12 @@
     return rows.slice().sort((a, b) => {
       const av = a[key];
       const bv = b[key];
-      if (key === "day_gap") {
-        const an = Number(av) || 0;
-        const bn = Number(bv) || 0;
+      if (key === "day_gap" || key === "partial_no") {
+        const an = av == null || av === "" ? null : Number(av);
+        const bn = bv == null || bv === "" ? null : Number(bv);
+        if (an == null && bn == null) return 0;
+        if (an == null) return 1;
+        if (bn == null) return -1;
         if (an !== bn) return (an - bn) * dir;
         return 0;
       }
@@ -841,21 +914,113 @@
     return sortSoRows(rows, "material");
   }
 
-  function exceptionRows() {
+  function exceptionPool() {
     const query = soQuery("kpi-exception-search");
     const keys = [
       "process_sheet_no", "sales_order_no", "customer_name", "part_no", "description",
       "exception_label", "delivery_date", "mtl_part_order", "quality_doc", "ops_notes", "sales_notes",
     ];
-    const rows = (state.so?.exception_rows || []).filter((row) => soMatch(row, query, keys) && passesView(row, "exceptions"));
-    return sortSoRows(rows, "exceptions");
+    return (state.so?.exception_rows || []).filter((row) => soMatch(row, query, keys) && passesView(row, "exceptions"));
+  }
+
+  function exceptionRows() {
+    return sortSoRows(exceptionPool().filter(matchesDept), "exceptions");
   }
 
   function remarkCells(row, keys) {
     const cols = keys || ["delivery_date", "mtl_part_order", "quality_doc", "ops_notes", "sales_notes"];
-    return cols
-      .map((key) => `<td class="kpi-wrap">${esc(dash(row[key]))}</td>`)
-      .join("");
+    return cols.map((spec) => {
+      const key = typeof spec === "string" ? spec : spec.key;
+      const dept = typeof spec === "string" ? "" : (spec.dept || "");
+      return `<td class="kpi-wrap"${dept ? ` data-dept="${esc(dept)}"` : ""}>${esc(dash(row[key]))}</td>`;
+    }).join("");
+  }
+
+  function rowDepts(row) {
+    if (Array.isArray(row.exception_tags) && row.exception_tags.length) {
+      return row.exception_tags.filter((id) => DEPTS.some((dept) => dept.id === id));
+    }
+    return String(row.exception_label || "").split(",").map((part) => {
+      const label = part.trim().toLowerCase();
+      const found = DEPTS.find((dept) => dept.label.toLowerCase() === label);
+      return found ? found.id : "";
+    }).filter(Boolean);
+  }
+
+  function matchesDept(row) {
+    if (state.deptMode !== "custom" || !state.deptTags.size) return true;
+    return rowDepts(row).some((id) => state.deptTags.has(id));
+  }
+
+  function deptColumnNote() {
+    if (state.deptMode !== "custom" || !state.deptTags.size) return "All departments";
+    const names = DEPTS.filter((dept) => state.deptTags.has(dept.id)).map((dept) => dept.label);
+    const cols = DEPT_COLUMNS.filter((col) => state.deptTags.has(col.dept)).map((col) => col.label);
+    return names.join(" + ") + (cols.length ? " · " + cols.join(", ") : "");
+  }
+
+  function syncDeptColumns() {
+    const panel = $("kpi-panel-exceptions");
+    if (!panel) return;
+    panel.querySelectorAll("[data-dept]").forEach((el) => {
+      const dept = el.getAttribute("data-dept");
+      const show = state.deptMode !== "custom" || state.deptTags.has(dept);
+      el.hidden = !show;
+    });
+  }
+
+  function loadDepts() {
+    try {
+      const raw = localStorage.getItem("kpi-exception-depts-v1") || "all";
+      if (!raw || raw === "all") {
+        state.deptMode = "all";
+        state.deptTags = new Set();
+        return;
+      }
+      const tags = raw.split(",").map((part) => part.trim()).filter((id) => DEPTS.some((dept) => dept.id === id));
+      state.deptTags = new Set(tags);
+      state.deptMode = state.deptTags.size ? "custom" : "all";
+    } catch (err) {
+      state.deptMode = "all";
+      state.deptTags = new Set();
+    }
+  }
+
+  function saveDepts() {
+    try {
+      const value = state.deptMode === "custom" && state.deptTags.size
+        ? [...state.deptTags].join(",")
+        : "all";
+      localStorage.setItem("kpi-exception-depts-v1", value);
+    } catch (err) {
+      /* ignore private-mode storage failures */
+    }
+  }
+
+  function toggleDept(id) {
+    if (id === "__all") {
+      state.deptMode = "all";
+      state.deptTags = new Set();
+    } else if (state.deptMode !== "custom") {
+      state.deptMode = "custom";
+      state.deptTags = new Set([id]);
+    } else if (state.deptTags.has(id)) {
+      state.deptTags.delete(id);
+      if (!state.deptTags.size) state.deptMode = "all";
+    } else {
+      state.deptTags.add(id);
+    }
+    saveDepts();
+    renderExceptions();
+  }
+
+  function exceptionChips(row) {
+    const tags = rowDepts(row);
+    if (!tags.length) return esc(dash(row.exception_label));
+    return '<span class="kpi-dept-chips">' + tags.map((id) => {
+      const dept = DEPTS.find((item) => item.id === id);
+      return '<span class="kpi-dept-chip kpi-dept-chip--' + esc(id) + '">' + esc(dept ? dept.label : id) + "</span>";
+    }).join("") + "</span>";
   }
 
   function dateCell(kind, value) {
@@ -905,6 +1070,35 @@
     }
     if (card) card.hidden = false;
     if (empty) empty.hidden = rows.length > 0;
+    paintColumnFilters();
+  }
+
+  function renderDeptbar() {
+    const host = $("kpi-deptbar");
+    if (!host) return;
+    if (state.tab !== "exceptions") {
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    const counts = {};
+    DEPTS.forEach((dept) => { counts[dept.id] = 0; });
+    exceptionPool().forEach((row) => {
+      rowDepts(row).forEach((id) => {
+        if (counts[id] != null) counts[id] += 1;
+      });
+    });
+    const allOn = state.deptMode !== "custom";
+    host.innerHTML =
+      '<span class="kpi-typebar-label">Department</span>' +
+      '<button type="button" class="kpi-dept kpi-dept--all' + (allOn ? " is-on" : "") + '" data-dept-tag="__all" aria-pressed="' + allOn + '">All</button>' +
+      DEPTS.map((dept) => {
+        const on = !allOn && state.deptTags.has(dept.id);
+        return (
+          '<button type="button" class="kpi-dept kpi-dept--' + dept.id + (on ? " is-on" : "") + '" data-dept-tag="' + esc(dept.id) + '" aria-pressed="' + on + '">' +
+            esc(dept.label) + '<span class="kpi-type-count">' + counts[dept.id] + "</span></button>"
+        );
+      }).join("");
   }
 
   function renderExceptions() {
@@ -914,13 +1108,17 @@
     const empty = $("kpi-exception-empty");
     const rows = exceptionRows();
     const jobs = new Set(rows.map((row) => row.process_sheet_no)).size;
+    renderDeptbar();
     paintSort($("kpi-panel-exceptions"), state.soSort.exceptions.key, state.soSort.exceptions.dir);
     if (summaryNode) {
       summaryNode.hidden = false;
-      summaryNode.innerHTML = [
-        ["Flagged partials", rows.length],
-        ["Process sheets", jobs],
-      ].map(([label, value]) => (
+      const cards = [["Flagged partials", rows.length], ["Process sheets", jobs]];
+      if (state.deptMode === "custom") {
+        DEPTS.filter((dept) => state.deptTags.has(dept.id)).forEach((dept) => {
+          cards.push([dept.label, rows.filter((row) => rowDepts(row).includes(dept.id)).length]);
+        });
+      }
+      summaryNode.innerHTML = cards.map(([label, value]) => (
         '<article class="kpi-stat">' +
           '<div class="kpi-stat-value">' + esc(value) + '</div>' +
           '<div class="kpi-stat-label">' + esc(label) + '</div>' +
@@ -928,7 +1126,8 @@
       )).join("");
     }
     if ($("kpi-exception-meta")) {
-      $("kpi-exception-meta").textContent = rows.length + " partial" + (rows.length === 1 ? "" : "s");
+      const noun = rows.length === 1 ? "partial" : "partials";
+      $("kpi-exception-meta").textContent = rows.length + " " + noun + " · " + deptColumnNote();
     }
     if (body) {
       body.innerHTML = rows.map((row) => `<tr class="${isResolved("exceptions", row) ? "kpi-row--resolved" : ""}">
@@ -939,12 +1138,20 @@
         <td>${esc(dash(row.posted_date))}</td>
         <td>${esc(dash(row.due_date))}</td>
         <td>${esc(dash(row.edd_date))}</td>
-        <td><span class="kpi-pill kpi-pill--exception">${esc(row.exception_label)}</span></td>
-        ${remarkCells(row)}
+        <td class="kpi-exception-cell">${exceptionChips(row)}</td>
+        ${remarkCells(row, [{ key: "delivery_date" }].concat(DEPT_COLUMNS))}
       </tr>`).join("");
     }
+    syncDeptColumns();
+    paintColumnFilters();
     if (card) card.hidden = false;
-    if (empty) empty.hidden = rows.length > 0;
+    if (empty) {
+      const total = (state.so?.exception_rows || []).length;
+      empty.textContent = total && !rows.length
+        ? "Nothing matches these filters."
+        : "No active S/O lines are flagged with an exception.";
+      empty.hidden = rows.length > 0;
+    }
   }
 
   async function loadSo(force) {
@@ -989,7 +1196,8 @@
     document.querySelector(".kpi-page")?.setAttribute("data-screen", tab);
     setSubtitle();
     renderTypebar();
-    renderColFilter();
+    closeColFilter();
+    renderDeptbar();
     showAlert("");
     if (tab === "qc") {
       $("kpi-export").disabled = !state.rows.length && !state.summary;
@@ -1035,32 +1243,37 @@
       if (!btn) return;
       toggleType(btn.getAttribute("data-ps-type"));
     });
-    $("kpi-col-key")?.addEventListener("change", () => {
-      const key = $("kpi-col-key").value;
-      const input = $("kpi-col-value");
-      if (input) input.value = (state.colFilters[state.tab] || {})[key] || "";
+    $("kpi-deptbar")?.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-dept-tag]");
+      if (!btn) return;
+      toggleDept(btn.getAttribute("data-dept-tag"));
+    });
+    document.addEventListener("click", (event) => {
+      const filterBtn = event.target.closest("[data-col-filter]");
+      if (filterBtn) {
+        event.preventDefault();
+        openColFilter(filterBtn);
+        return;
+      }
+      if (event.target.closest("#kpi-col-popover")) return;
+      if (state.openFilter) closeColFilter();
     });
     $("kpi-col-value")?.addEventListener("input", () => {
-      const key = $("kpi-col-key")?.value;
-      if (!key) return;
-      if (!state.colFilters[state.tab]) state.colFilters[state.tab] = {};
-      const value = ($("kpi-col-value").value || "").trim().toLowerCase();
-      if (value) state.colFilters[state.tab][key] = value;
-      else delete state.colFilters[state.tab][key];
-      window.clearTimeout(state.filterTimer);
-      state.filterTimer = window.setTimeout(() => {
-        renderColFilter();
-        rerenderActive();
-      }, 120);
+      if (!state.openFilter) return;
+      setColumnFilter(state.openFilter, $("kpi-col-value").value);
     });
-    $("kpi-col-chips")?.addEventListener("click", (event) => {
-      const btn = event.target.closest("[data-clear-filter]");
-      if (!btn) return;
-      const key = btn.getAttribute("data-clear-filter");
-      if (state.colFilters[state.tab]) delete state.colFilters[state.tab][key];
-      if ($("kpi-col-key")?.value === key && $("kpi-col-value")) $("kpi-col-value").value = "";
-      renderColFilter();
-      rerenderActive();
+    $("kpi-col-clear")?.addEventListener("click", () => {
+      if (!state.openFilter) return;
+      if ($("kpi-col-value")) $("kpi-col-value").value = "";
+      setColumnFilter(state.openFilter, "");
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && state.openFilter) closeColFilter();
+    });
+    document.querySelectorAll(".kpi-table-wrap").forEach((wrap) => {
+      wrap.addEventListener("scroll", () => {
+        if (state.openFilter) closeColFilter();
+      });
     });
     $("kpi-hide-resolved")?.addEventListener("change", () => {
       state.hideResolved = !!$("kpi-hide-resolved").checked;
@@ -1093,11 +1306,12 @@
   }
 
   loadPsTypes();
+  loadDepts();
   loadResolved();
   setDefaults();
   setSubtitle();
   bind();
   renderTypebar();
-  renderColFilter();
+  paintColumnFilters();
   load();
 })();
