@@ -54,6 +54,7 @@ from planning.kobelco_mps_archive_route import kobelco_mps_archive_bp
 from planning.machine_lane_calc_route import machine_lane_calc_bp
 from planning.pr_status_enquiry_route import pr_status_enquiry_bp
 from planning.material_tracking_pr_po_route import material_tracking_pr_po_bp
+from planning.material_tracking_overview_route import material_tracking_overview_bp
 from planning.material_tracking_inspection_route import material_tracking_inspection_bp
 from planning.logistics_shipment_route import logistics_shipment_bp
 from planning.material_tracking_requests_route import material_tracking_requests_bp
@@ -138,6 +139,7 @@ app.register_blueprint(kobelco_mps_archive_bp)
 app.register_blueprint(machine_lane_calc_bp)
 app.register_blueprint(pr_status_enquiry_bp)
 app.register_blueprint(material_tracking_pr_po_bp)
+app.register_blueprint(material_tracking_overview_bp)
 app.register_blueprint(material_tracking_inspection_bp)
 app.register_blueprint(logistics_shipment_bp)
 app.register_blueprint(material_tracking_requests_bp)

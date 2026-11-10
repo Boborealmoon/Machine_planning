@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-col-sort-20261105">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-overview-20261108b">
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -56,6 +56,10 @@
       <button type="button" class="sol-section" data-sol-section="subcon" role="tab" aria-selected="false"
               title="Process sheets tagged Subcon under Proposed CNC">
         Subcon <span class="sol-chip-count" id="sol-subcon-count" hidden>0</span>
+      </button>
+      <button type="button" class="sol-section" data-sol-section="overview" role="tab" aria-selected="false"
+              title="Each PR line, with its PO, GRN, and QI once they exist">
+        Overview
       </button>
       <button type="button" class="sol-section" data-sol-section="purchasing" role="tab" aria-selected="false">Purchasing</button>
       <button type="button" class="sol-section" data-sol-section="logistics-in" role="tab" aria-selected="false">Logistics In</button>
@@ -323,5 +327,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-col-sort-20261105"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-overview-20261108b"></script>
 {% endblock %}

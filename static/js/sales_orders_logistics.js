@@ -8,6 +8,7 @@
   const EM_DASH = '-';
   const PS_VIEWS = new Set(['active', 'no-wo', 'sr']);
   const SUBCON_VIEW = 'subcon';
+  const OVERVIEW_VIEW = 'overview';
   const SUBCON_STATUSES = [
     { id: 'to_send', label: 'To send' },
     { id: 'sent', label: 'Sent' },
@@ -32,6 +33,7 @@
   const SECTION_DEFAULTS = {
     jobs: 'active',
     subcon: SUBCON_VIEW,
+    overview: OVERVIEW_VIEW,
     purchasing: 'pr-enquiry',
     'logistics-in': SHIP_IN_VIEW,
     'logistics-out': SHIP_OUT_VIEW,
@@ -60,6 +62,41 @@
     { key: 'created_by', label: 'Created by' },
     { key: 'grn_no', label: 'GRN' },
     { key: 'actual_arrival_date', label: 'Actual arrival', type: 'date' },
+  ];
+  const OVERVIEW_COLUMNS = [
+    { key: 'status', label: 'Status' },
+    { key: 'purchase_requisition_no', label: 'PR No', mono: true },
+    { key: 'line_item_no', label: 'Line', mono: true },
+    { key: 'pr_date', label: 'PR date', type: 'date' },
+    { key: 'item_code', label: 'Item', cls: 'sol-col-item', mono: true },
+    {
+      key: 'description',
+      label: 'Description',
+      cls: 'sol-desc',
+      value: row => String(row.description || row.line_item_description || row.item_description || '').trim(),
+    },
+    { key: 'qty', label: 'Qty', type: 'num', cls: 'sol-col-qty' },
+    { key: 'supplier', label: 'Supplier', value: row => String(row.supplier_name || row.supplier_code || '').trim() },
+    { key: 'sbu_code', label: 'SBU' },
+    { key: 'project_no', label: 'Project', mono: true },
+    { key: 'purchase_order_no', label: 'PO No', mono: true },
+    { key: 'po_date', label: 'PO date', type: 'date' },
+    { key: 'po_qty', label: 'PO qty', type: 'num', cls: 'sol-col-qty' },
+    { key: 'shipment_voucher_no', label: 'Shipment', mono: true },
+    { key: 'supplier_do_no', label: 'Supplier DO', mono: true },
+    { key: 'grn_no', label: 'GRN', mono: true },
+    { key: 'goods_receipt_date', label: 'GRN date', type: 'date' },
+    { key: 'qty_received', label: 'Qty received', type: 'num', cls: 'sol-col-qty' },
+    {
+      key: 'qi',
+      label: 'QI',
+      mono: true,
+      value: row => {
+        const qi = String(row.qi_voucher_no || '').trim();
+        const qiStatus = String(row.qi_status || '').trim().toUpperCase();
+        return qi ? `${qi}${qiStatus ? ` · ${qiStatus}` : ''}` : '';
+      },
+    },
   ];
   const REQUEST_TABLE_HEAD = `
     <tr>
@@ -153,7 +190,14 @@
     prPoSource: '',
     prPoKey: '',
     pendingLoad: '',
-    loadControllers: { sales: null, prpo: null, qc: null, ship: null },
+    loadControllers: { sales: null, prpo: null, overview: null, qc: null, ship: null },
+    overviewRows: [],
+    overviewSbus: [],
+    overviewCounts: { PR: 0, PO: 0, GRN: 0, QI: 0 },
+    overviewSource: '',
+    overviewKey: '',
+    overviewSorts: [{ key: 'pr_date', dir: 'desc' }],
+    overviewFilters: {},
     view: 'active',
     subconBucket: 'all',
     prPoBucket: 'ost',
@@ -228,9 +272,14 @@
     return (view || state.view) === SHIP_OUT_VIEW ? 'out' : 'in';
   }
 
+  function isOverviewView(view) {
+    return (view || state.view) === OVERVIEW_VIEW;
+  }
+
   function sectionForView(view) {
     const current = view || state.view;
     if (current === SUBCON_VIEW) return 'subcon';
+    if (isOverviewView(current)) return 'overview';
     if (isPrPoView(current) || isRequestView(current)) return 'purchasing';
     if (isQcView(current) || current === SHIP_IN_VIEW) return 'logistics-in';
     if (current === SHIP_OUT_VIEW) return 'logistics-out';
@@ -861,6 +910,12 @@
     return `<span class="${cls}" title="${escapeHtml(executionLabel(c))}">${escapeHtml(c)}</span>`;
   }
 
+  function overviewStatusPill(status) {
+    const text = String(status || 'PR').trim().toUpperCase();
+    const known = text === 'PO' || text === 'GRN' || text === 'QI' ? text : 'PR';
+    return `<span class="sol-status-pill sol-status-pill--${known.toLowerCase()}">${known}</span>`;
+  }
+
   function prPoStatusPill(status) {
     const text = String(status || '').trim();
     if (!text) return `<span class="sol-dash">${EM_DASH}</span>`;
@@ -1098,6 +1153,42 @@
   function visiblePrPoRows() {
     const rows = applyStackedFilters(prPoBaseRows(), PR_PO_COLUMNS, state.prPoFilters);
     return sortRowsBySorts(rows, PR_PO_COLUMNS, state.prPoSorts);
+  }
+
+  function overviewSearchText(row) {
+    return [
+      row.status,
+      row.purchase_requisition_no,
+      row.line_item_no,
+      row.item_code,
+      row.description,
+      row.line_item_description,
+      row.supplier_code,
+      row.supplier_name,
+      row.sbu_code,
+      row.project_no,
+      row.purchase_order_no,
+      row.shipment_voucher_no,
+      row.supplier_do_no,
+      row.grn_no,
+      row.qi_voucher_no,
+      row.qi_status,
+    ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
+  }
+
+  function overviewBaseRows() {
+    const q = String(state.search || '').trim().toLowerCase();
+    return state.overviewRows.filter(row => {
+      if (!passesSbuFilter(row)) return false;
+      if (!passesSupplierFilter(row)) return false;
+      if (q && !overviewSearchText(row).includes(q)) return false;
+      return true;
+    });
+  }
+
+  function visibleOverviewRows() {
+    const rows = applyStackedFilters(overviewBaseRows(), OVERVIEW_COLUMNS, state.overviewFilters);
+    return sortRowsBySorts(rows, OVERVIEW_COLUMNS, state.overviewSorts);
   }
 
   function qcSearchText(row) {
@@ -1694,6 +1785,34 @@
     `;
   }
 
+  function overviewCellHtml(row, col) {
+    if (col.key === 'status') {
+      return `<td class="sol-col-status">${overviewStatusPill(row.status)}</td>`;
+    }
+    if (col.key === 'grn_no') {
+      const grn = String(row.grn_no || '').trim();
+      return `<td class="sol-mono">${grn ? `<span class="sol-qc-grn">${escapeHtml(grn)}</span>` : EM_DASH}</td>`;
+    }
+    const raw = columnRaw(row, col);
+    if (col.type === 'date') return `<td class="sol-date">${escapeHtml(formatDate(raw))}</td>`;
+    if (col.type === 'num') {
+      if (raw == null || raw === '') return `<td class="sol-col-qty">${EM_DASH}</td>`;
+      return `<td class="sol-col-qty">${escapeHtml(formatQty(raw))}</td>`;
+    }
+    if (col.key === 'description') return renderDescCell(raw);
+    if (col.key === 'supplier') {
+      const text = String(raw || '').trim();
+      return `<td class="sol-col-supplier" title="${escapeHtml(text)}">${escapeHtml(text || EM_DASH)}</td>`;
+    }
+    const classes = [col.mono ? 'sol-mono' : '', col.cls || ''].filter(Boolean).join(' ');
+    const cls = classes ? ` class="${classes}"` : '';
+    return `<td${cls}>${escapeHtml(cellText(raw))}</td>`;
+  }
+
+  function renderOverviewRow(row) {
+    return `<tr>${OVERVIEW_COLUMNS.map(col => overviewCellHtml(row, col)).join('')}</tr>`;
+  }
+
   function renderPrPoRow(row) {
     const desc = String(row.line_item_description || row.item_description || '').trim();
     const remarks = String(row.remarks || row.internal_remarks || '').trim();
@@ -1930,6 +2049,7 @@
     if (kind === 'jobs') return state.jobFilters;
     if (kind === 'subcon') return state.subconFilters;
     if (kind === 'prpo') return state.prPoFilters;
+    if (kind === 'overview') return state.overviewFilters;
     return state.shipFilters;
   }
 
@@ -1947,6 +2067,7 @@
     if (kind === 'jobs') return applyStackedFilters(collectFilteredLeaves(), JOB_COLUMNS, state.jobFilters, skipKey);
     if (kind === 'subcon') return applyStackedFilters(subconBaseRows(), SUBCON_COLUMNS, state.subconFilters, skipKey);
     if (kind === 'prpo') return applyStackedFilters(prPoBaseRows(), PR_PO_COLUMNS, state.prPoFilters, skipKey);
+    if (kind === 'overview') return applyStackedFilters(overviewBaseRows(), OVERVIEW_COLUMNS, state.overviewFilters, skipKey);
     if (kind === 'qc') {
       const q = String(state.search || '').trim().toLowerCase();
       const rows = q ? state.qcRows.filter(row => qcSearchText(row).includes(q)) : state.qcRows.slice();
@@ -1967,6 +2088,9 @@
     }
     if (isPrPoView()) {
       return { kind: 'prpo', columns: PR_PO_COLUMNS, filters: state.prPoFilters, sorts: state.prPoSorts };
+    }
+    if (isOverviewView()) {
+      return { kind: 'overview', columns: OVERVIEW_COLUMNS, filters: state.overviewFilters, sorts: state.overviewSorts };
     }
     if (isSubconView()) {
       return { kind: 'subcon', columns: SUBCON_COLUMNS, filters: state.subconFilters, sorts: state.subconSorts };
@@ -1993,6 +2117,7 @@
     else if (kind === 'jobs') state.jobSorts = next;
     else if (kind === 'subcon') state.subconSorts = next;
     else if (kind === 'prpo') state.prPoSorts = next;
+    else if (kind === 'overview') state.overviewSorts = next;
     else state.shipSorts = next;
   }
 
@@ -2471,17 +2596,19 @@
 
   function syncNavUi() {
     const prPo = isPrPoView();
+    const overview = isOverviewView();
     const requests = isRequestView();
     const qc = isQcView();
     const ship = isShipView();
     const section = sectionForView();
     const prpoToolbar = document.getElementById('sol-prpo-toolbar');
+    const bucketGroup = document.getElementById('sol-bucket-group');
     const newBucketBtn = document.querySelector('[data-sol-bucket="new"]');
     const search = document.getElementById('sol-search');
     const legend = document.getElementById('sol-legend');
     const page = document.querySelector('.sol-page');
     if (page) {
-      page.classList.toggle('sol-page--wide', prPo || qc || ship);
+      page.classList.toggle('sol-page--wide', prPo || overview || qc || ship);
       page.classList.toggle('sol-page--prpo', prPo);
     }
 
@@ -2503,10 +2630,14 @@
       el.hidden = !requests;
     });
     document.querySelectorAll('.sol-edd-filter').forEach(el => {
-      el.hidden = prPo || qc || ship || isSubconView();
+      el.hidden = prPo || overview || qc || ship || isSubconView();
     });
 
-    if (prpoToolbar) prpoToolbar.hidden = !prPo;
+    if (prpoToolbar) prpoToolbar.hidden = !(prPo || overview);
+    if (bucketGroup) {
+      bucketGroup.hidden = !prPo;
+      bucketGroup.classList.toggle('sol-is-hidden', !prPo);
+    }
     if (newBucketBtn) newBucketBtn.hidden = state.view !== 'purchase-order';
 
     document.querySelectorAll('[data-sol-view]').forEach(btn => {
@@ -2537,8 +2668,9 @@
       const filtering = (ship && columnFiltersActive(state.shipFilters))
         || (qc && columnFiltersActive(state.qcFilters))
         || (prPo && columnFiltersActive(state.prPoFilters))
+        || (overview && columnFiltersActive(state.overviewFilters))
         || (isSubconView() && columnFiltersActive(state.subconFilters))
-        || (!ship && !qc && !prPo && !requests && !isSubconView() && columnFiltersActive(state.jobFilters));
+        || (isPsView() && columnFiltersActive(state.jobFilters));
       clearFilters.hidden = !filtering;
     }
 
@@ -2548,7 +2680,9 @@
         : state.shipBucket === 'outstanding'
           ? 'segment, supplier DO, supplier'
           : 'segment, GRN, supplier DO, supplier';
-      search.placeholder = prPo
+      search.placeholder = overview
+        ? 'Search PR, PO, GRN, shipment, item, supplier, QI...'
+        : prPo
         ? 'Search item, PR, PO, supplier, remarks...'
         : requests
           ? 'Search part no, inventory code, remarks...'
@@ -2564,7 +2698,14 @@
     }
     if (legend) {
       legend.hidden = prPo;
-      if (isSubconView()) {
+      if (overview) {
+        legend.innerHTML = `
+          One row is one PR line. <strong>PO</strong>, <strong>Shipment</strong>, <strong>GRN</strong>, and <strong>QI</strong> fill in on that same line once ERP generates them.
+          A blank PO or GRN means that document is not generated yet. Several receipts repeat the PR and PO so each GRN can be filtered.
+          Status is <strong>PR</strong>, <strong>PO</strong>, <strong>GRN</strong>, or <strong>QI</strong>.
+          Click a heading to sort. Shift-click to stack sorts. Filter icons stack.
+        `;
+      } else if (isSubconView()) {
         legend.innerHTML = `
           Sheets appear here when <strong>Subcon</strong> is tagged under Proposed CNC on S/O Management.
           Status is the same field on both pages: <strong>To send</strong>, <strong>Sent</strong>, <strong>At subcon</strong>, <strong>Received</strong>, <strong>Done</strong>.
@@ -2648,7 +2789,9 @@
     if (!head) return;
     const mode = isPrPoView()
       ? 'prpo'
-      : isRequestView()
+      : isOverviewView()
+        ? 'overview'
+        : isRequestView()
         ? 'req'
         : isQcView()
           ? 'qc'
@@ -2660,7 +2803,9 @@
     if (table) table.dataset.mode = mode;
     const html = mode === 'prpo'
       ? columnTableHeadHtml(PR_PO_COLUMNS, state.prPoSorts, state.prPoFilters)
-      : mode === 'req'
+      : mode === 'overview'
+        ? columnTableHeadHtml(OVERVIEW_COLUMNS, state.overviewSorts, state.overviewFilters)
+        : mode === 'req'
         ? REQUEST_TABLE_HEAD
         : mode === 'qc'
           ? columnTableHeadHtml(QC_COLUMNS, state.qcSorts, state.qcFilters)
@@ -2966,6 +3111,68 @@
     }
   }
 
+  function updateOverviewStats(rows) {
+    const subtitle = document.getElementById('sol-subtitle');
+    const extra = prPoFilterSummary();
+    const note = 'blank PO or GRN means that document is not generated yet';
+    const counts = { PR: 0, PO: 0, GRN: 0, QI: 0 };
+    rows.forEach(row => {
+      const key = String(row.status || 'PR').toUpperCase();
+      if (Object.prototype.hasOwnProperty.call(counts, key)) counts[key] += 1;
+    });
+    if (subtitle) {
+      subtitle.textContent = extra.length
+        ? `${rows.length} overview rows shown · ${note} · ${extra.join(' · ')}`
+        : `${rows.length} overview rows shown · ${note}`;
+    }
+    setStatPills([
+      { label: 'Shown', value: rows.length },
+      { label: 'PR', value: counts.PR },
+      { label: 'PO', value: counts.PO },
+      { label: 'GRN', value: counts.GRN },
+      { label: 'QI', value: counts.QI },
+    ]);
+  }
+
+  function renderOverview() {
+    const rows = visibleOverviewRows();
+    const body = document.getElementById('sol-table-body');
+    const host = document.getElementById('sol-table-host');
+    const empty = document.getElementById('sol-empty');
+    const loading = document.getElementById('sol-loading');
+    const meta = document.getElementById('sol-meta');
+
+    if (loading) loading.hidden = true;
+    fillPrPoFilterPanels();
+    ensureTableHead();
+    updateOverviewStats(rows);
+
+    if (!rows.length) {
+      const msg = state.overviewRows.length
+        ? 'No rows match your filters. Try another SBU, supplier, or column filter.'
+        : 'No purchase lines in ERP for this SBU.';
+      if (body) body.innerHTML = '';
+      if (host) host.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        empty.textContent = msg;
+      }
+    } else {
+      if (host) host.hidden = false;
+      if (empty) empty.hidden = true;
+      if (body) {
+        body.innerHTML = rows.map(renderOverviewRow).join('');
+        bindInputs();
+      }
+    }
+
+    if (meta) {
+      meta.hidden = !state.overviewRows.length && !state.overviewSource;
+      meta.textContent = `${state.overviewSource || 'Overview'} | ${state.overviewRows.length} rows | cached ${state.cachedAt || EM_DASH}`;
+    }
+    rememberColFilter();
+  }
+
   function updateRequestStats(rows) {
     const subtitle = document.getElementById('sol-subtitle');
     setChipCount('sol-req-count', state.requests.length);
@@ -3142,12 +3349,14 @@
       (state.pendingLoad === 'prpo' && isPrPoView())
       || (state.pendingLoad === 'ps' && usesSalesOrders())
       || (state.pendingLoad === 'req' && isRequestView())
+      || (state.pendingLoad === 'overview' && isOverviewView())
       || (state.pendingLoad === 'qc' && isQcView())
       || (state.pendingLoad === 'ship' && isShipView())
     )) {
       return;
     }
     if (isPrPoView()) renderPrPo();
+    else if (isOverviewView()) renderOverview();
     else if (isRequestView()) renderRequests();
     else if (isQcView()) renderQc();
     else if (isShipView()) renderShip();
@@ -3163,6 +3372,7 @@
   }
 
   function viewFamily(view) {
+    if (isOverviewView(view)) return 'overview';
     if (isPrPoView(view)) return 'prpo';
     if (isRequestView(view)) return 'req';
     if (isQcView(view)) return 'qc';
@@ -3185,10 +3395,11 @@
   }
 
   function setView(view) {
-    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === SUBCON_VIEW || view === REQUEST_VIEW || view === QC_VIEW || SHIP_VIEWS.has(view)
+    const next = PR_PO_VIEWS.has(view) || PS_VIEWS.has(view) || view === SUBCON_VIEW || view === OVERVIEW_VIEW || view === REQUEST_VIEW || view === QC_VIEW || SHIP_VIEWS.has(view)
       ? view
       : 'active';
     const nextIsPrPo = isPrPoView(next);
+    const nextIsOverview = isOverviewView(next);
     const nextIsRequest = isRequestView(next);
     const nextIsQc = isQcView(next);
     const nextIsShip = isShipView(next);
@@ -3211,6 +3422,11 @@
     if (nextIsPrPo) {
       abortLoad('sales');
       loadPrPo({ refresh: false });
+      return;
+    }
+    if (nextIsOverview) {
+      abortLoad('sales');
+      loadOverview({ refresh: false });
       return;
     }
     if (nextIsRequest) {
@@ -3309,7 +3525,13 @@
   }
 
   function currentSbuOptions() {
-    const codes = uniqueTrimmed(state.prPoRows.map(row => row.sbu_code));
+    const rows = isOverviewView() ? state.overviewRows : state.prPoRows;
+    const codes = uniqueTrimmed(rows.map(row => row.sbu_code));
+    if (isOverviewView()) {
+      state.overviewSbus.forEach(code => {
+        if (code && !codes.includes(code)) codes.push(code);
+      });
+    }
     state.selectedSbu.forEach(code => {
       if (code && !codes.includes(code)) codes.push(code);
     });
@@ -3324,7 +3546,8 @@
   }
 
   function currentSupplierOptions() {
-    const names = uniqueTrimmed(state.prPoRows.filter(passesSbuFilter).map(supplierKey));
+    const rows = isOverviewView() ? state.overviewRows : state.prPoRows;
+    const names = uniqueTrimmed(rows.filter(passesSbuFilter).map(supplierKey));
     state.selectedSuppliers.forEach(name => {
       if (name && !names.includes(name)) names.push(name);
     });
@@ -3421,6 +3644,10 @@
       const supplierPanel = document.getElementById('sol-supplier-panel');
       if (supplierPanel) delete supplierPanel.dataset.signature;
       fillPrPoFilterPanels();
+      if (isOverviewView()) {
+        loadOverview({ refresh: false });
+        return;
+      }
       render();
     });
 
@@ -3907,6 +4134,67 @@
     }
   }
 
+  function overviewSbuParam() {
+    if (!state.selectedSbu.size) return '*';
+    return Array.from(state.selectedSbu).sort().join(',');
+  }
+
+  async function loadOverview({ refresh = false } = {}) {
+    const key = overviewSbuParam();
+    if (!refresh && state.overviewKey === key) {
+      state.pendingLoad = '';
+      if (isOverviewView()) render();
+      return;
+    }
+
+    abortLoad('overview');
+    const label = refresh ? 'Refreshing overview from ERP...' : 'Loading overview...';
+    if (isOverviewView()) beginViewLoad('overview', label);
+
+    const params = new URLSearchParams({ sbu: key });
+    if (refresh) params.set('refresh', '1');
+
+    const ac = new AbortController();
+    state.loadControllers.overview = ac;
+    const timeoutId = window.setTimeout(() => ac.abort(), 120000);
+
+    try {
+      const res = await fetch(`/api/material-tracking/overview?${params}`, {
+        cache: refresh ? 'no-store' : 'default',
+        signal: ac.signal,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+      if (state.loadControllers.overview !== ac) return;
+      state.overviewRows = Array.isArray(payload.rows) ? payload.rows : [];
+      state.overviewCounts = payload.counts || { PR: 0, PO: 0, GRN: 0, QI: 0 };
+      state.overviewSbus = Array.isArray(payload.sbus) ? payload.sbus : [];
+      state.overviewSource = payload.source || '';
+      state.cachedAt = payload.cached_at || '';
+      state.overviewKey = key;
+      if (state.pendingLoad === 'overview') state.pendingLoad = '';
+      const supplierPanel = document.getElementById('sol-supplier-panel');
+      if (supplierPanel) delete supplierPanel.dataset.signature;
+      const sbuPanel = document.getElementById('sol-sbu-panel');
+      if (sbuPanel) delete sbuPanel.dataset.signature;
+      if (isOverviewView()) {
+        fillPrPoFilterPanels();
+        render();
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        if (state.loadControllers.overview === ac && isOverviewView()) {
+          showLoadError(new Error('Timed out waiting for ERP. Click Refresh to retry.'));
+        }
+        return;
+      }
+      if (isOverviewView()) showLoadError(err);
+    } finally {
+      if (state.loadControllers.overview === ac) state.loadControllers.overview = null;
+      window.clearTimeout(timeoutId);
+    }
+  }
+
   async function loadRequests({ refresh = false, silent = false } = {}) {
     const showUi = isRequestView() && !silent;
     if (showUi) {
@@ -4061,6 +4349,10 @@
   async function load({ refresh = false } = {}) {
     if (isPrPoView()) {
       await loadPrPo({ refresh });
+      return;
+    }
+    if (isOverviewView()) {
+      await loadOverview({ refresh });
       return;
     }
     if (isRequestView()) {

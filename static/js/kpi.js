@@ -20,8 +20,8 @@
     psMode: "all",
     psTypes: new Set(),
     colFilters: { qc: {}, material: {}, exceptions: {} },
-    filterTimer: 0,
     openFilter: "",
+    filterOptions: [],
     deptMode: "all",
     deptTags: new Set(),
     tatTicker: 0,
@@ -87,48 +87,6 @@
     { key: "ops_notes", dept: "process_engr", label: "Ops" },
     { key: "sales_notes", dept: "sales", label: "Sales" },
   ];
-
-  const COLUMN_FIELDS = {
-    qc: {
-      ps_id: ["ps_id", "ps_type"],
-      part_no: ["part_no", "part_desc", "qty"],
-      current_stage_desc: ["current_stage_desc", "stage_status_label"],
-      due_date: ["due_date"],
-      pushed_at: ["pushed_at"],
-      left_at: ["left_at", "left_stage_desc"],
-      days_at_qc: ["days_at_qc", "elapsed_label"],
-      qc_state: ["qc_state_label", "qc_state"],
-    },
-    material: {
-      process_sheet_no: ["process_sheet_no", "sales_order_no", "ps_type"],
-      part_no: ["part_no"],
-      description: ["description"],
-      material_need_date: ["material_need_date"],
-      material_arrival_date: ["material_arrival_date"],
-      day_gap: ["day_gap", "gap_label"],
-      due_date: ["due_date"],
-      edd_date: ["edd_date"],
-      mtl_part_order: ["mtl_part_order"],
-      quality_doc: ["quality_doc"],
-      ops_notes: ["ops_notes"],
-      sales_notes: ["sales_notes"],
-    },
-    exceptions: {
-      process_sheet_no: ["process_sheet_no", "sales_order_no", "ps_type"],
-      partial_no: ["partial_label", "partial_no"],
-      part_no: ["part_no"],
-      description: ["description"],
-      posted_date: ["posted_date"],
-      due_date: ["due_date"],
-      edd_date: ["edd_date"],
-      exception_label: ["exception_label"],
-      delivery_date: ["delivery_date"],
-      mtl_part_order: ["mtl_part_order"],
-      quality_doc: ["quality_doc"],
-      ops_notes: ["ops_notes"],
-      sales_notes: ["sales_notes"],
-    },
-  };
 
   const $ = (id) => document.getElementById(id);
 
@@ -439,23 +397,196 @@
     return found ? found[1] : key;
   }
 
+  const BLANK_VALUE = "(Blank)";
+
   function paintColumnFilters() {
     const panel = document.querySelector('[data-kpi-panel="' + state.tab + '"]');
     const filters = state.colFilters[state.tab] || {};
     document.querySelectorAll("[data-col-filter]").forEach((btn) => {
       const inView = !panel || panel.contains(btn);
       const key = btn.getAttribute("data-col-filter");
-      const on = inView && !!filters[key];
-      btn.classList.toggle("is-on", on);
+      const selected = filters[key];
+      const on = inView && selected && selected.size;
+      btn.classList.toggle("is-on", !!on);
       btn.classList.toggle("is-open", inView && state.openFilter === key);
+      btn.setAttribute("aria-expanded", inView && state.openFilter === key ? "true" : "false");
     });
+    const pop = $("kpi-col-popover");
+    if (state.openFilter && pop && !pop.hidden) fillColFilter(state.openFilter);
   }
 
   function closeColFilter() {
     state.openFilter = "";
+    state.filterOptions = [];
     const pop = $("kpi-col-popover");
     if (pop) pop.hidden = true;
+    const list = $("kpi-col-list");
+    if (list) delete list.dataset.signature;
     paintColumnFilters();
+  }
+
+  function cellText(value) {
+    return String(value == null ? "" : value).trim();
+  }
+
+  function exceptionText(row) {
+    const tags = rowDepts(row);
+    if (!tags.length) return cellText(row.exception_label);
+    return tags.map((id) => {
+      const dept = DEPTS.find((item) => item.id === id);
+      return dept ? dept.label : id;
+    }).join(", ");
+  }
+
+  function tatText(row) {
+    if (row.qc_state === "in_qc") {
+      const label = cellText(row.elapsed_label) || (row.days_at_qc != null ? String(row.days_at_qc) + "d" : "");
+      return label ? "Live · " + label : "Live";
+    }
+    if (row.qc_state === "left_qc") return cellText(row.elapsed_label) || (row.days_at_qc != null ? String(row.days_at_qc) : "");
+    if (row.qc_state === "left_unstamped") return "No out time";
+    if (row.qc_state === "before_qc") return "Not started";
+    return "";
+  }
+
+  function columnDisplay(view, key, row) {
+    if (view === "qc" && key === "days_at_qc") return tatText(row);
+    if (view === "qc" && key === "qc_state") return cellText(row.qc_state_label);
+    if (key === "partial_no") return cellText(row.partial_label);
+    if (key === "day_gap") return cellText(row.gap_label);
+    if (key === "exception_label") return exceptionText(row);
+    return cellText(row[key]);
+  }
+
+  function columnSortToken(view, key, row, value) {
+    if (!value) return null;
+    if (key === "day_gap" || key === "days_at_qc" || key === "partial_no") {
+      const num = row ? Number(row[key]) : parseFloat(value);
+      if (Number.isFinite(num)) return num;
+    }
+    return value.toLowerCase();
+  }
+
+  function compareFilterTokens(a, b) {
+    const aEmpty = a == null || a === "";
+    const bEmpty = b == null || b === "";
+    if (aEmpty && bEmpty) return 0;
+    if (aEmpty) return 1;
+    if (bEmpty) return -1;
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  }
+
+  function selectedFilters(view) {
+    return state.colFilters[view] || {};
+  }
+
+  function columnOptions(view, key, rows, selected) {
+    const sortOf = new Map();
+    rows.forEach((row) => {
+      const value = columnDisplay(view, key, row);
+      if (!sortOf.has(value)) sortOf.set(value, columnSortToken(view, key, row, value));
+    });
+    if (selected) {
+      selected.forEach((value) => {
+        if (!sortOf.has(value)) sortOf.set(value, columnSortToken(view, key, null, value));
+      });
+    }
+    return [...sortOf.entries()]
+      .sort((a, b) => compareFilterTokens(a[1], b[1]) || String(a[0]).localeCompare(String(b[0]), undefined, { numeric: true, sensitivity: "base" }))
+      .map((entry) => entry[0]);
+  }
+
+  function rowsForOpenFilter(skipKey) {
+    const view = state.tab;
+    let rows;
+    if (view === "material") {
+      const query = soQuery("kpi-material-search");
+      const keys = [
+        "process_sheet_no", "sales_order_no", "customer_name", "part_no", "description",
+        "material_need_date", "material_arrival_date", "due_date", "edd_date", "gap_label",
+        "mtl_part_order", "quality_doc", "ops_notes", "sales_notes",
+      ];
+      rows = (state.so?.material_rows || []).filter((row) => Number(row.day_gap) > 0 && soMatch(row, query, keys));
+    } else if (view === "exceptions") {
+      const query = soQuery("kpi-exception-search");
+      const keys = [
+        "process_sheet_no", "sales_order_no", "customer_name", "part_no", "description",
+        "exception_label", "delivery_date", "mtl_part_order", "quality_doc", "ops_notes", "sales_notes",
+      ];
+      rows = (state.so?.exception_rows || []).filter((row) => soMatch(row, query, keys) && matchesDept(row));
+    } else {
+      rows = state.rows || [];
+    }
+    return rows.filter((row) => {
+      if (state.hideResolved && isResolved(view, row)) return false;
+      if (!matchesType(row)) return false;
+      return matchesColumns(row, view, skipKey);
+    });
+  }
+
+  function positionColFilter(anchor) {
+    const pop = $("kpi-col-popover");
+    if (!pop || pop.hidden || !anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    const margin = 8;
+    pop.style.top = "0px";
+    pop.style.left = "0px";
+    const width = pop.offsetWidth;
+    const height = pop.offsetHeight;
+    let left = rect.left;
+    let top = rect.bottom + 4;
+    if (left + width > window.innerWidth - margin) left = window.innerWidth - width - margin;
+    if (left < margin) left = margin;
+    if (top + height > window.innerHeight - margin) top = Math.max(margin, rect.top - height - 4);
+    pop.style.top = Math.round(top) + "px";
+    pop.style.left = Math.round(left) + "px";
+  }
+
+  function filterListItems(query) {
+    const list = $("kpi-col-list");
+    if (!list) return;
+    const q = String(query || "").trim().toLowerCase();
+    list.querySelectorAll(".filter-dropdown-item").forEach((label) => {
+      label.hidden = Boolean(q) && !label.textContent.toLowerCase().includes(q);
+    });
+  }
+
+  function fillColFilter(key) {
+    const list = $("kpi-col-list");
+    const search = $("kpi-col-value");
+    const title = $("kpi-col-popover-title");
+    if (!list || !key) return;
+    const view = state.tab;
+    const selected = selectedFilters(view)[key];
+    const options = columnOptions(view, key, rowsForOpenFilter(key), selected);
+    state.filterOptions = options;
+    const signature = view + ":" + key + ":" + JSON.stringify(options);
+    if (list.dataset.signature !== signature) {
+      const searchWas = search ? search.value : "";
+      list.dataset.signature = signature;
+      list.innerHTML = options.length
+        ? options.map((value, index) => {
+          const checked = selected && selected.has(value) ? " checked" : "";
+          const label = value || BLANK_VALUE;
+          return '<label class="filter-dropdown-item"><input type="checkbox" data-idx="' + index + '"' + checked + "> " + esc(label) + "</label>";
+        }).join("")
+        : '<p class="kpi-col-empty">No values</p>';
+      if (search) {
+        search.value = searchWas;
+        filterListItems(searchWas);
+      }
+    } else {
+      list.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+        const value = state.filterOptions[Number(input.getAttribute("data-idx"))];
+        input.checked = Boolean(selected && selected.has(value));
+      });
+    }
+    if (title) {
+      title.textContent = selected && selected.size
+        ? selected.size + " selected · " + columnLabel(view, key)
+        : "All values · " + columnLabel(view, key);
+    }
   }
 
   function openColFilter(btn) {
@@ -467,32 +598,41 @@
       return;
     }
     state.openFilter = key;
-    const title = $("kpi-col-popover-title");
-    if (title) title.textContent = "Filter " + columnLabel(state.tab, key);
+    const list = $("kpi-col-list");
     const input = $("kpi-col-value");
-    if (input) input.value = (state.colFilters[state.tab] || {})[key] || "";
+    if (list) delete list.dataset.signature;
+    if (input) input.value = "";
     pop.hidden = false;
-    const rect = btn.getBoundingClientRect();
-    const width = 240;
-    let left = Math.min(rect.left, window.innerWidth - width - 8);
-    if (left < 8) left = 8;
-    pop.style.left = left + "px";
-    pop.style.top = Math.min(rect.bottom + 6, window.innerHeight - 120) + "px";
+    fillColFilter(key);
     paintColumnFilters();
+    positionColFilter(btn);
     if (input) input.focus();
   }
 
-  function setColumnFilter(key, value) {
+  function setColumnFilter(key, values) {
     if (!key) return;
     if (!state.colFilters[state.tab]) state.colFilters[state.tab] = {};
-    const query = String(value || "").trim().toLowerCase();
-    if (query) state.colFilters[state.tab][key] = query;
+    if (values && values.size) state.colFilters[state.tab][key] = values;
     else delete state.colFilters[state.tab][key];
-    window.clearTimeout(state.filterTimer);
-    state.filterTimer = window.setTimeout(() => {
-      paintColumnFilters();
-      rerenderActive();
-    }, 120);
+    paintColumnFilters();
+    rerenderActive();
+    if (state.openFilter === key) {
+      fillColFilter(key);
+      const safeKey = window.CSS && CSS.escape ? CSS.escape(key) : key;
+      const btn = document.querySelector('[data-kpi-panel="' + state.tab + '"] [data-col-filter="' + safeKey + '"]');
+      if (btn) positionColFilter(btn);
+    }
+  }
+
+  function checkedFilterValues() {
+    const list = $("kpi-col-list");
+    const selected = new Set();
+    if (!list) return selected;
+    list.querySelectorAll('input[type="checkbox"]:checked').forEach((input) => {
+      const value = state.filterOptions[Number(input.getAttribute("data-idx"))];
+      if (value != null) selected.add(value);
+    });
+    return selected;
   }
 
   function toggleType(type) {
@@ -530,15 +670,13 @@
     return state.deptTags.has(spec.dept);
   }
 
-  function matchesColumns(row, view) {
+  function matchesColumns(row, view, skipKey) {
     const filters = state.colFilters[view] || {};
-    const fields = COLUMN_FIELDS[view] || {};
     return Object.keys(filters).every((key) => {
-      const query = filters[key];
-      if (!query || !columnVisible(view, key)) return true;
-      const names = fields[key] || [key];
-      const hay = names.map((name) => String(row[name] == null ? "" : row[name])).join(" ").toLowerCase();
-      return hay.includes(query);
+      if (key === skipKey || !columnVisible(view, key)) return true;
+      const selected = filters[key];
+      if (!selected || !selected.size) return true;
+      return selected.has(columnDisplay(view, key, row));
     });
   }
 
@@ -1248,10 +1386,17 @@
       if (!btn) return;
       toggleDept(btn.getAttribute("data-dept-tag"));
     });
+    const colPopover = $("kpi-col-popover");
+    colPopover?.addEventListener("click", (event) => event.stopPropagation());
+    colPopover?.addEventListener("change", (event) => {
+      if (event.target.type !== "checkbox" || !state.openFilter) return;
+      setColumnFilter(state.openFilter, checkedFilterValues());
+    });
     document.addEventListener("click", (event) => {
       const filterBtn = event.target.closest("[data-col-filter]");
       if (filterBtn) {
         event.preventDefault();
+        event.stopPropagation();
         openColFilter(filterBtn);
         return;
       }
@@ -1259,13 +1404,12 @@
       if (state.openFilter) closeColFilter();
     });
     $("kpi-col-value")?.addEventListener("input", () => {
-      if (!state.openFilter) return;
-      setColumnFilter(state.openFilter, $("kpi-col-value").value);
+      filterListItems($("kpi-col-value").value);
     });
     $("kpi-col-clear")?.addEventListener("click", () => {
       if (!state.openFilter) return;
       if ($("kpi-col-value")) $("kpi-col-value").value = "";
-      setColumnFilter(state.openFilter, "");
+      setColumnFilter(state.openFilter, new Set());
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && state.openFilter) closeColFilter();

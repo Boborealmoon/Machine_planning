@@ -2,7 +2,7 @@
 {% block title %}KPI{% endblock %}
 {% block main_class %}app-main--kpi{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-exceptions-20261105">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/kpi.css') }}?v=kpi-col-select-20261110">
 {% endblock %}
 {% block content %}
 <div class="kpi-page" data-screen="qc">
@@ -185,14 +185,15 @@
   </div>
 
   <div id="kpi-col-popover" class="kpi-col-popover" hidden>
-    <div class="kpi-col-popover-title" id="kpi-col-popover-title">Filter</div>
-    <input type="search" id="kpi-col-value" placeholder="Contains..." autocomplete="off">
-    <div class="kpi-col-popover-actions">
-      <button type="button" class="btn btn-light btn-sm" id="kpi-col-clear">Clear</button>
+    <div class="kpi-col-popover-head">
+      <span id="kpi-col-popover-title">All values</span>
+      <button type="button" id="kpi-col-clear">Clear</button>
     </div>
+    <input type="search" id="kpi-col-value" placeholder="Find a value..." autocomplete="off" aria-label="Find a filter value">
+    <div id="kpi-col-list" class="kpi-col-list"></div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-exceptions-20261105"></script>
+<script src="{{ url_for('static', filename='js/kpi.js') }}?v=kpi-col-select-20261110"></script>
 {% endblock %}
