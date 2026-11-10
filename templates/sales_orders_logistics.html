@@ -7,7 +7,20 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-overview-20261108b">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-overview-embed-20261110">
+<script>
+(function () {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('embed') === '1' || params.get('embed') === 'true') {
+      document.documentElement.classList.add('sol-embed');
+      document.addEventListener('DOMContentLoaded', function () {
+        document.body.classList.add('sol-embed');
+      });
+    }
+  } catch (_) {}
+})();
+</script>
 {% endblock %}
 {% block content %}
 <div class="sol-page">
@@ -98,6 +111,9 @@
         <button type="button" class="sol-chip" data-sol-subcon-status="done" role="tab" aria-selected="false">
           Done <span class="sol-chip-count" id="sol-subcon-done-count" hidden>0</span>
         </button>
+      </div>
+      <div class="sol-nav-group" data-sol-section-panel="overview" role="tablist" aria-label="Overview" hidden>
+        <span class="sol-chip sol-chip--static is-active" aria-current="page">PR line timeline</span>
       </div>
       <div class="sol-nav-group" data-sol-section-panel="purchasing" role="tablist" aria-label="Purchasing" hidden>
         <button type="button" class="sol-chip" data-sol-view="pr-enquiry" role="tab" aria-selected="false"
@@ -327,5 +343,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-overview-20261108b"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-overview-embed-20261110"></script>
 {% endblock %}

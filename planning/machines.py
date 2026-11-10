@@ -521,6 +521,11 @@ MPP_PLANNER_GUARD_MSG = (
     "This block belongs to the MPP planner tab — edit it there, not on the main planner board."
 )
 
+# PPS site planner lanes. CNC 20 stays on the main board; Wire cut is PPS-only.
+PPS_SITE_PLANNER_MACHINE_CODES = frozenset({"CNC 20", "Wire cut"})
+PPS_SITE_ONLY_MACHINE_CODES = frozenset({"Wire cut"})
+
+
 
 def is_mpp_planner_machine(machine_row) -> bool:
     code = compact_text((machine_row or {}).get("machine_no") or (machine_row or {}).get("machine_code"))
@@ -606,9 +611,53 @@ def is_mpp_planner_owned_block(con, block_id) -> bool:
     return bool(linked)
 
 
-def fetch_scheduler_machines(con):
-    """Active machines shown on the main planner board (includes MPP lanes)."""
-    return [dict(row) for row in fetch_machines(con)]
+def is_pps_site_only_machine(machine_row) -> bool:
+    code = compact_text((machine_row or {}).get("machine_no") or (machine_row or {}).get("machine_code"))
+    if not code:
+        return False
+    return code.upper() in {value.upper() for value in PPS_SITE_ONLY_MACHINE_CODES}
+
+
+def fetch_scheduler_machines(con, *, include_pps_site_only: bool = False):
+    """Active machines shown on the main planner board (includes MPP lanes, excludes PPS-only).
+
+    The PPS site planner passes include_pps_site_only so Wire cut stays on that tab.
+    """
+    return [
+        dict(row)
+        for row in fetch_machines(con)
+        if include_pps_site_only or not is_pps_site_only_machine(row)
+    ]
+
+
+def fetch_pps_site_planner_machines(con) -> list[dict]:
+    """CNC 20 + Wire cut lanes for the PPS site planner tab."""
+    codes = [code.upper() for code in PPS_SITE_PLANNER_MACHINE_CODES]
+    if not codes:
+        return []
+    return [
+        dict(row)
+        for row in rows(
+            con.execute(
+                """
+                SELECT machine_id, machine_no AS machine_code, machine_no,
+                       machine_category, shift_profile, active
+                FROM planner_machines
+                WHERE UPPER(machine_no) = ANY(%s)
+                  AND COALESCE(active, TRUE) = TRUE
+                ORDER BY
+                    CASE UPPER(machine_no)
+                        WHEN 'CNC 20' THEN 1
+                        WHEN 'WIRE CUT' THEN 2
+                        ELSE 99
+                    END,
+                    machine_id
+                """,
+                (codes,),
+            )
+        )
+    ]
+
 
 
 def fetch_mpp_planner_machine_ids(con) -> list[int]:

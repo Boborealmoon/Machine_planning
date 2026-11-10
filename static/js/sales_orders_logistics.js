@@ -2609,7 +2609,8 @@
     const page = document.querySelector('.sol-page');
     if (page) {
       page.classList.toggle('sol-page--wide', prPo || overview || qc || ship);
-      page.classList.toggle('sol-page--prpo', prPo);
+      page.classList.toggle('sol-page--prpo', prPo || overview);
+      page.classList.toggle('sol-page--overview', overview);
     }
 
     document.querySelectorAll('[data-sol-section]').forEach(btn => {
@@ -4951,6 +4952,17 @@
     });
   }
 
+  function initialSectionFromUrl() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const section = String(params.get('section') || params.get('tab') || '').trim().toLowerCase();
+      if (SECTION_DEFAULTS[section]) return section;
+      const view = String(params.get('view') || '').trim().toLowerCase();
+      if (view === OVERVIEW_VIEW || view === 'overview') return 'overview';
+    } catch (_) { /* ignore */ }
+    return '';
+  }
+
   function init() {
     document.querySelectorAll('[data-sol-section]').forEach(btn => {
       btn.addEventListener('click', () => setSection(btn.getAttribute('data-sol-section')));
@@ -5000,11 +5012,18 @@
     bindRequestAdd();
     bindInputs();
     bindDateHistoryModal();
+
+    const bootSection = initialSectionFromUrl();
+    if (bootSection) {
+      state.view = SECTION_DEFAULTS[bootSection];
+    }
     syncNavUi();
     // Same live /api/sales-orders path as Sales Orders (COMAIN, not staging).
     load({ refresh: false });
-    loadRequests({ refresh: false, silent: true });
-    loadQcChecklist({ refresh: false, silent: true });
+    if (!isOverviewView()) {
+      loadRequests({ refresh: false, silent: true });
+      loadQcChecklist({ refresh: false, silent: true });
+    }
   }
 
   document.addEventListener('DOMContentLoaded', init);

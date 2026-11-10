@@ -172,6 +172,13 @@ document.addEventListener('DOMContentLoaded', () => {
   if (window.SCHEDULER_BUILD) console.info('Scheduler build:', window.SCHEDULER_BUILD);
   window.trialScheduleRenderHook = null;
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
+  if (typeof trialParseLaneFocusFromUrl === 'function') trialParseLaneFocusFromUrl();
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('embed') === '1' || params.get('embed') === 'true') {
+      document.body.classList.add('trial-embed');
+    }
+  } catch (_) {}
   if (typeof renderTrialPsTypeFilter === 'function') renderTrialPsTypeFilter();
   if (typeof trialInitBoardZoom === 'function') trialInitBoardZoom();
   loadTrial();

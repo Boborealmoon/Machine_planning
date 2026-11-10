@@ -21,6 +21,9 @@ def invalidate_erp_route_caches() -> None:
     from planning.material_tracking_inspection_route import (
         invalidate_material_tracking_inspection_cache,
     )
+    from planning.material_tracking_overview_route import (
+        invalidate_material_tracking_overview_cache,
+    )
     from planning.qc_quality_queue_route import invalidate_qc_quality_queue_cache
     from planning.new_orders_route import invalidate_new_orders_cache
     from planning.sales_orders_route import invalidate_sales_orders_cache
@@ -36,6 +39,7 @@ def invalidate_erp_route_caches() -> None:
     invalidate_pr_status_enquiry_cache()
     invalidate_material_tracking_pr_po_cache()
     invalidate_material_tracking_inspection_cache()
+    invalidate_material_tracking_overview_cache()
     invalidate_inventory_enquiry_cache()
     invalidate_finishing_queue_cache()
     invalidate_bom_variation_cache()

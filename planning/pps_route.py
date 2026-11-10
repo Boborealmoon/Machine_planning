@@ -108,12 +108,48 @@ def _pps_shipped_completed(row: dict[str, Any]) -> bool:
 
 @pps_bp.get(PPS_PATH)
 def pps_page():
+    logistics_url = url_for("sales_orders.sales_orders_logistics_page")
+    overview_embed = f"{logistics_url}?section=overview&embed=1"
+    planner_lanes = "CNC%2020,Wire%20cut"
+    try:
+        machinist_path = url_for("machinist_board")
+    except Exception:
+        machinist_path = "/machine-queue"
+    try:
+        planner_path = url_for("planner")
+    except Exception:
+        planner_path = "/planner"
+    planner_embed = (
+        f"{machinist_path}?lanes={planner_lanes}&site=pps&embed=1&focus=1"
+    )
+    planner_full = f"{planner_path}?lanes={planner_lanes}&site=pps"
     return render_template(
         "pps.html",
         pps_path=PPS_PATH,
         pps_asset_version=pps_asset_version(),
         pps_subtitle="Loading PPS tracking...",
+        pps_supply_chain_url=f"{logistics_url}?section=overview",
+        pps_supply_chain_embed=overview_embed,
+        pps_planner_embed=planner_embed,
+        pps_planner_full=planner_full,
     )
+
+
+@pps_bp.get("/api/pps/site-machines")
+def api_pps_site_machines():
+    """CNC 20 + Wire cut lanes owned by the PPS site planner tab."""
+    err = planner_db_connect_error()
+    if err:
+        return jsonify({"error": err}), 503
+    try:
+        from .machines import fetch_pps_site_planner_machines
+
+        with planner_db() as con:
+            machines = fetch_pps_site_planner_machines(con)
+        return jsonify({"ok": True, "machines": machines})
+    except Exception as exc:
+        logger.exception("pps site machines query failed")
+        return jsonify({"error": str(exc)}), 500
 
 
 if PPS_PATH != _DEFAULT_PPS_PATH:

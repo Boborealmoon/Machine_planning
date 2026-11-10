@@ -1069,6 +1069,7 @@ function trialApplySchedulePayload(scheduleData, machinesResult, programToolsLoo
     program_tools_lookup: programToolsLookup ?? trialState.program_tools_lookup ?? null,
   };
   trialState.blocks = trialMergeBlocksWithSchedule(schedule.blocks || []);
+  if (typeof trialApplyLaneFocusHiddenSet === 'function') trialApplyLaneFocusHiddenSet(machines);
   if (typeof trialResetDataIndexes === 'function') trialResetDataIndexes();
   if (typeof trialInvalidateCatalogSearchIndex === 'function') trialInvalidateCatalogSearchIndex();
 }
@@ -1238,6 +1239,10 @@ async function loadTrialImpl(options = {}) {
   const machinistBoard = typeof trialIsMachinistBoard === 'function' && trialIsMachinistBoard();
   const params = new URLSearchParams();
   params.set('lite', '1');
+  try {
+    const pageSite = new URLSearchParams(window.location.search).get('site');
+    if (String(pageSite || '').trim().toLowerCase() === 'pps') params.set('site', 'pps');
+  } catch (_) { /* ignore */ }
   if (machinistBoard) params.set('include', 'segments');
   if (trialScheduleDateFilter.start) params.set('start', trialScheduleDateFilter.start);
   if (trialScheduleDateFilter.end) params.set('end', trialScheduleDateFilter.end);

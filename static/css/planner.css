@@ -13979,3 +13979,14 @@
   }
 }
 
+
+body.trial-embed .navbar,
+body.trial-embed .navbar-backdrop {
+  display: none !important;
+}
+
+body.trial-embed .app-main--planner {
+  max-width: none;
+  margin: 0;
+  padding: 8px 10px 12px;
+}

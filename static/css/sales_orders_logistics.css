@@ -2457,3 +2457,56 @@ body.sol-view .so-editable-status:empty {
   font-size: 0.82rem;
   color: var(--sol-muted);
 }
+
+/* ── Overview + embed (PPS Supply Chain tab) ─────────────────────────────── */
+
+.sol-page--overview .sol-prpo-toolbar--overview #sol-bucket-group {
+  display: none !important;
+}
+
+.sol-chip--static {
+  pointer-events: none;
+  cursor: default;
+}
+
+.sol-overview-row--qi td:first-child .sol-status-pill,
+.sol-overview-row--grn td:first-child .sol-status-pill {
+  background: #def3ea;
+  color: #1f7a5c;
+}
+
+.sol-overview-row--po td:first-child .sol-status-pill {
+  background: #e8f0ff;
+  color: #2f5fad;
+}
+
+.sol-overview-row--pr td:first-child .sol-status-pill {
+  background: #fff4df;
+  color: #9a6a14;
+}
+
+html.sol-embed body.sol-view .navbar,
+html.sol-embed body.sol-view .navbar-backdrop,
+body.sol-embed .navbar,
+body.sol-embed .navbar-backdrop {
+  display: none !important;
+}
+
+body.sol-embed .app-main--sales-logistics {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px 18px;
+}
+
+body.sol-embed .sol-header {
+  display: none;
+}
+
+body.sol-embed .sol-sections [data-sol-section]:not([data-sol-section="overview"]) {
+  display: none;
+}
+
+body.sol-embed .sol-notif {
+  display: none;
+}

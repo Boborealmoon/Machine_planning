@@ -672,7 +672,8 @@ VALUES
     ('CNC 38', 'TURNMILL', 'STANDARD', TRUE),
     ('CNC 39', 'TURNMILL', 'STANDARD', TRUE),
     ('CNC 40', 'TURNMILL', 'STANDARD', TRUE),
-    ('CNC 41', 'MPP',      'STANDARD', TRUE)
+    ('CNC 41', 'MPP',      'STANDARD', TRUE),
+    ('Wire cut', 'WIRECUT', 'STANDARD', TRUE)
 ON CONFLICT (machine_no) DO NOTHING;
 
 

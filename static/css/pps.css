@@ -1435,3 +1435,143 @@ body.pps-modal-open {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ── PPS section navbar ─────────────────────────────────────────────────── */
+
+.pps-navbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--pps-line);
+}
+
+.pps-nav-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--pps-line);
+  box-shadow: var(--pps-shadow);
+}
+
+.pps-nav-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--pps-muted);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 650;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.pps-nav-tab:hover {
+  color: var(--pps-ink);
+  background: var(--pps-soft);
+}
+
+.pps-nav-tab.is-active {
+  color: #fff;
+  background: linear-gradient(145deg, #268089, #1a5f66);
+  box-shadow: 0 4px 12px rgba(31, 111, 120, 0.28);
+}
+
+.pps-nav-hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--pps-muted);
+  max-width: 42ch;
+}
+
+.pps-tab-panel[hidden] {
+  display: none !important;
+}
+
+.pps-tab-panel.is-active {
+  display: block;
+}
+
+.pps-embed-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.pps-embed-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.pps-embed-copy {
+  margin: 4px 0 0;
+  font-size: 0.86rem;
+  color: var(--pps-muted);
+  max-width: 62ch;
+}
+
+.pps-embed-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pps-btn--link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.pps-embed-frame {
+  width: 100%;
+  min-height: min(72vh, 860px);
+  height: calc(100dvh - 220px);
+  border: 1px solid var(--pps-line);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: var(--pps-shadow);
+}
+
+.pps-embed-frame--planner {
+  min-height: min(78vh, 920px);
+}
+
+.pps-shell[data-pps-tab="supply-chain"] .pps-title::after,
+.pps-shell[data-pps-tab="planner"] .pps-title::after {
+  content: none;
+}
+
+.pps-shell[data-pps-tab="supply-chain"] #pps-stats,
+.pps-shell[data-pps-tab="planner"] #pps-stats {
+  opacity: 0.85;
+}
+
+@media (max-width: 820px) {
+  .pps-nav-tabs {
+    width: 100%;
+  }
+
+  .pps-nav-tab {
+    flex: 1 1 auto;
+    text-align: center;
+    padding: 10px 12px;
+    font-size: 0.86rem;
+  }
+
+  .pps-embed-frame {
+    height: calc(100dvh - 260px);
+    min-height: 520px;
+  }
+}

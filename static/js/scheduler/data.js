@@ -115,6 +115,15 @@ function trialVisibleMachines() {
   if (typeof trialIsMppMachinesVisible === 'function' && !trialIsMppMachinesVisible()) {
     machines = machines.filter(m => !trialIsMppPlannerMachine(Number(m.machine_id), m.machine_code));
   }
+  if (!trialPpsSiteMode && !(trialLaneFocusCodes && trialLaneFocusCodes.size)) {
+    machines = machines.filter(m => !trialIsPpsSiteOnlyMachine(Number(m.machine_id), m.machine_code));
+  }
+  if (trialLaneFocusCodes && trialLaneFocusCodes.size) {
+    machines = machines.filter((m) => {
+      const code = trialNormalizeMachineCode(m.machine_code || m.machine_no);
+      return trialLaneFocusCodes.has(code);
+    });
+  }
   if (trialMachineHiddenSet.size > 0) {
     machines = machines.filter(m => !trialMachineHiddenSet.has(m.machine_code));
   }
@@ -844,6 +853,11 @@ function trialHasLiveBlockQueueIndex() {
 
 /** CNC lanes owned by the MPP planner tab — mirrored on the main board (planning/machines.py). */
 const TRIAL_MPP_PLANNER_MACHINE_CODES = new Set(['CNC 35', 'CNC 36', 'CNC 41']);
+/** Wire cut is PPS-site only; CNC 20 stays on the main board and on the PPS planner tab. */
+const TRIAL_PPS_SITE_ONLY_MACHINE_CODES = new Set(['WIRE CUT']);
+const TRIAL_PPS_SITE_PLANNER_MACHINE_CODES = new Set(['CNC 20', 'WIRE CUT']);
+let trialLaneFocusCodes = null;
+let trialPpsSiteMode = false;
 
 function trialIsMppPlannerMachine(machineId, machineCode) {
   const code = trialNormalizeMachineCode(machineCode);
@@ -854,6 +868,48 @@ function trialIsMppPlannerMachine(machineId, machineCode) {
   const fromState = trialNormalizeMachineCode(machine?.machine_code || machine?.machine_no);
   if (TRIAL_MPP_PLANNER_MACHINE_CODES.has(fromState)) return true;
   return String(machine?.machine_category || '').toUpperCase() === 'MPP';
+}
+
+function trialIsPpsSiteOnlyMachine(machineId, machineCode) {
+  const code = trialNormalizeMachineCode(machineCode);
+  if (code && TRIAL_PPS_SITE_ONLY_MACHINE_CODES.has(code)) return true;
+  const mid = Number(machineId || 0);
+  if (!mid) return false;
+  const machine = (trialState.machines || []).find(row => Number(row.machine_id) === mid);
+  const fromState = trialNormalizeMachineCode(machine?.machine_code || machine?.machine_no);
+  return TRIAL_PPS_SITE_ONLY_MACHINE_CODES.has(fromState);
+}
+
+function trialParseLaneFocusFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    trialPpsSiteMode = String(params.get('site') || '').trim().toLowerCase() === 'pps';
+    const raw = String(params.get('lanes') || params.get('machines') || '').trim();
+    if (!raw) {
+      if (trialPpsSiteMode) {
+        trialLaneFocusCodes = new Set(TRIAL_PPS_SITE_PLANNER_MACHINE_CODES);
+      }
+      return trialLaneFocusCodes;
+    }
+    const codes = raw.split(/[,|]/).map(trialNormalizeMachineCode).filter(Boolean);
+    trialLaneFocusCodes = codes.length ? new Set(codes) : null;
+    return trialLaneFocusCodes;
+  } catch (_) {
+    trialLaneFocusCodes = null;
+    return null;
+  }
+}
+
+function trialApplyLaneFocusHiddenSet(machines) {
+  const focus = trialLaneFocusCodes || trialParseLaneFocusFromUrl();
+  if (!focus || !focus.size) return;
+  const list = Array.isArray(machines) ? machines : (trialState.machines || []);
+  list.forEach((machine) => {
+    const code = trialNormalizeMachineCode(machine.machine_code || machine.machine_no);
+    if (!code) return;
+    if (focus.has(code)) trialMachineHiddenSet.delete(code);
+    else trialMachineHiddenSet.add(code);
+  });
 }
 
 /** Lane blocks for the main planner board (MPP machines mirror the MPP planner tab). */

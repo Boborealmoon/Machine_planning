@@ -127,6 +127,18 @@ document.addEventListener('DOMContentLoaded', () => {
   window.trialScheduleRenderHook = null;
   trialMachineCategoryFilter = 'ALL';
   trialScheduleDateFilter = trialResolvedScheduleDateFilterFromUrl();
+  if (typeof trialParseLaneFocusFromUrl === 'function') trialParseLaneFocusFromUrl();
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('embed') === '1' || params.get('embed') === 'true') {
+      document.body.classList.add('machinist-board--embed', 'trial-embed');
+    }
+    if (params.get('focus') === '1' || params.get('focus') === 'true') {
+      if (typeof trialSetMachinistFocusEnabled === 'function') trialSetMachinistFocusEnabled(true);
+      else if (typeof localStorage !== 'undefined') localStorage.setItem('machinist-board-focus-v1', '1');
+      document.body.classList.add('machinist-board--focus');
+    }
+  } catch (_) {}
   if (typeof trialLoadMachinistFocusMachineIds === 'function') {
     trialMachinistFocusMachineIds = trialLoadMachinistFocusMachineIds();
     trialMachinistFocusMachineIdsLoaded = true;

@@ -1883,3 +1883,19 @@ body.machinist-board.machinist-board--focus .trial-empty {
   }
 }
 
+
+/* PPS Planner embed: hide top chrome, keep lanes. */
+body.machinist-board--embed .navbar,
+body.machinist-board--embed .navbar-backdrop {
+  display: none !important;
+}
+
+body.machinist-board--embed .machinist-board-head {
+  padding-top: 8px;
+}
+
+body.machinist-board--embed .app-main--machinist {
+  max-width: none;
+  margin: 0;
+  padding: 8px 10px 12px;
+}

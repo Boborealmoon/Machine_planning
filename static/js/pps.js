@@ -1,6 +1,22 @@
 // PPS tracking - PS-level controls + columns/cards views.
 const PPS_VIEW_KEY = 'pps.viewStyle';
 const PPS_FLAGGED_FIRST_KEY = 'pps.flaggedFirst';
+const PPS_TAB_KEY = 'pps.activeTab';
+const PPS_TABS = new Set(['sheets', 'supply-chain', 'planner']);
+const PPS_TAB_COPY = {
+  sheets: {
+    title: 'Process sheets',
+    hint: 'Track PPS jobs, material overview, and site machine lanes.',
+  },
+  'supply-chain': {
+    title: 'Supply Chain',
+    hint: 'Overview of PR lines with PO, shipment, GRN, and QI.',
+  },
+  planner: {
+    title: 'Planner',
+    hint: 'CNC 20 and Wire cut lanes for this PPS site only.',
+  },
+};
 
 const PPS_COLUMNS = [
   { id: 'job', label: 'Job' },
@@ -1179,5 +1195,99 @@ document.addEventListener('keydown', (event) => {
   ppsCloseStageModal();
 });
 
+function ppsNormalizeTab(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'supply' || raw === 'sc' || raw === 'overview') return 'supply-chain';
+  if (raw === 'machines' || raw === 'lanes') return 'planner';
+  if (raw === 'process' || raw === 'jobs' || raw === 'tracking') return 'sheets';
+  return PPS_TABS.has(raw) ? raw : 'sheets';
+}
+
+function ppsTabFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = ppsNormalizeTab(params.get('tab') || params.get('section'));
+  if (fromQuery !== 'sheets' || params.has('tab') || params.has('section')) return fromQuery;
+  const hash = String(window.location.hash || '').replace(/^#/, '');
+  if (hash) return ppsNormalizeTab(hash);
+  try {
+    return ppsNormalizeTab(localStorage.getItem(PPS_TAB_KEY));
+  } catch (_) {
+    return 'sheets';
+  }
+}
+
+function ppsEnsureEmbedLoaded(tab) {
+  const frameId = tab === 'supply-chain'
+    ? 'pps-supply-chain-frame'
+    : (tab === 'planner' ? 'pps-planner-frame' : '');
+  if (!frameId) return;
+  const frame = document.getElementById(frameId);
+  if (!frame) return;
+  const src = frame.getAttribute('data-src') || '';
+  if (!src) return;
+  if (!frame.getAttribute('src')) frame.setAttribute('src', src);
+}
+
+function ppsSetTab(tab, options = {}) {
+  const next = ppsNormalizeTab(tab);
+  const shell = document.querySelector('.pps-shell');
+  if (shell) shell.setAttribute('data-pps-tab', next);
+
+  document.querySelectorAll('[data-pps-tab]').forEach((btn) => {
+    if (!btn.classList.contains('pps-nav-tab')) return;
+    const active = btn.getAttribute('data-pps-tab') === next;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+
+  document.querySelectorAll('[data-pps-panel]').forEach((panel) => {
+    const active = panel.getAttribute('data-pps-panel') === next;
+    panel.hidden = !active;
+    panel.classList.toggle('is-active', active);
+  });
+
+  document.querySelectorAll('[data-pps-panel-chrome]').forEach((el) => {
+    el.hidden = el.getAttribute('data-pps-panel-chrome') !== next;
+  });
+
+  const copy = PPS_TAB_COPY[next] || PPS_TAB_COPY.sheets;
+  const title = document.querySelector('.pps-title');
+  if (title) title.textContent = copy.title;
+  const hint = document.getElementById('pps-nav-hint');
+  if (hint) hint.textContent = copy.hint;
+  if (next !== 'sheets') {
+    const stats = document.getElementById('pps-stats');
+    if (stats) stats.textContent = copy.hint;
+  } else if (typeof ppsRender === 'function') {
+    // Restore live job counts on the sheets tab.
+    try { ppsRender(); } catch (_) { /* board may still be loading */ }
+  }
+
+  ppsEnsureEmbedLoaded(next);
+
+  try {
+    localStorage.setItem(PPS_TAB_KEY, next);
+  } catch (_) { /* ignore */ }
+
+  if (options.updateUrl !== false) {
+    const params = new URLSearchParams(window.location.search);
+    if (next === 'sheets') params.delete('tab');
+    else params.set('tab', next);
+    const query = params.toString();
+    const url = query
+      ? `${window.location.pathname}?${query}`
+      : window.location.pathname;
+    window.history.replaceState({}, '', url);
+  }
+}
+
+function ppsBindTabs() {
+  document.querySelectorAll('.pps-nav-tab[data-pps-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => ppsSetTab(btn.getAttribute('data-pps-tab')));
+  });
+  ppsSetTab(ppsTabFromLocation(), { updateUrl: true });
+}
+
 ppsApplyViewChrome();
+ppsBindTabs();
 ppsLoadTracking();

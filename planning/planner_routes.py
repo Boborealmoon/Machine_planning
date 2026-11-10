@@ -873,9 +873,11 @@ def _api_trial_schedule_db():
         )
     )
 
+    include_pps_site_only = compact_text(request.args.get("site")).lower() == "pps"
+
     with planner_db() as con:
         if shell_only:
-            machines = fetch_scheduler_machines(con)
+            machines = fetch_scheduler_machines(con, include_pps_site_only=include_pps_site_only)
             return jsonify({
                 "machines": [dict(row) for row in machines],
                 "blocks": [],
@@ -965,7 +967,7 @@ def _api_trial_schedule_db():
                     (group_id,),
                 )
 
-        machines = fetch_scheduler_machines(con)
+        machines = fetch_scheduler_machines(con, include_pps_site_only=include_pps_site_only)
 
         machine_by_id = {int(row["machine_id"]): dict(row) for row in machines}
         scheduler_machine_ids = [int(row["machine_id"]) for row in machines]

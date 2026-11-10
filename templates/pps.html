@@ -16,7 +16,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="pps-shell">
+<div class="pps-shell" data-pps-tab="sheets">
   <header class="pps-top">
     <div class="pps-brand">
       <span class="pps-mark" aria-hidden="true">PPS</span>
@@ -25,7 +25,7 @@
         <p class="pps-count" id="pps-stats" aria-live="polite">{{ pps_subtitle }}</p>
       </div>
     </div>
-    <div class="pps-top-actions">
+    <div class="pps-top-actions" data-pps-panel-chrome="sheets">
       <div class="pps-view-toggle" role="group" aria-label="View style">
         <button type="button" class="pps-view-btn is-active" data-view="columns" aria-pressed="true">Columns</button>
         <button type="button" class="pps-view-btn" data-view="cards" aria-pressed="false">Cards</button>
@@ -45,35 +45,93 @@
     </div>
   </header>
 
-  <div class="pps-controls" aria-label="Filters">
-    <div class="pps-status-tabs" role="tablist" aria-label="Job status">
-      <button type="button" class="pps-status-tab is-active" role="tab" aria-selected="true" data-status="active">
-        Active <span class="pps-tab-count" data-count="active">0</span>
+  <nav class="pps-navbar" aria-label="PPS sections">
+    <div class="pps-nav-tabs" role="tablist" aria-label="PPS sections">
+      <button type="button" class="pps-nav-tab is-active" role="tab" aria-selected="true"
+              data-pps-tab="sheets" id="pps-tab-sheets" aria-controls="pps-panel-sheets">
+        Process sheets
       </button>
-      <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="not-started">
-        Waiting <span class="pps-tab-count" data-count="not-started">0</span>
+      <button type="button" class="pps-nav-tab" role="tab" aria-selected="false"
+              data-pps-tab="supply-chain" id="pps-tab-supply-chain" aria-controls="pps-panel-supply-chain">
+        Supply Chain
       </button>
-      <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="completed">
-        Done <span class="pps-tab-count" data-count="completed">0</span>
-      </button>
-      <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="all">
-        All <span class="pps-tab-count" data-count="all">0</span>
+      <button type="button" class="pps-nav-tab" role="tab" aria-selected="false"
+              data-pps-tab="planner" id="pps-tab-planner" aria-controls="pps-panel-planner">
+        Planner
       </button>
     </div>
-    <label class="pps-quiet-check">
-      <input id="pps-tracking-hide-zero-value" type="checkbox" checked>
-      Hide $0 SO
-    </label>
-    <button type="button" class="pps-clear-filters" id="pps-clear-col-filters" hidden>Clear column filters</button>
-  </div>
+    <p class="pps-nav-hint" id="pps-nav-hint">Track PPS jobs, material overview, and site machine lanes.</p>
+  </nav>
 
-  <div id="pps-tracking-loading" class="pps-loading" hidden>
-    <div class="pps-spinner" aria-hidden="true"></div>
-    Loading...
-  </div>
+  <section class="pps-tab-panel is-active" id="pps-panel-sheets" role="tabpanel" aria-labelledby="pps-tab-sheets" data-pps-panel="sheets">
+    <div class="pps-controls" aria-label="Filters">
+      <div class="pps-status-tabs" role="tablist" aria-label="Job status">
+        <button type="button" class="pps-status-tab is-active" role="tab" aria-selected="true" data-status="active">
+          Active <span class="pps-tab-count" data-count="active">0</span>
+        </button>
+        <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="not-started">
+          Waiting <span class="pps-tab-count" data-count="not-started">0</span>
+        </button>
+        <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="completed">
+          Done <span class="pps-tab-count" data-count="completed">0</span>
+        </button>
+        <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="all">
+          All <span class="pps-tab-count" data-count="all">0</span>
+        </button>
+      </div>
+      <label class="pps-quiet-check">
+        <input id="pps-tracking-hide-zero-value" type="checkbox" checked>
+        Hide $0 SO
+      </label>
+      <button type="button" class="pps-clear-filters" id="pps-clear-col-filters" hidden>Clear column filters</button>
+    </div>
 
-  <div id="pps-board" class="pps-board pps-board--columns" hidden></div>
-  <p id="pps-tracking-empty" class="pps-empty" hidden>No jobs match.</p>
+    <div id="pps-tracking-loading" class="pps-loading" hidden>
+      <div class="pps-spinner" aria-hidden="true"></div>
+      Loading...
+    </div>
+
+    <div id="pps-board" class="pps-board pps-board--columns" hidden></div>
+    <p id="pps-tracking-empty" class="pps-empty" hidden>No jobs match.</p>
+  </section>
+
+  <section class="pps-tab-panel" id="pps-panel-supply-chain" role="tabpanel" aria-labelledby="pps-tab-supply-chain" data-pps-panel="supply-chain" hidden>
+    <div class="pps-embed-head">
+      <div>
+        <h2 class="pps-embed-title">Supply Chain · Overview</h2>
+        <p class="pps-embed-copy">PR lines with PO, shipment, GRN, and QI on the same row — ported from Supply Chain View.</p>
+      </div>
+      <a class="pps-btn pps-btn--link" href="{{ pps_supply_chain_url }}" target="_blank" rel="noopener">Open full Supply Chain</a>
+    </div>
+    <iframe
+      id="pps-supply-chain-frame"
+      class="pps-embed-frame"
+      title="Supply Chain Overview"
+      data-src="{{ pps_supply_chain_embed }}"
+      loading="lazy"
+      referrerpolicy="no-referrer"
+    ></iframe>
+  </section>
+
+  <section class="pps-tab-panel" id="pps-panel-planner" role="tabpanel" aria-labelledby="pps-tab-planner" data-pps-panel="planner" hidden>
+    <div class="pps-embed-head">
+      <div>
+        <h2 class="pps-embed-title">Planner · CNC 20 + Wire cut</h2>
+        <p class="pps-embed-copy">Direct access to this site’s CNC 20 lane and the PPS-only Wire cut lane.</p>
+      </div>
+      <div class="pps-embed-actions">
+        <a class="pps-btn pps-btn--link" href="{{ pps_planner_full }}" target="_blank" rel="noopener">Open editable planner</a>
+      </div>
+    </div>
+    <iframe
+      id="pps-planner-frame"
+      class="pps-embed-frame pps-embed-frame--planner"
+      title="PPS site planner lanes"
+      data-src="{{ pps_planner_embed }}"
+      loading="lazy"
+      referrerpolicy="no-referrer"
+    ></iframe>
+  </section>
 </div>
 
 <div id="pps-col-popover" class="pps-col-popover" hidden>
