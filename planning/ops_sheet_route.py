@@ -133,6 +133,120 @@ def api_ops_sheet_delete_column(column_id: int):
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
+@ops_sheet_bp.get("/api/rfq-workflow")
+def api_rfq_library():
+    from .rfq_workflow import library_payload
+
+    try:
+        return jsonify(library_payload(_rfq_team()))
+    except Exception as exc:
+        logger.exception("RFQ library failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@ops_sheet_bp.post("/api/rfq-workflow/team")
+def api_rfq_team():
+    from flask import session
+
+    from .rfq_workflow import TEAMS
+
+    data = request.get_json(silent=True) or {}
+    team = data.get("team")
+    if team not in TEAMS:
+        return jsonify({"ok": False, "error": "Choose a team."}), 400
+    session["rfq_team"] = team
+    session.permanent = True
+    return jsonify({"ok": True, "team": team, "label": TEAMS[team]})
+
+
+@ops_sheet_bp.patch("/api/rfq-workflow/files/<int:sheet_id>")
+def api_rfq_header(sheet_id: int):
+    from .rfq_workflow import update_header
+
+    data = request.get_json(silent=True) or {}
+    return _rfq_call(lambda: update_header(sheet_id, _rfq_team(), data.get("fields") or data))
+
+
+@ops_sheet_bp.patch("/api/rfq-workflow/lines/<int:line_id>/ops")
+def api_rfq_ops(line_id: int):
+    from .rfq_workflow import update_ops_line
+
+    data = request.get_json(silent=True) or {}
+    return _rfq_call(lambda: update_ops_line(line_id, _rfq_team(), data.get("fields") or {}))
+
+
+@ops_sheet_bp.patch("/api/rfq-workflow/lines/<int:line_id>/quote")
+def api_rfq_quote(line_id: int):
+    from .rfq_workflow import update_quote
+
+    data = request.get_json(silent=True) or {}
+    return _rfq_call(lambda: update_quote(line_id, _rfq_team(), data.get("fields") or {}))
+
+
+@ops_sheet_bp.patch("/api/rfq-workflow/lines/<int:line_id>/tat")
+def api_rfq_tat(line_id: int):
+    from .rfq_workflow import update_tat
+
+    data = request.get_json(silent=True) or {}
+    return _rfq_call(lambda: update_tat(line_id, _rfq_team(), data.get("tat_days")))
+
+
+@ops_sheet_bp.post("/api/rfq-workflow/lines/<int:line_id>/reconfirm")
+def api_rfq_reconfirm(line_id: int):
+    from .rfq_workflow import reconfirm_line
+
+    return _rfq_call(lambda: reconfirm_line(line_id, _rfq_team()))
+
+
+@ops_sheet_bp.get("/api/rfq-workflow/files/<int:sheet_id>/price-to-sales")
+def api_rfq_price_sheet(sheet_id: int):
+    from io import BytesIO
+
+    from flask import send_file
+
+    from .rfq_workflow import RfqWorkflowError, price_to_sales_workbook
+
+    try:
+        book, rfq = price_to_sales_workbook(sheet_id)
+    except RfqWorkflowError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.status
+    except Exception as exc:
+        logger.exception("Price to Sales export failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    buffer = BytesIO()
+    book.save(buffer)
+    buffer.seek(0)
+    name = f"{rfq['rfq_no'] or 'RFQ'} price to sales.xlsx"
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=name,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _rfq_team() -> str:
+    from flask import session
+
+    team = session.get("rfq_team") or "ops"
+    if team not in {"ops", "supply_chain", "planning", "sales"}:
+        return "ops"
+    return team
+
+
+def _rfq_call(action):
+    from .ops_sheet_service import OpsSheetError
+    from .rfq_workflow import RfqWorkflowError
+
+    try:
+        return jsonify(action())
+    except (RfqWorkflowError, OpsSheetError) as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.status
+    except Exception as exc:
+        logger.exception("RFQ workflow update failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 def _parse_operation_count(value):
     if value is None or value == "":
         return None

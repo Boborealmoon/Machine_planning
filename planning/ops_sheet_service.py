@@ -139,6 +139,9 @@ def ensure_ops_sheet_tables(con) -> None:
         )
         """
     )
+    from .rfq_workflow import ensure_rfq_workflow
+
+    ensure_rfq_workflow(con)
 
 
 def list_ops_sheets() -> dict:
@@ -168,6 +171,9 @@ def scan_ops_sheets() -> dict:
             seen.add(os.path.normcase(item["source_path"]))
         failed = {os.path.normcase(item["path"]) for item in errors}
         _mark_missing(con, root, seen, failed)
+        from .rfq_workflow import finish_library
+
+        finish_library(con)
         payload = _payload(con)
     payload["summary"] = {
         "files": len(files),
@@ -466,6 +472,9 @@ def _upsert_sheet(con, item: dict) -> None:
             continue
         extras_by_row.setdefault(source["row_index"], []).append(extra)
     old_by_row = {line["row_index"]: line for line in old_lines}
+    from .rfq_workflow import capture_workflow, link_repeats, restore_workflow
+
+    captured = capture_workflow(con, sheet_id)
     con.execute(
         "DELETE FROM public.planner_ops_sheet_line WHERE sheet_id = %s",
         (sheet_id,),
@@ -546,6 +555,8 @@ def _upsert_sheet(con, item: dict) -> None:
                     """,
                     (inserted["line_id"], extra["column_id"], extra["minutes"]),
                 )
+    restore_workflow(con, sheet_id, captured)
+    link_repeats(con, sheet_id)
 
 
 def _mark_missing(con, root: str, seen: set[str], failed: set[str]) -> None:

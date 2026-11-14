@@ -1,0 +1,318 @@
+{
+  "rfqNo": "RFQ00006",
+  "customer": "Langley / HH",
+  "dateIn": "2026-11-02",
+  "dateOut": "2026-11-02",
+  "opsRev": 2,
+  "lines": [
+    {
+      "sn": 1,
+      "partNumber": "10405235",
+      "description": "ADPTR BW 1/2\"NB - Ø3/8\" X 0.065\" SD OSS",
+      "rfqQty": 9,
+      "material": {
+        "type": "Super Duplex UNS S32750",
+        "spec": null,
+        "specCodeSupplyChain": "10003560515"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 12.7,
+        "width": null,
+        "length": 105
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 90
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "3TN",
+      "nreSgd": null,
+      "quoteRefSn": null,
+      "supplyChain": {
+        "supplierNote": "1mtr = 9ea\nneed 15mtr",
+        "qtyNeededMtr": 15,
+        "kgPerMtr": 1.1,
+        "materialCostSgd": 100.2332,
+        "leadTime": "12 weeks"
+      }
+    },
+    {
+      "sn": 2,
+      "partNumber": "10405235",
+      "description": "ADPTR BW 1/2\"NB - Ø3/8\" X 0.065\" SD OSS",
+      "rfqQty": 123,
+      "material": {
+        "type": "Super Duplex UNS S32750",
+        "spec": null,
+        "specCodeSupplyChain": "10003560515"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 12.7,
+        "width": null,
+        "length": 105
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 90
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "3TN",
+      "nreSgd": null,
+      "quoteRefSn": 1,
+      "supplyChain": null
+    },
+    {
+      "sn": 3,
+      "partNumber": "10405237",
+      "description": "ADPTR BW 3/4\"NB - Ø1\" X 0.125\" SD OSS",
+      "rfqQty": 3,
+      "material": {
+        "type": "Super Duplex UNS S32750",
+        "spec": null,
+        "specCodeSupplyChain": "10003560515"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 31.75,
+        "width": null,
+        "length": 105
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 90
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "3TN",
+      "nreSgd": null,
+      "quoteRefSn": null,
+      "supplyChain": {
+        "supplierNote": "1mtr = 9ea\nneed 12mtr",
+        "qtyNeededMtr": 12,
+        "kgPerMtr": 8.217,
+        "materialCostSgd": 626.9908,
+        "leadTime": null
+      }
+    },
+    {
+      "sn": 4,
+      "partNumber": "10405237",
+      "description": "ADPTR BW 3/4\"NB - Ø1\" X 0.125\" SD OSS",
+      "rfqQty": 98,
+      "material": {
+        "type": "Super Duplex UNS S32750",
+        "spec": null,
+        "specCodeSupplyChain": "10003560515"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 31.75,
+        "width": null,
+        "length": 105
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 90
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "3TN",
+      "nreSgd": null,
+      "quoteRefSn": 3,
+      "supplyChain": null
+    },
+    {
+      "sn": 5,
+      "partNumber": "10405239",
+      "description": "ADPTR BW 1/2\"NB - Ø1/2\" X 0.083\" 316 OSS",
+      "rfqQty": 7,
+      "material": {
+        "type": "St. Stl. Grade EN 1.44.4 (to EN 10272)",
+        "spec": null,
+        "specCodeSupplyChain": "10003560511"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 19.05,
+        "width": null,
+        "length": 105
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 90
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "3TN",
+      "nreSgd": null,
+      "quoteRefSn": null,
+      "supplyChain": {
+        "supplierNote": "1mtr = 9ea\nneed 18-19mtr",
+        "qtyNeededMtr": 19,
+        "kgPerMtr": 1.254,
+        "materialCostSgd": 149.00639999999999,
+        "leadTime": null
+      }
+    },
+    {
+      "sn": 6,
+      "partNumber": "10405239",
+      "description": "ADPTR BW 1/2\"NB - Ø1/2\" X 0.083\" 316 OSS",
+      "rfqQty": 155,
+      "material": {
+        "type": "St. Stl. Grade EN 1.44.4 (to EN 10272)",
+        "spec": null,
+        "specCodeSupplyChain": "10003560511"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 19.05,
+        "width": null,
+        "length": 105
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 90
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "3TN",
+      "nreSgd": null,
+      "quoteRefSn": 5,
+      "supplyChain": null
+    },
+    {
+      "sn": 7,
+      "partNumber": "BB18-KS1354-07",
+      "description": "1/2''NB CPLG VALVE STEM VENTED WITH EXT.",
+      "rfqQty": 10,
+      "material": {
+        "type": "HIGH PERFORMANCE NICKEL ALLOY K500 GRADE UNS N05500 AS PER",
+        "spec": "SC MATERIAL DATASHEET 66-KS0007-01",
+        "specCodeSupplyChain": null
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 19.05,
+        "width": null,
+        "length": 46
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "4 Axis": 30,
+        "Quick Turn": 35
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "Repeated, NPS26-0145",
+      "nreSgd": null,
+      "quoteRefSn": null,
+      "supplyChain": {
+        "supplierNote": "1mtr = 20ea\nneed 12mtr",
+        "qtyNeededMtr": 12,
+        "kgPerMtr": 2.6510000000000002,
+        "materialCostSgd": 462.53679999999997,
+        "leadTime": null
+      }
+    },
+    {
+      "sn": 8,
+      "partNumber": "BB18-KS1354-07",
+      "description": "1/2''NB CPLG VALVE STEM VENTED WITH EXT.",
+      "rfqQty": 218,
+      "material": {
+        "type": "HIGH PERFORMANCE NICKEL ALLOY K500 GRADE UNS N05500 AS PER",
+        "spec": "SC MATERIAL DATASHEET 66-KS0007-01",
+        "specCodeSupplyChain": null
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 19.05,
+        "width": null,
+        "length": 46
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "4 Axis": 30,
+        "Quick Turn": 35
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "Repeated, NPS26-0145",
+      "nreSgd": null,
+      "quoteRefSn": 7,
+      "supplyChain": null
+    },
+    {
+      "sn": 9,
+      "partNumber": "BB18-KS1555-17",
+      "description": "3/8\" UNIVERSAL TEST ADAPTOR  MPAC (F)",
+      "rfqQty": 12,
+      "material": {
+        "type": "Nitronic 50 UNS 20910",
+        "spec": "10003560664-PDC-000",
+        "specCodeSupplyChain": "10003560664-PDC-000\n10003560447"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 38.1,
+        "width": null,
+        "length": 30
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "4 Axis": 10,
+        "Quick Turn": 15
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "Repeated, NPS25-0049",
+      "nreSgd": null,
+      "quoteRefSn": null,
+      "supplyChain": {
+        "supplierNote": "1mtr = 32ea\nneed 380+mm",
+        "qtyNeededMtr": 1,
+        "kgPerMtr": 98.82400000000001,
+        "materialCostSgd": 685.0400000000001,
+        "leadTime": null
+      }
+    },
+    {
+      "sn": 10,
+      "partNumber": "BB18-KS1694-20",
+      "description": "ADAPTOR BUTT WELD (3/8\" X 0.080\")",
+      "rfqQty": 5,
+      "material": {
+        "type": "SUPER DUPLEX UNS S32750",
+        "spec": null,
+        "specCodeSupplyChain": "10003560516"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 31.75,
+        "width": null,
+        "length": 53
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "Quick Turn": 80
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "Repeated, NPS25-0071",
+      "nreSgd": null,
+      "quoteRefSn": 3,
+      "supplyChain": null
+    },
+    {
+      "sn": 11,
+      "partNumber": "BB18-KS1700-10",
+      "description": "ADPTR BUTT WELD 1/2\"NB - 8JIC (M)",
+      "rfqQty": 1,
+      "material": {
+        "type": "Nitronic 50 UNS 20910",
+        "spec": "10003560664-PDC-000",
+        "specCodeSupplyChain": "10003560664-PDC-000\n10003560447"
+      },
+      "rawMaterialMm": {
+        "thkOrDia": 38.1,
+        "width": null,
+        "length": 47
+      },
+      "setupMins": 180,
+      "machineMins": {
+        "4 Axis": 20,
+        "Quick Turn": 30
+      },
+      "fixtureRequired": null,
+      "engineeringRemarks": "2TN 1 ML",
+      "nreSgd": null,
+      "quoteRefSn": 9,
+      "supplyChain": null
+    }
+  ]
+}

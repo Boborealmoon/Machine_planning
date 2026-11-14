@@ -65,7 +65,19 @@
 
   <section class="pps-tab-panel is-active" id="pps-panel-sheets" role="tabpanel" aria-labelledby="pps-tab-sheets" data-pps-panel="sheets">
     <div class="pps-controls" aria-label="Filters">
-      <div class="pps-status-tabs" role="tablist" aria-label="Job status">
+      <div class="pps-filter-groups">
+        <div class="pps-owner-tabs" role="tablist" aria-label="Sales person">
+          <button type="button" class="pps-owner-tab" role="tab" aria-selected="false" data-owner="ang">
+            Ang SN <span class="pps-tab-count" data-owner-count="ang">0</span>
+          </button>
+          <button type="button" class="pps-owner-tab" role="tab" aria-selected="false" data-owner="alice">
+            Alice <span class="pps-tab-count" data-owner-count="alice">0</span>
+          </button>
+          <button type="button" class="pps-owner-tab" role="tab" aria-selected="false" data-owner="chin">
+            Chin <span class="pps-tab-count" data-owner-count="chin">0</span>
+          </button>
+        </div>
+        <div class="pps-status-tabs" role="tablist" aria-label="Job status">
         <button type="button" class="pps-status-tab is-active" role="tab" aria-selected="true" data-status="active">
           Active <span class="pps-tab-count" data-count="active">0</span>
         </button>
@@ -78,6 +90,7 @@
         <button type="button" class="pps-status-tab" role="tab" aria-selected="false" data-status="all">
           All <span class="pps-tab-count" data-count="all">0</span>
         </button>
+        </div>
       </div>
       <label class="pps-quiet-check">
         <input id="pps-tracking-hide-zero-value" type="checkbox" checked>
@@ -117,7 +130,7 @@
     <iframe
       id="pps-planner-frame"
       class="pps-embed-frame pps-embed-frame--planner"
-      title="CNC 20 and Wire cut lanes"
+      title="CNC 20, CNC 29, and Wire cut lanes"
       data-src="{{ pps_planner_embed }}"
       loading="lazy"
     ></iframe>

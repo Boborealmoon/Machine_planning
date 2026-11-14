@@ -2,6 +2,12 @@
 const PPS_VIEW_KEY = 'pps.viewStyle';
 const PPS_FLAGGED_FIRST_KEY = 'pps.flaggedFirst';
 const PPS_TAB_KEY = 'pps.activeTab';
+const PPS_OWNER_KEY = 'pps.owner';
+const PPS_OWNERS = [
+  { id: 'ang', label: 'Ang SN' },
+  { id: 'alice', label: 'Alice' },
+  { id: 'chin', label: 'Chin' },
+];
 const PPS_TABS = new Set(['sheets', 'supply-chain', 'planner']);
 const PPS_TAB_COPY = {
   sheets: {
@@ -14,7 +20,7 @@ const PPS_TAB_COPY = {
   },
   planner: {
     title: 'Planner',
-    hint: 'CNC 20 and Wire cut lanes. Operation cards start on PPS.',
+    hint: 'CNC 20, CNC 29, and Wire cut lanes. Operation cards start on PPS.',
   },
 };
 
@@ -41,6 +47,7 @@ const ppsState = {
   trackingModalKey: '',
   openKey: '',
   view: localStorage.getItem(PPS_VIEW_KEY) === 'cards' ? 'cards' : 'columns',
+  owner: ppsReadOwner(),
   flaggedFirst: localStorage.getItem(PPS_FLAGGED_FIRST_KEY) === '1',
   sort: null,
   filters: {},
@@ -163,6 +170,39 @@ function ppsSalesLabel(row) {
   return name || code;
 }
 
+function ppsReadOwner() {
+  try {
+    const saved = localStorage.getItem(PPS_OWNER_KEY);
+    if (PPS_OWNERS.some((owner) => owner.id === saved)) return saved;
+  } catch (_) { /* keep the first salesperson */ }
+  return PPS_OWNERS[0].id;
+}
+
+function ppsOwnerLabel(ownerId) {
+  return PPS_OWNERS.find((owner) => owner.id === ownerId)?.label || '';
+}
+
+function ppsOwnerIdForRow(row) {
+  const name = String(row?.sales_person_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const code = String(row?.sales_person_code || '').trim().toLowerCase();
+  const key = name || code;
+  if (!key) return '';
+  const parts = key.split(' ');
+  const second = parts[1] || '';
+  // Ang SN is Ang Siong Nee. Other Ang names stay off this tab.
+  if (parts[0] === 'ang' && (second === 'sn' || second.startsWith('siong'))) return 'ang';
+  if (parts[0] === 'alice') return 'alice';
+  if (parts[0] === 'chin') return 'chin';
+  return '';
+}
+
+function ppsOwnerRows() {
+  return ppsState.trackingRows.filter((row) => {
+    if (ppsRowHiddenByValue(row)) return false;
+    return ppsOwnerIdForRow(row) === ppsState.owner;
+  });
+}
+
 function ppsFilterSpec(colId) {
   if (!ppsState.filters[colId]) {
     ppsState.filters[colId] = { q: '', selected: new Set() };
@@ -250,8 +290,7 @@ function ppsRowHiddenByValue(row) {
 
 function ppsBaseRows() {
   const search = ppsState.trackingSearch.trim().toLowerCase();
-  return ppsState.trackingRows.filter((row) => {
-    if (ppsRowHiddenByValue(row)) return false;
+  return ppsOwnerRows().filter((row) => {
     if (ppsState.trackingStatus !== 'all' && ppsStageKind(row) !== ppsState.trackingStatus) return false;
     return !search || ppsHaystack(row).includes(search);
   });
@@ -291,13 +330,20 @@ function ppsFilteredRows() {
 
 function ppsUpdateTabCounts() {
   const counts = { active: 0, completed: 0, 'not-started': 0, all: 0 };
+  const ownerCounts = { ang: 0, alice: 0, chin: 0 };
   for (const row of ppsState.trackingRows) {
     if (ppsRowHiddenByValue(row)) continue;
+    const ownerId = ppsOwnerIdForRow(row);
+    if (Object.prototype.hasOwnProperty.call(ownerCounts, ownerId)) ownerCounts[ownerId] += 1;
+    if (ownerId !== ppsState.owner) continue;
     counts[ppsStageKind(row)] += 1;
     counts.all += 1;
   }
   document.querySelectorAll('[data-count]').forEach((el) => {
     el.textContent = String(counts[el.getAttribute('data-count')] ?? 0);
+  });
+  document.querySelectorAll('[data-owner-count]').forEach((el) => {
+    el.textContent = String(ownerCounts[el.getAttribute('data-owner-count')] ?? 0);
   });
 }
 
@@ -311,6 +357,24 @@ function ppsApplyViewChrome() {
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
   ppsApplyFlaggedFirstChrome();
+  ppsApplyOwnerChrome();
+}
+
+function ppsApplyOwnerChrome() {
+  document.querySelectorAll('.pps-owner-tab').forEach((tab) => {
+    const active = tab.getAttribute('data-owner') === ppsState.owner;
+    tab.classList.toggle('is-active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function ppsSetOwner(ownerId) {
+  const next = PPS_OWNERS.some((owner) => owner.id === ownerId) ? ownerId : PPS_OWNERS[0].id;
+  ppsState.owner = next;
+  try {
+    localStorage.setItem(PPS_OWNER_KEY, next);
+  } catch (_) { /* keep the choice for this visit */ }
+  ppsRender();
 }
 
 function ppsApplyFlaggedFirstChrome() {
@@ -914,22 +978,24 @@ function ppsRender() {
   ppsUpdateTabCounts();
   const base = ppsBaseRows();
   const rows = ppsFilteredRows();
+  const ownerLabel = ppsOwnerLabel(ppsState.owner);
   if (stats) {
     const label = ppsState.trackingStatus === 'all'
       ? 'all'
       : ppsStatusLabel(ppsState.trackingStatus).toLowerCase();
+    const who = ownerLabel ? ` · ${ownerLabel}` : '';
     stats.textContent = rows.length
-      ? `${rows.length} ${label} job${rows.length === 1 ? '' : 's'}`
-      : `No ${label} jobs`;
+      ? `${rows.length} ${label} job${rows.length === 1 ? '' : 's'}${who}`
+      : `No ${label} jobs${who}`;
   }
   if (!base.length) {
     ppsCloseColFilter();
     board.hidden = true;
     board.innerHTML = '';
     empty.hidden = false;
-    empty.textContent = ppsState.trackingRows.length
-      ? 'No jobs match these filters.'
-      : 'No PPS jobs available.';
+    if (!ppsState.trackingRows.length) empty.textContent = 'No PPS jobs available.';
+    else if (!ppsOwnerRows().length) empty.textContent = ownerLabel ? `No jobs for ${ownerLabel}.` : 'No jobs match these filters.';
+    else empty.textContent = 'No jobs match these filters.';
     ppsSyncSortChrome();
     return;
   }
@@ -1066,6 +1132,12 @@ document.querySelector('.pps-status-tabs')?.addEventListener('click', (event) =>
   const tab = event.target.closest('.pps-status-tab');
   if (!tab) return;
   ppsSetStatus(tab.getAttribute('data-status') || 'active');
+});
+
+document.querySelector('.pps-owner-tabs')?.addEventListener('click', (event) => {
+  const tab = event.target.closest('.pps-owner-tab');
+  if (!tab) return;
+  ppsSetOwner(tab.getAttribute('data-owner') || '');
 });
 
 document.getElementById('pps-board')?.addEventListener('click', (event) => {

@@ -521,8 +521,8 @@ MPP_PLANNER_GUARD_MSG = (
     "This block belongs to the MPP planner tab — edit it there, not on the main planner board."
 )
 
-# PPS site planner lanes. CNC 20 stays on the main board; Wire cut is PPS-only.
-PPS_SITE_PLANNER_MACHINE_CODES = frozenset({"CNC 20", "Wire cut"})
+# PPS site planner lanes. CNC 20 and CNC 29 stay on the main board; Wire cut is PPS-only.
+PPS_SITE_PLANNER_MACHINE_CODES = frozenset({"CNC 20", "CNC 29", "Wire cut"})
 PPS_SITE_ONLY_MACHINE_CODES = frozenset({"Wire cut"})
 
 
@@ -631,7 +631,7 @@ def fetch_scheduler_machines(con, *, include_pps_site_only: bool = False):
 
 
 def fetch_pps_site_planner_machines(con) -> list[dict]:
-    """CNC 20 + Wire cut lanes for the PPS site planner tab."""
+    """CNC 20, CNC 29, and Wire cut lanes for the PPS site planner tab."""
     codes = [code.upper() for code in PPS_SITE_PLANNER_MACHINE_CODES]
     if not codes:
         return []
@@ -648,7 +648,8 @@ def fetch_pps_site_planner_machines(con) -> list[dict]:
                 ORDER BY
                     CASE UPPER(machine_no)
                         WHEN 'CNC 20' THEN 1
-                        WHEN 'WIRE CUT' THEN 2
+                        WHEN 'CNC 29' THEN 2
+                        WHEN 'WIRE CUT' THEN 3
                         ELSE 99
                     END,
                     machine_id

@@ -1,80 +1,82 @@
 {% extends "base.html" %}
-{% block title %}Quoted parts{% endblock %}
+{% block title %}RFQ library{% endblock %}
 {% block body_class %}ops-sheet-view{% endblock %}
 {% block main_class %}app-main--ops-sheet{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/ops_sheet.css') }}?v=ops-sheet-20261112d">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/ops_sheet.css') }}?v=rfq-20261114a">
 {% endblock %}
 {% block content %}
-<div class="ops-page">
+<div class="ops-page" id="rfq-app">
   <header class="ops-header">
     <div>
       <p class="ops-kicker">Ops</p>
-      <h1>Quoted parts</h1>
-      <p class="ops-formula">Search the quote database. Each part stays tagged to its RFQ file, and edits are saved in Supabase.</p>
+      <h1 id="rfq-title">RFQ library</h1>
+      <p class="ops-formula">Every RFQ is one shared record in Supabase. Operations, Supply Chain and Planning each edit only their own columns. Sales sees the whole record.</p>
     </div>
+    <div class="rfq-teams" id="rfq-teams" role="group" aria-label="Working team"></div>
   </header>
 
-  <div class="ops-toolbar">
-    <label class="ops-search">
-      <span class="ops-sr">Search</span>
-      <input id="ops-search" type="search" placeholder="Search part, material, remark, qty, or RFQ file" autocomplete="off">
-    </label>
-    <label class="ops-status">
-      <span>Library</span>
-      <select id="ops-status">
-        <option value="all">All</option>
-        <option value="current">Current</option>
-        <option value="completed">Completed</option>
-        <option value="archive">Archive</option>
-      </select>
-    </label>
-  </div>
-  <p class="ops-meta" id="ops-meta">Loading the quote database…</p>
-  <div id="ops-alert" class="ops-alert" hidden></div>
-  <div id="ops-results" class="ops-results">
-    <p class="ops-idle">Loading quoted parts…</p>
-  </div>
+  <div id="rfq-alert" class="ops-alert" hidden></div>
 
-  <details class="ops-help">
-    <summary>Import and turnaround</summary>
-    <p>
-      The folder import only onboards workbooks into Supabase. After that, search and edit the lines here.
-      Tick Show line items on a file to open its columns.
-      TAT minutes = (cycle minutes + per-piece extras) × RFQ qty + (setup + per-operation extras) × operations + flat extras.
-      Hours = minutes / 60.
-      Operations come from remark tags such as 2 TN or 2 ML, or from how many cycle cells have a time.
-    </p>
-    <div class="ops-actions">
-      <button type="button" class="ops-btn" id="ops-add-col">Add TAT column</button>
-      <button type="button" class="ops-btn ops-btn--primary" id="ops-scan">Import from RFQ folder</button>
+  <section id="rfq-library">
+    <div class="ops-toolbar">
+      <label class="ops-search">
+        <span class="ops-sr">Search</span>
+        <input id="rfq-search" type="search" placeholder="Search RFQ no., customer, part number, description, material" autocomplete="off">
+      </label>
+      <div class="rfq-view" role="group" aria-label="Layout">
+        <button type="button" class="ops-btn" id="rfq-grid" data-view="grid">Grid</button>
+        <button type="button" class="ops-btn" id="rfq-list" data-view="list">List</button>
+      </div>
+      <label class="ops-status">
+        <span>Folder</span>
+        <select id="rfq-folder">
+          <option value="all">All</option>
+          <option value="current">Current</option>
+          <option value="completed">Completed</option>
+          <option value="archive">Archive</option>
+        </select>
+      </label>
     </div>
-  </details>
-</div>
+    <div class="rfq-chips" id="rfq-chips"></div>
+    <p class="ops-meta" id="rfq-meta">Loading the RFQ library…</p>
+    <div id="rfq-results" class="rfq-results">
+      <p class="ops-idle">Loading quoted parts…</p>
+    </div>
+    <details class="ops-help">
+      <summary>Import and turnaround</summary>
+      <p>
+        Import from RFQ folder onboards the OPS Sheet workbooks into Supabase. After that, each file is one RFQ.
+        Repeat part numbers in the same RFQ share one supplier quote. TAT days stay on each line.
+        Calculated hours still come from cycle minutes × qty + setup × operations.
+        Planning can enter TAT days only after Supply Chain has a quoted lead time.
+        An Operations edit after a confirm asks that team to reconfirm.
+      </p>
+      <div class="ops-actions">
+        <button type="button" class="ops-btn ops-btn--primary" id="ops-scan">Import from RFQ folder</button>
+      </div>
+    </details>
+  </section>
 
-<div class="ops-modal" id="ops-modal" hidden>
-  <form class="ops-modal-card" id="ops-col-form">
-    <h2>Add a TAT column</h2>
-    <p>The minutes you enter on each part are added into that part’s turnaround.</p>
-    <label>
-      Column name
-      <input name="name" maxlength="48" required placeholder="CMM, packing, allowance">
-    </label>
-    <label>
-      How it is added
-      <select name="apply_mode">
-        <option value="per_piece">Per piece — added to the cycle, then × RFQ qty</option>
-        <option value="per_operation">Per operation — added to setup, then × operations</option>
-        <option value="flat">Flat minutes — added once</option>
-      </select>
-    </label>
-    <div class="ops-modal-actions">
-      <button type="button" class="ops-btn" id="ops-col-cancel">Cancel</button>
-      <button type="submit" class="ops-btn ops-btn--primary">Add column</button>
+  <section id="rfq-detail" hidden>
+    <p class="rfq-crumb"><button type="button" class="rfq-back" id="rfq-back">All RFQs</button> <span id="rfq-crumb-name"></span></p>
+    <div class="rfq-summary" id="rfq-summary"></div>
+    <div class="ops-toolbar">
+      <label class="ops-search">
+        <span class="ops-sr">Search lines</span>
+        <input id="rfq-line-search" type="search" placeholder="Search this RFQ’s lines" autocomplete="off">
+      </label>
+      <a class="ops-btn" id="rfq-export" href="#">Export price to sales</a>
     </div>
-  </form>
+    <div class="rfq-scroll" id="rfq-table"></div>
+    <p class="rfq-hint" id="rfq-hint"></p>
+    <section class="rfq-activity">
+      <h2>Activity</h2>
+      <ul id="rfq-log"></ul>
+    </section>
+  </section>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/ops_sheet.js') }}?v=ops-sheet-20261112e"></script>
+<script src="{{ url_for('static', filename='js/ops_sheet.js') }}?v=rfq-20261114a"></script>
 {% endblock %}

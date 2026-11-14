@@ -853,9 +853,9 @@ function trialHasLiveBlockQueueIndex() {
 
 /** CNC lanes owned by the MPP planner tab — mirrored on the main board (planning/machines.py). */
 const TRIAL_MPP_PLANNER_MACHINE_CODES = new Set(['CNC 35', 'CNC 36', 'CNC 41']);
-/** Wire cut is PPS-site only; CNC 20 stays on the main board and on the PPS planner tab. */
+/** Wire cut is PPS-site only; CNC 20 and CNC 29 stay on the main board and on the PPS planner tab. */
 const TRIAL_PPS_SITE_ONLY_MACHINE_CODES = new Set(['WIRE CUT']);
-const TRIAL_PPS_SITE_PLANNER_MACHINE_CODES = new Set(['CNC 20', 'WIRE CUT']);
+const TRIAL_PPS_SITE_PLANNER_MACHINE_CODES = new Set(['CNC 20', 'CNC 29', 'WIRE CUT']);
 let trialLaneFocusCodes = null;
 let trialPpsSiteMode = false;
 

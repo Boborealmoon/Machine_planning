@@ -1,579 +1,465 @@
 (function () {
-  const CYCLE_KEYS = [
-    "mill_3axis", "mill_4axis", "mill_5axis", "mill_5axis_i800",
-    "turn_quick", "turn_j200", "turn_i250",
-    "edm_wirecut", "edm", "edm_superdrill",
-    "backend_deburr", "backend_cleaning",
+  const FILTERS = [
+    ["all", "All"],
+    ["ops", "Waiting on Ops"],
+    ["supply_chain", "Waiting on Supply Chain"],
+    ["planning", "Waiting on Planning"],
+    ["ready", "Ready for Sales"],
   ];
-
+  const HINTS = {
+    ops: "Operations owns the master columns. Changing a quoted line raises its revision so Supply Chain or Planning must reconfirm.",
+    supply_chain: "Supply Chain owns the supplier quote. Repeat lines share the earlier line’s quote. Set Quoted and a lead time before Planning can enter TAT.",
+    planning: "Planning enters TAT days on each line. The field stays locked until the supplier quote has a lead time.",
+    sales: "Sales can read every column and cannot edit them.",
+  };
   const state = {
-    payload: null,
-    status: "all",
+    team: "ops",
+    teams: [],
+    machines: [],
+    rfqs: [],
     query: "",
-    openFiles: {},
+    filter: "all",
+    folder: "all",
+    view: "grid",
+    sheetId: null,
+    lineQuery: "",
   };
 
-  const results = document.getElementById("ops-results");
-  const alertBox = document.getElementById("ops-alert");
-  const meta = document.getElementById("ops-meta");
-  const scanBtn = document.getElementById("ops-scan");
-  const modal = document.getElementById("ops-modal");
+  const app = document.getElementById("rfq-app");
+  const alertBox = document.getElementById("rfq-alert");
+  const library = document.getElementById("rfq-library");
+  const detail = document.getElementById("rfq-detail");
 
-  document.getElementById("ops-search").addEventListener("input", function (event) {
-    state.query = event.target.value || "";
-    render();
+  document.getElementById("rfq-search").addEventListener("input", (event) => {
+    state.query = event.target.value;
+    renderLibrary();
   });
-  document.getElementById("ops-status").addEventListener("change", function (event) {
-    state.status = event.target.value;
-    render();
+  document.getElementById("rfq-line-search").addEventListener("input", (event) => {
+    state.lineQuery = event.target.value;
+    renderDetail();
   });
-  scanBtn.addEventListener("click", scan);
-  document.getElementById("ops-add-col").addEventListener("click", function () {
-    modal.hidden = false;
-    modal.querySelector("input[name=name]").focus();
+  document.getElementById("rfq-folder").addEventListener("change", (event) => {
+    state.folder = event.target.value;
+    renderLibrary();
   });
-  document.getElementById("ops-col-cancel").addEventListener("click", closeModal);
-  modal.addEventListener("click", function (event) {
-    if (event.target === modal) closeModal();
+  document.getElementById("rfq-back").addEventListener("click", () => {
+    state.sheetId = null;
+    state.lineQuery = "";
+    document.getElementById("rfq-line-search").value = "";
+    show();
   });
-  document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && !modal.hidden) closeModal();
-  });
-  document.getElementById("ops-col-form").addEventListener("submit", addColumn);
-  results.addEventListener("input", onResultInput);
-  results.addEventListener("change", onResultChange);
-  results.addEventListener("click", onResultClick);
+  document.getElementById("ops-scan").addEventListener("click", importFolder);
+  app.addEventListener("click", onClick);
+  app.addEventListener("change", onChange);
 
   load();
 
-  function closeModal() {
-    modal.hidden = true;
-    document.getElementById("ops-col-form").reset();
-  }
-
   async function load() {
     try {
-      state.payload = await fetchJson("/api/ops-sheets");
+      const payload = await fetchJson("/api/rfq-workflow");
+      state.team = payload.team || "ops";
+      state.teams = payload.teams || [];
+      state.machines = payload.machine_columns || [];
+      state.rfqs = payload.rfqs || [];
       showAlert("");
-      render();
+      show();
     } catch (error) {
       showAlert(error.message);
-      results.innerHTML = '<p class="ops-idle">The quote database could not be loaded.</p>';
+      document.getElementById("rfq-meta").textContent = "The RFQ library could not be loaded.";
     }
   }
 
-  async function scan() {
-    scanBtn.disabled = true;
-    scanBtn.textContent = "Importing…";
-    showAlert("");
+  function show() {
+    const open = current();
+    library.hidden = !!open;
+    detail.hidden = !open;
+    renderTeams();
+    if (open) renderDetail();
+    else renderLibrary();
+  }
+
+  function renderTeams() {
+    document.getElementById("rfq-teams").innerHTML = state.teams.map((team) =>
+      `<button type="button" class="ops-btn${team.id === state.team ? " is-on" : ""}" data-team="${esc(team.id)}">${esc(team.label)}</button>`
+    ).join("");
+  }
+
+  function renderLibrary() {
+    document.getElementById("rfq-title").textContent = "RFQ library";
+    const query = state.query.trim().toLowerCase();
+    const visible = state.rfqs.filter((rfq) => {
+      if (state.folder !== "all" && rfq.folder_status !== state.folder) return false;
+      if (state.filter !== "all" && rfq.workflow.category !== state.filter) return false;
+      return !query || tokens(query).every((token) => haystack(rfq).includes(token));
+    });
+    document.getElementById("rfq-chips").innerHTML = FILTERS.map(([key, label]) => {
+      const count = key === "all"
+        ? state.rfqs.filter((rfq) => state.folder === "all" || rfq.folder_status === state.folder).length
+        : state.rfqs.filter((rfq) => (state.folder === "all" || rfq.folder_status === state.folder) && rfq.workflow.category === key).length;
+      return `<button type="button" class="rfq-chip${state.filter === key ? " is-on" : ""}" data-filter="${key}">${esc(label)} (${count})</button>`;
+    }).join("");
+    document.getElementById("rfq-grid").classList.toggle("is-on", state.view === "grid");
+    document.getElementById("rfq-list").classList.toggle("is-on", state.view === "list");
+    document.getElementById("rfq-meta").textContent = countPhrase(visible.length, "RFQ", "RFQs") + " · Supabase";
+    const results = document.getElementById("rfq-results");
+    results.classList.toggle("is-list", state.view === "list");
+    if (!state.rfqs.length) {
+      results.innerHTML = '<p class="ops-idle">No RFQs yet. Import from the RFQ folder to onboard the OPS sheets.</p>';
+      return;
+    }
+    if (!visible.length) {
+      results.innerHTML = '<p class="ops-idle">No RFQ matches that search.</p>';
+      return;
+    }
+    results.innerHTML = visible.map((rfq) => cardHtml(rfq, query)).join("");
+  }
+
+  function cardHtml(rfq, query) {
+    const flow = rfq.workflow;
+    const width = flow.total ? Math.round((flow.ready / flow.total) * 100) : 0;
+    const hits = query ? matchedParts(rfq, query) : [];
+    return `<button type="button" class="rfq-card" data-open="${rfq.sheet_id}">
+      <span><span class="rfq-card-name">${esc(rfq.rfq_no)}</span>
+        <span class="rfq-card-sub">${esc(rfq.customer)}${rfq.title && rfq.title !== rfq.customer ? " · " + esc(rfq.title) : ""}</span>
+        ${hits.length ? `<span class="rfq-match">Match: ${hits.map(esc).join(", ")}</span>` : ""}
+      </span>
+      <span><span class="rfq-pill rfq-tone-${esc(flow.tone)}">${esc(flow.label)}</span></span>
+      <span><span class="rfq-bar"><span style="width:${width}%"></span></span>
+        <span class="rfq-card-meta">${flow.ready}/${flow.total} lines ready</span></span>
+      <span class="rfq-card-meta">Rev ${rfq.ops_rev}${rfq.date_in ? " · in " + esc(formatDate(rfq.date_in)) : ""}<br>${esc(folderLabel(rfq.folder_status))} · ${esc(rfq.file_name)}</span>
+    </button>`;
+  }
+
+  function renderDetail() {
+    const rfq = current();
+    if (!rfq) return;
+    const flow = rfq.workflow;
+    const width = flow.total ? Math.round((flow.ready / flow.total) * 100) : 0;
+    document.getElementById("rfq-title").textContent = rfq.rfq_no;
+    document.getElementById("rfq-crumb-name").textContent = rfq.rfq_no + " · " + rfq.customer;
+    document.getElementById("rfq-export").href = "/api/rfq-workflow/files/" + rfq.sheet_id + "/price-to-sales";
+    const counts = Object.entries(rfq.counts || {}).map(([label, count]) => {
+      const tone = (rfq.lines.find((line) => line.workflow.label === label) || {}).workflow;
+      return `<span class="rfq-pill rfq-tone-${esc(tone ? tone.tone : "neutral")}">${esc(label)}: ${count}</span>`;
+    }).join("");
+    const editable = state.team === "ops";
+    document.getElementById("rfq-summary").innerHTML = `
+      <strong>${flow.ready}/${flow.total} lines ready for Sales</strong>
+      <span class="rfq-bar"><span style="width:${width}%"></span></span>
+      ${counts}
+      <span class="rfq-card-meta">Supplier quotes so far: SGD ${money(rfq.supplier_total)}</span>
+      <div class="rfq-head">
+        ${headField(rfq, "rfq_no", "RFQ no.", rfq.rfq_no, editable)}
+        ${headField(rfq, "customer", "Customer", rfq.customer, editable)}
+        ${headField(rfq, "title", "Title", rfq.title, editable)}
+        ${headField(rfq, "file_name", "OPS file", rfq.file_name, editable)}
+      </div>`;
+    const needle = state.lineQuery.trim().toLowerCase();
+    const rows = rfq.lines.filter((line) => !needle || lineHay(line).includes(needle)).map(lineHtml).join("");
+    document.getElementById("rfq-table").innerHTML = `
+      <table class="rfq-table">
+        <thead>
+          <tr class="rfq-group">
+            <th class="rfq-group-ops" colspan="7">Operations</th>
+            <th class="rfq-group-sc" colspan="6">Supply Chain</th>
+            <th class="rfq-group-plan" colspan="2">Planning</th>
+            <th>Status</th>
+          </tr>
+          <tr>
+            <th>S/N</th><th>Part</th><th>Qty</th><th>Material</th><th>Size mm</th><th>Setup + cycle</th><th>Rev</th>
+            <th>Need mtr</th><th>kg/m</th><th>Supplier</th><th>Quote SGD</th><th>Lead wks</th><th>State</th>
+            <th>Calc h</th><th>TAT days</th><th>Where it is</th>
+          </tr>
+        </thead>
+        <tbody>${rows || '<tr><td colspan="16">No lines match.</td></tr>'}</tbody>
+      </table>`;
+    document.getElementById("rfq-hint").textContent = HINTS[state.team] || "";
+    const log = document.getElementById("rfq-log");
+    log.innerHTML = (rfq.activity || []).map((item) => {
+      const line = rfq.lines.find((entry) => entry.line_id === item.line_id);
+      const where = line ? "S/N " + line.sn + " · " : "";
+      return `<li>${esc(formatWhen(item.at))} · ${esc(item.actor)} · ${esc(where + item.field)}: ${esc(item.old || "—")} → ${esc(item.new || "—")}</li>`;
+    }).join("") || "<li>No changes yet.</li>";
+  }
+
+  function lineHtml(line) {
+    const ownOps = state.team === "ops";
+    const ownSc = state.team === "supply_chain";
+    const ownPlan = state.team === "planning";
+    const quote = line.quote || {};
+    let supply;
+    if (line.quote_ref_sn) {
+      supply = `<td class="rfq-lock" colspan="6">Shares the supplier quote with S/N ${line.quote_ref_sn}</td>`;
+    } else {
+      supply = quoteCell(ownSc, line, "qty_needed_mtr", quote.qty_needed_mtr, "number")
+        + quoteCell(ownSc, line, "kg_per_mtr", quote.kg_per_mtr, "number")
+        + `<td class="${ownSc ? "rfq-cell" : "rfq-lock"}">${ownSc
+          ? `<input data-quote="${line.line_id}" data-qfield="supplier" value="${esc(quote.supplier || "")}"><textarea data-quote="${line.line_id}" data-qfield="supplier_note" placeholder="Supplier note">${esc(quote.supplier_note || "")}</textarea>`
+          : esc(quote.supplier || "—") + (quote.supplier_note ? `<small>${esc(quote.supplier_note)}</small>` : "")}</td>`
+        + quoteCell(ownSc, line, "material_cost_sgd", quote.material_cost_sgd, "number")
+        + quoteCell(ownSc, line, "lead_time_weeks", quote.lead_time_weeks, "number")
+        + `<td class="${ownSc ? "rfq-cell" : "rfq-lock"}">${ownSc ? stateSelect(line, quote.state) : esc(quote.state_label || "Not sent")}</td>`;
+    }
+    const hours = (line.calc_hour_breaks || []).map((value) => value + " h").join(" · ") || "—";
+    const tatDisabled = ownPlan && line.tat_open ? "" : " disabled";
+    const tatTitle = line.tat_open ? "" : ' title="Waiting for a quoted supplier lead time"';
+    const waiting = line.workflow.waiting_on === "—" ? "" : `<small>Waiting on ${esc(line.workflow.waiting_on)}</small>`;
+    const canReconfirm = line.workflow.stale && (
+      (ownSc && line.workflow.waiting_on === "Supply Chain")
+      || (ownPlan && line.workflow.waiting_on === "Planning")
+    );
+    return `<tr>
+      <td>${line.sn}</td>
+      <td class="${ownOps ? "rfq-cell rfq-part" : "rfq-lock rfq-part"}">
+        ${ownOps ? `<input data-line="${line.line_id}" data-field="part_number" value="${esc(line.part_number)}" aria-label="Part number">
+          <input data-line="${line.line_id}" data-field="description" value="${esc(line.description)}" aria-label="Description">
+          <textarea data-line="${line.line_id}" data-field="engineering_remarks" aria-label="Remarks">${esc(line.engineering_remarks)}</textarea>`
+          : `<strong>${esc(line.part_number)}</strong><small>${esc(line.description)}</small>${line.engineering_remarks ? `<small>${esc(line.engineering_remarks)}</small>` : ""}`}
+      </td>
+      ${opsCell(ownOps, line, "rfq_qty_text", line.rfq_qty_text || line.rfq_qty || "", "text")}
+      <td class="${ownOps ? "rfq-cell" : "rfq-lock"}">
+        ${ownOps ? `<input data-line="${line.line_id}" data-field="material_type" value="${esc(line.material_type)}" aria-label="Material">
+          <input data-line="${line.line_id}" data-field="material_spec" value="${esc(line.material_spec)}" aria-label="Spec">`
+          : `${esc(line.material_type || "—")}<small>${esc(line.material_spec)}</small>`}
+      </td>
+      <td class="${ownOps ? "rfq-cell" : "rfq-lock"}">
+        ${ownOps ? sizeInputs(line) : `Ø ${showNum(line.raw_thk)} × ${showNum(line.raw_width)} × ${showNum(line.raw_length)}`}
+      </td>
+      <td class="${ownOps ? "rfq-cell" : "rfq-lock"}">
+        ${ownOps ? `<input type="number" min="0" step="any" data-line="${line.line_id}" data-field="setup_mins" value="${esc(showNum(line.setup_mins))}" aria-label="Setup minutes">` : esc(showNum(line.setup_mins))}
+        <small>${machineSummary(line)}</small>
+        ${ownOps ? machineEditor(line) : ""}
+      </td>
+      <td class="rfq-lock">${line.rev}</td>
+      ${supply}
+      <td class="rfq-lock">${esc(hours)}</td>
+      <td class="${ownPlan && line.tat_open ? "rfq-cell" : "rfq-lock"}">
+        ${ownPlan ? `<input type="number" min="0" step="any" data-tat="${line.line_id}" value="${esc(showNum(line.tat_days))}"${tatDisabled}${tatTitle} aria-label="TAT days">` : esc(showNum(line.tat_days) || "—")}
+      </td>
+      <td><span class="rfq-pill rfq-tone-${esc(line.workflow.tone)}">${esc(line.workflow.label)}</span>${waiting}
+        ${canReconfirm ? `<button type="button" class="rfq-reconfirm" data-reconfirm="${line.line_id}">Reconfirm</button>` : ""}
+      </td>
+    </tr>`;
+  }
+
+  function headField(rfq, key, label, value, editable) {
+    if (!editable) return `<label>${esc(label)}<span class="rfq-card-name">${esc(value || "—")}</span></label>`;
+    return `<label>${esc(label)}<input data-header="${rfq.sheet_id}" data-hfield="${key}" value="${esc(value || "")}"></label>`;
+  }
+
+  function opsCell(editable, line, field, value, kind) {
+    if (!editable) return `<td class="rfq-lock">${esc(value || "—")}</td>`;
+    return `<td class="rfq-cell"><input type="${kind}" data-line="${line.line_id}" data-field="${field}" value="${esc(value || "")}"></td>`;
+  }
+
+  function quoteCell(editable, line, field, value, kind) {
+    if (!editable) return `<td class="rfq-lock">${esc(showNum(value) || "—")}</td>`;
+    return `<td class="rfq-cell"><input type="${kind}" min="0" step="any" data-quote="${line.line_id}" data-qfield="${field}" value="${esc(showNum(value))}"></td>`;
+  }
+
+  function stateSelect(line, value) {
+    const options = [["not_sent", "Not sent"], ["rfq_sent", "RFQ sent"], ["quoted", "Quoted"]];
+    return `<select data-quote="${line.line_id}" data-qfield="state">${options.map(([key, label]) =>
+      `<option value="${key}"${key === (value || "not_sent") ? " selected" : ""}>${label}</option>`
+    ).join("")}</select>`;
+  }
+
+  function sizeInputs(line) {
+    return ["raw_thk", "raw_width", "raw_length"].map((field) =>
+      `<input type="number" step="any" data-line="${line.line_id}" data-field="${field}" value="${esc(showNum(line[field]))}" aria-label="${field}">`
+    ).join("");
+  }
+
+  function machineSummary(line) {
+    if (!line.machines.length) return "No cycle minutes";
+    return line.machines.map((item) => item.label + " " + showNum(item.minutes)).join(" · ");
+  }
+
+  function machineEditor(line) {
+    const minutes = line.machine_minutes || {};
+    const fields = state.machines.map((item) =>
+      `<label>${esc(item.label)}<input type="number" min="0" step="any" data-line="${line.line_id}" data-field="${esc(item.key)}" value="${esc(showNum(minutes[item.key]))}"></label>`
+    ).join("");
+    return `<details class="rfq-machines"><summary>Machine minutes</summary>${fields}</details>`;
+  }
+
+  async function onClick(event) {
+    const team = event.target.closest("[data-team]");
+    if (team) {
+      await saveTeam(team.dataset.team);
+      return;
+    }
+    const filter = event.target.closest("[data-filter]");
+    if (filter) {
+      state.filter = filter.dataset.filter;
+      renderLibrary();
+      return;
+    }
+    const view = event.target.closest("[data-view]");
+    if (view) {
+      state.view = view.dataset.view;
+      renderLibrary();
+      return;
+    }
+    const open = event.target.closest("[data-open]");
+    if (open) {
+      state.sheetId = Number(open.dataset.open);
+      state.lineQuery = "";
+      document.getElementById("rfq-line-search").value = "";
+      show();
+      return;
+    }
+    const reconfirm = event.target.closest("[data-reconfirm]");
+    if (reconfirm) {
+      await sendPatch("/api/rfq-workflow/lines/" + reconfirm.dataset.reconfirm + "/reconfirm", { method: "POST", body: "{}" });
+    }
+  }
+
+  async function onChange(event) {
+    const target = event.target;
+    if (target.matches("[data-header]")) {
+      await sendPatch("/api/rfq-workflow/files/" + target.dataset.header, {
+        method: "PATCH",
+        body: JSON.stringify({ fields: { [target.dataset.hfield]: target.value } }),
+      });
+      return;
+    }
+    if (target.matches("[data-field]")) {
+      await sendPatch("/api/rfq-workflow/lines/" + target.dataset.line + "/ops", {
+        method: "PATCH",
+        body: JSON.stringify({ fields: { [target.dataset.field]: target.value } }),
+      });
+      return;
+    }
+    if (target.matches("[data-qfield]")) {
+      await sendPatch("/api/rfq-workflow/lines/" + target.dataset.quote + "/quote", {
+        method: "PATCH",
+        body: JSON.stringify({ fields: { [target.dataset.qfield]: target.value } }),
+      });
+      return;
+    }
+    if (target.matches("[data-tat]")) {
+      await sendPatch("/api/rfq-workflow/lines/" + target.dataset.tat + "/tat", {
+        method: "PATCH",
+        body: JSON.stringify({ tat_days: target.value }),
+      });
+    }
+  }
+
+  async function saveTeam(team) {
     try {
-      state.payload = await fetchJson("/api/ops-sheets/scan", { method: "POST" });
-      render();
-      const summary = state.payload.summary || {};
-      const failed = (summary.errors || []).length;
-      let message = "Imported " + (summary.lines || 0) + " parts from " + (summary.saved || 0) + " files into Supabase.";
-      if (failed) {
-        message += " " + failed + " file" + (failed === 1 ? "" : "s") + " could not be read.";
-        showAlert(message + " " + summary.errors.map(function (item) {
-          return item.file + ": " + item.error;
-        }).join(" "));
-      }
+      const payload = await fetchJson("/api/rfq-workflow/team", {
+        method: "POST",
+        body: JSON.stringify({ team }),
+      });
+      state.team = payload.team;
+      showAlert("");
+      show();
+    } catch (error) {
+      showAlert(error.message);
+    }
+  }
+
+  async function sendPatch(url, options) {
+    try {
+      const payload = await fetchJson(url, options);
+      replaceRfq(payload.rfq);
+      showAlert("");
+      renderDetail();
+    } catch (error) {
+      showAlert(error.message);
+    }
+  }
+
+  async function importFolder() {
+    const button = document.getElementById("ops-scan");
+    button.disabled = true;
+    try {
+      const payload = await fetchJson("/api/ops-sheets/scan", { method: "POST", body: "{}" });
+      const summary = payload.summary || {};
+      showAlert("");
+      document.getElementById("rfq-meta").textContent = "Imported " + (summary.lines || 0) + " lines from " + (summary.saved || 0) + " files.";
+      await load();
     } catch (error) {
       showAlert(error.message);
     } finally {
-      scanBtn.disabled = false;
-      scanBtn.textContent = "Import from RFQ folder";
+      button.disabled = false;
     }
   }
 
-  async function addColumn(event) {
-    event.preventDefault();
-    const form = event.target;
-    try {
-      state.payload = await fetchJson("/api/ops-sheets/columns", {
-        method: "POST",
-        body: JSON.stringify({ name: form.name.value, apply_mode: form.apply_mode.value }),
-      });
-      closeModal();
-      showAlert("");
-      render();
-    } catch (error) {
-      showAlert(error.message);
-    }
+  function replaceRfq(rfq) {
+    if (!rfq) return;
+    const index = state.rfqs.findIndex((item) => item.sheet_id === rfq.sheet_id);
+    if (index >= 0) state.rfqs[index] = rfq;
+    else state.rfqs.unshift(rfq);
   }
 
-  function render() {
-    const payload = state.payload;
-    if (!payload) return;
-    const scrollY = window.scrollY;
-    const library = libraryLines();
-    const query = state.query.trim();
-    if (!query) {
-      const files = {};
-      library.forEach(function (line) { files[line.sheet_id] = true; });
-      meta.textContent = countPhrase(library.length, "quoted part", "quoted parts") +
-        " in " + countPhrase(Object.keys(files).length, "RFQ file", "RFQ files") + " · Supabase";
-      results.innerHTML = '<div class="ops-idle"><p>Search a part, material, remark, quantity, or RFQ file.</p><p>The columns stay hidden until you tick Show line items on a file.</p></div>';
-      window.scrollTo(0, scrollY);
-      return;
-    }
-    const matched = library.filter(matchesQuery);
-    const groups = groupLines(matched);
-    meta.textContent = countPhrase(matched.length, "matching part", "matching parts") +
-      " in " + countPhrase(groups.length, "RFQ file", "RFQ files") + " · Supabase";
-    if (!groups.length) {
-      results.innerHTML = '<p class="ops-idle">No quoted parts match that search.</p>';
-      window.scrollTo(0, scrollY);
-      return;
-    }
-    results.innerHTML = groups.map(fileCard).join("");
-    window.scrollTo(0, scrollY);
+  function current() {
+    return state.rfqs.find((rfq) => rfq.sheet_id === state.sheetId) || null;
   }
 
-  function countPhrase(count, singular, plural) {
-    return count + " " + (count === 1 ? singular : plural);
+  function haystack(rfq) {
+    return [rfq.rfq_no, rfq.customer, rfq.title, rfq.file_name, rfq.folder]
+      .concat(rfq.lines.flatMap((line) => [line.part_number, line.description, line.material_type, line.material_spec]))
+      .join(" ")
+      .toLowerCase();
   }
 
-  function libraryLines() {
-    return (state.payload.lines || []).filter(function (line) {
-      if (line.file_missing) return false;
-      if (state.status === "all") return true;
-      return line.status === state.status;
-    });
+  function lineHay(line) {
+    return [line.sn, line.part_number, line.description, line.material_type, line.material_spec, line.engineering_remarks]
+      .join(" ")
+      .toLowerCase();
   }
 
-  function matchesQuery(line) {
-    const query = state.query.trim().toLowerCase();
-    if (!query) return false;
-    return haystack(line).indexOf(query) !== -1;
-  }
-
-  function haystack(line) {
-    const values = [
-      line.part_number, line.description, line.rfq_qty_text, line.material_type,
-      line.material_spec, line.raw_thk, line.raw_width, line.raw_length, line.setup_mins,
-      line.fixture_required, line.engineering_remarks, line.nre_text,
-      line.rfq_folder, line.file_name,
-    ];
-    CYCLE_KEYS.forEach(function (key) { values.push(line[key]); });
-    return values.join(" ").toLowerCase();
-  }
-
-  function groupLines(lines) {
-    const groups = [];
-    const byId = {};
-    lines.forEach(function (line) {
-      if (!byId[line.sheet_id]) {
-        byId[line.sheet_id] = {
-          sheetId: line.sheet_id,
-          fileName: line.file_name,
-          folder: line.rfq_folder,
-          dateIn: line.date_in,
-          dateOut: line.date_out,
-          status: line.status,
-          lines: [],
-        };
-        groups.push(byId[line.sheet_id]);
+  function matchedParts(rfq, query) {
+    const parts = [];
+    rfq.lines.forEach((line) => {
+      const text = (line.part_number + " " + line.description + " " + line.material_type).toLowerCase();
+      if (tokens(query).every((token) => text.includes(token)) && line.part_number && !parts.includes(line.part_number)) {
+        parts.push(line.part_number);
       }
-      byId[line.sheet_id].lines.push(line);
     });
-    return groups;
+    return parts.slice(0, 3);
   }
 
-  function fileCard(group) {
-    const open = !!state.openFiles[String(group.sheetId)];
-    const head =
-      '<header class="ops-file-head">' +
-      '<label class="ops-show"><input type="checkbox" data-show-file="' + group.sheetId + '"' +
-      (open ? " checked" : "") + "> Show line items</label>" +
-      '<input class="ops-file-name" data-file-name="' + group.sheetId + '" value="' + esc(group.fileName) + '" aria-label="RFQ file name">' +
-      '<span class="ops-file-meta">' + esc(group.folder) + "</span>" +
-      '<span class="ops-file-meta">In ' + esc(fmtDate(group.dateIn)) + "</span>" +
-      '<span class="ops-file-meta">Out ' + esc(fmtDate(group.dateOut)) + "</span>" +
-      '<span class="ops-pill">' + esc(statusLabel(group.status)) + "</span>" +
-      '<span class="ops-file-meta">' + group.lines.length + " matching</span>" +
-      "</header>";
-    const body = open ? tableHtml(group.lines) : hitList(group.lines);
-    return '<section class="ops-file' + (open ? " ops-file--open" : "") + '">' + head + body + "</section>";
+  function tokens(query) {
+    return query.split(/\s+/).filter(Boolean);
   }
 
-  function hitList(lines) {
-    const shown = lines.slice(0, 8).map(function (line) {
-      const hours = line.tat && line.tat[0] ? fmtNum(line.tat[0].hours, 2) + " h" : "";
-      return "<li><b>" + esc(line.part_number) + "</b> " + esc(line.description) +
-        (hours ? " · " + esc(hours) : "") + "</li>";
-    }).join("");
-    const more = lines.length > 8 ? "<li>" + (lines.length - 8) + " more in this file</li>" : "";
-    return '<ul class="ops-hit-list">' + shown + more + "</ul>";
-  }
-
-  function tableHtml(lines) {
-    const columns = tableColumns(state.payload);
-    const body = lines.map(function (line) {
-      return '<tr data-line="' + line.line_id + '">' +
-        columns.map(function (column) { return cellHtml(column, line); }).join("") +
-        "</tr>";
-    }).join("");
-    return '<div class="ops-scroll"><table class="ops-table"><thead>' + headHtml(columns) +
-      "</thead><tbody>" + body + "</tbody></table></div>";
-  }
-
-  function tableColumns(payload) {
-    const source = payload.columns || [];
-    const before = source.filter(function (column) { return column.section !== "after"; });
-    const after = source.filter(function (column) { return column.section === "after"; });
-    const extras = (payload.extra_columns || []).map(function (column) {
-      return {
-        key: "extra:" + column.column_id,
-        label: column.name,
-        group: "Added to TAT",
-        kind: "extra",
-        column: column,
-      };
-    });
-    const calc = [
-      { key: "ops", label: "Ops", group: "Turnaround", kind: "ops" },
-      { key: "cycle_sum", label: "Cycle (mins)", group: "Turnaround", kind: "cycle" },
-      { key: "tat_minutes", label: "TAT (mins)", group: "Turnaround", kind: "tat-min" },
-      { key: "tat_hours", label: "TAT (hours)", group: "Turnaround", kind: "tat-h" },
-    ];
-    return before.concat(extras, calc, after);
-  }
-
-  function headHtml(columns) {
-    return "<tr>" + columns.map(function (column) {
-      return '<th class="' + headClass(column) + '">' + headLabel(column) + "</th>";
-    }).join("") + "</tr>";
-  }
-
-  function headClass(column) {
-    if (column.kind === "extra") return "ops-extra";
-    if (column.group === "Turnaround") return "ops-tat";
-    return "";
-  }
-
-  function headLabel(column) {
-    if (column.kind !== "extra") {
-      const group = column.group
-        ? '<span class="ops-col-group">' + esc(column.group) + "</span>"
-        : "";
-      return group + esc(column.label);
-    }
-    const col = column.column;
-    return (
-      '<div class="ops-extra-head">' +
-      '<span class="ops-col-group">Added to TAT</span>' +
-      esc(col.name) +
-      '<select data-col-mode="' + col.column_id + '" aria-label="How ' + esc(col.name) + ' is added">' +
-      modeOption("per_piece", "× qty", col.apply_mode) +
-      modeOption("per_operation", "× ops", col.apply_mode) +
-      modeOption("flat", "flat", col.apply_mode) +
-      "</select>" +
-      '<button type="button" class="ops-linkish" data-col-remove="' + col.column_id + '">Remove</button>' +
-      "</div>"
-    );
-  }
-
-  function modeOption(value, label, current) {
-    return '<option value="' + value + '"' + (value === current ? " selected" : "") + ">" + label + "</option>";
-  }
-
-  function cellHtml(column, line) {
-    if (column.kind === "extra") {
-      const value = line.extras ? line.extras[String(column.column.column_id)] : null;
-      return (
-        '<td class="ops-extra ops-num"><input class="ops-cell-input" type="number" min="0" step="any" ' +
-        'data-extra="' + line.line_id + '" data-column="' + column.column.column_id + '" ' +
-        'value="' + esc(value == null ? "" : value) + '" aria-label="' + esc(column.label) + '"></td>'
-      );
-    }
-    if (column.kind === "ops") return opsCell(line);
-    if (column.kind === "cycle") {
-      return '<td class="ops-cycle ops-num" data-cycle="' + line.line_id + '">' + esc(fmtNum(line.cycle_sum, 1)) + "</td>";
-    }
-    if (column.kind === "tat-min" || column.kind === "tat-h") return tatCell(column, line);
-    return fieldCell(column, line);
-  }
-
-  function fieldCell(column, line) {
-    const raw = line[column.key];
-    const value = raw == null ? "" : raw;
-    if (column.kind === "number" || column.kind === "minutes") {
-      return '<td class="ops-num"><input class="ops-cell-input" type="number" step="any" min="0" data-field="' +
-        column.key + '" data-line="' + line.line_id + '" value="' + esc(value) + '" aria-label="' + esc(column.label) + '"></td>';
-    }
-    if (column.key === "engineering_remarks") {
-      return '<td class="ops-remarks"><textarea data-field="engineering_remarks" data-line="' + line.line_id +
-        '" aria-label="Engineering remarks">' + esc(value) + "</textarea></td>";
-    }
-    const wide = column.key === "description" || column.key === "material_spec" || column.key === "material_type";
-    return '<td><input class="ops-cell-input ops-cell-text' + (wide ? " ops-input-wide" : "") +
-      '" data-field="' + column.key + '" data-line="' + line.line_id + '" value="' + esc(value) +
-      '" aria-label="' + esc(column.label) + '"></td>';
-  }
-
-  function opsCell(line) {
-    const value = line.ops_override == null ? line.ops_auto : line.ops_override;
-    const basis = line.ops_source === "override"
-      ? "override"
-      : (line.ops_basis === "remarks" ? "from remarks" : "from filled cycles");
-    const reset = line.ops_override == null
-      ? ""
-      : '<button type="button" class="ops-linkish" data-ops-reset="' + line.line_id + '">Use auto (' + line.ops_auto + ")</button>";
-    return (
-      '<td class="ops-ops"><input type="number" min="0" max="999" step="1" data-ops="' + line.line_id + '" ' +
-      'value="' + esc(value) + '" aria-label="Operations">' +
-      '<span class="ops-ops-basis" data-ops-basis="' + line.line_id + '">' + esc(basis) + "</span>" +
-      reset +
-      "</td>"
-    );
-  }
-
-  function tatCell(column, line) {
-    const hours = column.kind === "tat-h";
-    const breaks = line.tat || [];
-    const html = breaks.map(function (item) {
-      const number = hours ? fmtNum(item.hours, 2) : fmtNum(item.minutes, 1);
-      const prefix = breaks.length > 1 && item.qty != null ? fmtNum(item.qty, 2) + " · " : "";
-      return '<div class="ops-break" title="' + esc(item.detail || "") + '">' + esc(prefix + number) + "</div>";
-    }).join("");
-    const attr = hours ? "data-tat-h" : "data-tat-m";
-    return '<td class="ops-tat ops-num" ' + attr + '="' + line.line_id + '">' + (html || "") + "</td>";
-  }
-
-  function onResultInput(event) {
-    const ops = event.target.closest("[data-ops]");
-    const extra = event.target.closest("[data-extra]");
-    const field = event.target.closest("[data-field]");
-    if (!ops && !extra && !field) return;
-    const line = lineById(ops ? ops.dataset.ops : extra ? extra.dataset.extra : field.dataset.line);
-    if (!line) return;
-    if (ops) {
-      line.ops_override = ops.value === "" ? null : Number(ops.value);
-      line.ops_source = line.ops_override == null ? line.ops_basis : "override";
-    } else if (extra) {
-      line.extras = line.extras || {};
-      line.extras[extra.dataset.column] = extra.value === "" ? null : Number(extra.value);
-    } else if (field.dataset.field !== "engineering_remarks" && field.dataset.field !== "part_number") {
-      const key = field.dataset.field;
-      line[key] = field.value === "" ? null : (field.type === "number" ? Number(field.value) : field.value);
-    }
-    const preview = localTat(line);
-    line.cycle_sum = preview.cycle_sum;
-    line.tat = preview.breaks;
-    line.ops_effective = preview.ops_effective;
-    paintLine(line);
-  }
-
-  async function onResultChange(event) {
-    const show = event.target.closest("[data-show-file]");
-    if (show) {
-      if (show.checked) state.openFiles[show.dataset.showFile] = true;
-      else delete state.openFiles[show.dataset.showFile];
-      render();
-      return;
-    }
-    const fileName = event.target.closest("[data-file-name]");
-    if (fileName) {
-      await saveFileName(fileName);
-      return;
-    }
-    const mode = event.target.closest("[data-col-mode]");
-    if (mode) {
-      try {
-        state.payload = await fetchJson("/api/ops-sheets/columns/" + mode.dataset.colMode, {
-          method: "PATCH",
-          body: JSON.stringify({ apply_mode: mode.value }),
-        });
-        showAlert("");
-        render();
-      } catch (error) {
-        showAlert(error.message);
-      }
-      return;
-    }
-    const ops = event.target.closest("[data-ops]");
-    const extra = event.target.closest("[data-extra]");
-    const field = event.target.closest("[data-field]");
-    if (!ops && !extra && !field) return;
-    try {
-      let updated;
-      if (ops) {
-        updated = await fetchJson("/api/ops-sheets/lines/" + ops.dataset.ops, {
-          method: "PATCH",
-          body: JSON.stringify({ operation_count: ops.value === "" ? null : Number(ops.value) }),
-        });
-      } else if (extra) {
-        updated = await fetchJson(
-          "/api/ops-sheets/lines/" + extra.dataset.extra + "/extras/" + extra.dataset.column,
-          {
-            method: "PUT",
-            body: JSON.stringify({ minutes: extra.value === "" ? null : Number(extra.value) }),
-          }
-        );
-      } else {
-        const body = {};
-        body[field.dataset.field] = field.value;
-        updated = await fetchJson("/api/ops-sheets/lines/" + field.dataset.line, {
-          method: "PATCH",
-          body: JSON.stringify({ fields: body }),
-        });
-      }
-      replaceLine(updated.line);
-      showAlert("");
-    } catch (error) {
-      showAlert(error.message);
-    }
-  }
-
-  async function saveFileName(input) {
-    try {
-      const saved = await fetchJson("/api/ops-sheets/files/" + input.dataset.fileName, {
-        method: "PATCH",
-        body: JSON.stringify({ file_name: input.value }),
-      });
-      (state.payload.lines || []).forEach(function (line) {
-        if (String(line.sheet_id) === String(saved.sheet_id)) line.file_name = saved.file_name;
-      });
-      input.value = saved.file_name;
-      showAlert("");
-    } catch (error) {
-      showAlert(error.message);
-    }
-  }
-
-  async function onResultClick(event) {
-    const reset = event.target.closest("[data-ops-reset]");
-    if (reset) {
-      try {
-        const updated = await fetchJson("/api/ops-sheets/lines/" + reset.dataset.opsReset, {
-          method: "PATCH",
-          body: JSON.stringify({ operation_count: null }),
-        });
-        replaceLine(updated.line);
-        render();
-      } catch (error) {
-        showAlert(error.message);
-      }
-      return;
-    }
-    const button = event.target.closest("[data-col-remove]");
-    if (!button) return;
-    const column = (state.payload.extra_columns || []).find(function (item) {
-      return String(item.column_id) === button.dataset.colRemove;
-    });
-    if (!column) return;
-    if (!window.confirm("Remove the " + column.name + " column from the TAT measure?")) return;
-    try {
-      state.payload = await fetchJson("/api/ops-sheets/columns/" + column.column_id, { method: "DELETE" });
-      showAlert("");
-      render();
-    } catch (error) {
-      showAlert(error.message);
-    }
-  }
-
-  function localTat(line) {
-    let cycle = 0;
-    CYCLE_KEYS.forEach(function (key) { cycle += Number(line[key]) || 0; });
-    const setup = Number(line.setup_mins) || 0;
-    const ops = line.ops_override == null || line.ops_override === ""
-      ? Number(line.ops_auto) || 0
-      : Number(line.ops_override) || 0;
-    let perPiece = 0;
-    let perOp = 0;
-    let flat = 0;
-    (state.payload.extra_columns || []).forEach(function (column) {
-      const minutes = Number((line.extras || {})[String(column.column_id)]) || 0;
-      if (!minutes) return;
-      if (column.apply_mode === "per_operation") perOp += minutes;
-      else if (column.apply_mode === "flat") flat += minutes;
-      else perPiece += minutes;
-    });
-    const piece = cycle + perPiece;
-    const operationPart = setup + perOp;
-    const quantities = line.qty_breaks && line.qty_breaks.length ? line.qty_breaks : [line.rfq_qty];
-    return {
-      cycle_sum: cycle,
-      ops_effective: ops,
-      breaks: quantities.map(function (qty) {
-        const qtyValue = Number(qty) || 0;
-        const minutes = piece * qtyValue + operationPart * ops + flat;
-        const bits = [trimNum(piece, 2) + " min × " + trimNum(qtyValue, 2)];
-        if (operationPart || ops) bits.push(trimNum(operationPart, 2) + " min × " + ops + " ops");
-        if (flat) bits.push(trimNum(flat, 2) + " min flat");
-        return { qty: qty, minutes: minutes, hours: minutes / 60, detail: bits.join(" + ") };
-      }),
-    };
-  }
-
-  function paintLine(line) {
-    const cycle = results.querySelector('[data-cycle="' + line.line_id + '"]');
-    if (cycle) cycle.textContent = fmtNum(line.cycle_sum, 1);
-    paintTat(line, "data-tat-m", false);
-    paintTat(line, "data-tat-h", true);
-    const basis = results.querySelector('[data-ops-basis="' + line.line_id + '"]');
-    if (basis) {
-      basis.textContent = line.ops_source === "override"
-        ? "override"
-        : (line.ops_basis === "remarks" ? "from remarks" : "from filled cycles");
-    }
-    const ops = results.querySelector('[data-ops="' + line.line_id + '"]');
-    if (ops && document.activeElement !== ops) {
-      ops.value = line.ops_override == null ? line.ops_auto : line.ops_override;
-    }
-  }
-
-  function paintTat(line, attr, hours) {
-    const cell = results.querySelector("[" + attr + '="' + line.line_id + '"]');
-    if (!cell) return;
-    const breaks = line.tat || [];
-    cell.innerHTML = breaks.map(function (item) {
-      const number = hours ? fmtNum(item.hours, 2) : fmtNum(item.minutes, 1);
-      const prefix = breaks.length > 1 && item.qty != null ? fmtNum(item.qty, 2) + " · " : "";
-      return '<div class="ops-break" title="' + esc(item.detail || "") + '">' + esc(prefix + number) + "</div>";
-    }).join("");
-  }
-
-  function replaceLine(updated) {
-    const lines = state.payload.lines || [];
-    const index = lines.findIndex(function (line) { return line.line_id === updated.line_id; });
-    if (index >= 0) lines[index] = updated;
-    paintLine(updated);
-  }
-
-  function lineById(id) {
-    return (state.payload.lines || []).find(function (line) { return String(line.line_id) === String(id); });
-  }
-
-  function statusLabel(status) {
+  function folderLabel(status) {
     if (status === "completed") return "Completed";
     if (status === "archive") return "Archive";
-    if (status === "template") return "Template";
-    return "Current";
+    if (status === "current") return "Current";
+    return status || "";
   }
 
-  function fmtDate(value) {
-    if (!value) return "—";
-    const parts = String(value).slice(0, 10).split("-");
-    if (parts.length !== 3) return value;
+  function formatDate(iso) {
+    const parts = String(iso).slice(0, 10).split("-");
+    if (parts.length < 3) return iso;
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     return Number(parts[2]) + " " + months[Number(parts[1]) - 1] + " " + parts[0];
   }
 
-  function fmtNum(value, digits) {
-    if (value == null || value === "" || !Number.isFinite(Number(value))) return "";
-    return trimNum(Number(value), digits);
+  function formatWhen(iso) {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
-  function trimNum(value, digits) {
-    return Number(value).toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  function money(value) {
+    const number = Number(value || 0);
+    return number.toFixed(2);
   }
 
-  function esc(value) {
-    return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char];
-    });
+  function showNum(value) {
+    if (value === null || value === undefined || value === "") return "";
+    const number = Number(value);
+    return Number.isFinite(number) ? String(number) : "";
+  }
+
+  function countPhrase(count, singular, plural) {
+    return count + " " + (count === 1 ? singular : plural);
   }
 
   function showAlert(message) {
@@ -582,11 +468,25 @@
   }
 
   async function fetchJson(url, options) {
-    const response = await fetch(url, Object.assign({
+    const response = await fetch(url, {
       headers: { "Content-Type": "application/json", "Accept": "application/json" },
-    }, options || {}));
-    const data = await response.json().catch(function () { return {}; });
-    if (!response.ok || data.ok === false) throw new Error(data.error || "Request failed");
-    return data;
+      ...options,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : null;
+    if (!response.ok || (payload && payload.ok === false)) {
+      throw new Error((payload && payload.error) || "The RFQ library could not be saved.");
+    }
+    return payload;
+  }
+
+  function esc(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[char]));
   }
 })();

@@ -102,8 +102,8 @@ def test_page_renders_the_tat_formula(monkeypatch):
     response = client.get("/ops-sheets")
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert "Quoted parts" in html
-    assert "Show line items" in html
+    assert "RFQ library" in html
+    assert "Supply Chain" in html
     assert "Import from RFQ folder" in html
     assert 'href="/ops-sheets"' in html
 

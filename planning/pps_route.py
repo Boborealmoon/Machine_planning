@@ -110,7 +110,7 @@ def _pps_shipped_completed(row: dict[str, Any]) -> bool:
 def pps_page():
     logistics_url = url_for("sales_orders.sales_orders_logistics_page")
     overview_embed = f"{logistics_url}?section=overview&embed=1"
-    planner_lanes = "CNC%2020,Wire%20cut"
+    planner_lanes = "CNC%2020,CNC%2029,Wire%20cut"
     try:
         planner_path = url_for("planner")
     except Exception:
@@ -131,7 +131,7 @@ def pps_page():
 
 @pps_bp.get("/api/pps/site-machines")
 def api_pps_site_machines():
-    """CNC 20 + Wire cut lanes owned by the PPS site planner tab."""
+    """CNC 20, CNC 29, and Wire cut lanes owned by the PPS site planner tab."""
     err = planner_db_connect_error()
     if err:
         return jsonify({"error": err}), 503

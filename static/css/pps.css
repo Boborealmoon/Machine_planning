@@ -29,7 +29,7 @@ body.pps-app {
     radial-gradient(ellipse 70% 45% at 8% -8%, rgba(31, 111, 120, 0.16), transparent 55%),
     radial-gradient(ellipse 55% 35% at 96% 0%, rgba(31, 122, 92, 0.1), transparent 48%),
     linear-gradient(180deg, var(--pps-bg-a), var(--pps-bg-b) 42%, #e8eef1);
-  font-family: "Segoe UI", "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 body.pps-app .navbar,
@@ -163,12 +163,10 @@ body.pps-app .app-main--pps {
   color: var(--pps-overdue);
 }
 
-.pps-board {
+.pps-board,
+.pps-board--columns,
+.pps-board--cards {
   width: 100%;
-}
-
-.pps-board--columns {
-  width: 66.666%;
 }
 
 .pps-clear-filters {
@@ -202,19 +200,19 @@ body.pps-app .app-main--pps {
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
-  min-width: 1040px;
+  min-width: 1440px;
 }
 
-.pps-w-ps { width: 112px; }
-.pps-w-sales { width: 108px; }
-.pps-w-part { width: auto; }
-.pps-w-stage { width: 132px; }
-.pps-w-due { width: 86px; }
-.pps-w-qty { width: 64px; }
-.pps-w-flag { width: 78px; }
-.pps-w-remarks { width: 128px; }
-.pps-w-date { width: 112px; }
-.pps-w-week { width: 112px; }
+.pps-w-ps { width: 11%; }
+.pps-w-sales { width: 12%; }
+.pps-w-part { width: 20%; }
+.pps-w-stage { width: 13%; }
+.pps-w-due { width: 8%; }
+.pps-w-qty { width: 5%; }
+.pps-w-flag { width: 6%; }
+.pps-w-remarks { width: 9%; }
+.pps-w-date { width: 8%; }
+.pps-w-week { width: 8%; }
 
 .pps-grid th,
 .pps-grid td {
@@ -222,8 +220,8 @@ body.pps-app .app-main--pps {
   border-bottom: 1px solid #e8eef1;
   vertical-align: middle;
   text-align: left;
-  font-size: 0.8rem;
-  line-height: 1.25;
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .pps-grid th {
@@ -234,8 +232,8 @@ body.pps-app .app-main--pps {
   padding: 0 4px;
   background: linear-gradient(180deg, #f4f8f9, #ebf1f3);
   color: #4d6068;
-  font-size: 0.66rem;
-  font-weight: 750;
+  font-size: 11px;
+  font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -263,8 +261,8 @@ body.pps-app .app-main--pps {
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: 0.66rem;
-  font-weight: 750;
+  font-size: 11px;
+  font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   cursor: pointer;
@@ -468,8 +466,8 @@ body.pps-app .app-main--pps {
 
 .pps-col-ps strong {
   display: block;
-  font-weight: 750;
-  font-size: 0.88rem;
+  font-weight: 700;
+  font-size: 13px;
   letter-spacing: -0.015em;
   white-space: nowrap;
   overflow: hidden;
@@ -479,7 +477,7 @@ body.pps-app .app-main--pps {
 .pps-ps-so-line {
   display: block;
   margin-top: 2px;
-  font-size: 0.72rem;
+  font-size: 12px;
   color: var(--pps-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -488,8 +486,8 @@ body.pps-app .app-main--pps {
 }
 
 .pps-col-part .pps-part-no {
-  font-weight: 700;
-  font-size: 0.86rem;
+  font-weight: 600;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -497,7 +495,7 @@ body.pps-app .app-main--pps {
 
 .pps-col-part .pps-part-desc {
   margin-top: 1px;
-  font-size: 0.72rem;
+  font-size: 12px;
   color: var(--pps-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -505,7 +503,7 @@ body.pps-app .app-main--pps {
 }
 
 .pps-col-sales {
-  font-weight: 650;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -581,8 +579,8 @@ body.pps-app .app-main--pps {
 .pps-col-stage .pps-stage-name,
 .pps-stage-btn .pps-stage-name {
   min-width: 0;
-  font-weight: 650;
-  font-size: 0.82rem;
+  font-weight: 600;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -648,7 +646,7 @@ body.pps-app .app-main--pps {
   background: transparent;
   color: var(--pps-ink);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: 13px;
   padding: 0 4px;
   outline: none;
   transition: background 0.12s, border-color 0.12s, box-shadow 0.12s;
@@ -788,7 +786,16 @@ body.pps-app .app-main--pps {
   margin-bottom: 12px;
 }
 
-.pps-status-tabs {
+.pps-filter-groups {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pps-status-tabs,
+.pps-owner-tabs {
   display: inline-flex;
   padding: 4px;
   border-radius: 999px;
@@ -797,7 +804,8 @@ body.pps-app .app-main--pps {
   gap: 2px;
 }
 
-.pps-status-tab {
+.pps-status-tab,
+.pps-owner-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -813,11 +821,13 @@ body.pps-app .app-main--pps {
   cursor: pointer;
 }
 
-.pps-status-tab:hover {
+.pps-status-tab:hover,
+.pps-owner-tab:hover {
   color: var(--pps-ink);
 }
 
-.pps-status-tab.is-active {
+.pps-status-tab.is-active,
+.pps-owner-tab.is-active {
   background: var(--pps-surface);
   color: var(--pps-ink);
   box-shadow: 0 1px 3px rgba(26, 35, 40, 0.08);
@@ -833,7 +843,8 @@ body.pps-app .app-main--pps {
   font-variant-numeric: tabular-nums;
 }
 
-.pps-status-tab.is-active .pps-tab-count {
+.pps-status-tab.is-active .pps-tab-count,
+.pps-owner-tab.is-active .pps-tab-count {
   background: var(--pps-accent-soft);
   color: var(--pps-accent);
 }
@@ -1301,12 +1312,6 @@ body.pps-app .app-main--pps {
 .pps-muted-text {
   color: var(--pps-muted);
   font-size: 0.88rem;
-}
-
-@media (max-width: 1100px) {
-  .pps-board--columns {
-    width: 100%;
-  }
 }
 
 @media (max-width: 860px) {
