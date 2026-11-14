@@ -1026,9 +1026,24 @@ body.sol-view .app-main--sales-logistics {
   color: #9a3412;
 }
 
+.sol-status-pill--draft {
+  background: #f1f5f9;
+  color: #475569;
+}
+
 .sol-status-pill--po {
   background: #dbeafe;
   color: #1e40af;
+}
+
+.sol-status-pill--var {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.sol-status-pill--wait {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .sol-status-pill--grn {

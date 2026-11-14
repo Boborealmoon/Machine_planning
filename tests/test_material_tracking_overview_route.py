@@ -35,7 +35,27 @@ class MaterialTrackingOverviewRouteTests(unittest.TestCase):
 
     def test_chain_status_follows_the_latest_document(self):
         self.assertEqual(chain_status({}), "PR")
-        self.assertEqual(chain_status({"purchase_order_no": "PO/1"}), "PO")
+        self.assertEqual(chain_status({"purchase_order_no": "PO/1"}), "PO draft")
+        self.assertEqual(
+            chain_status({"purchase_order_no": "PO/1", "po_status": "O"}),
+            "PO pushed",
+        )
+        self.assertEqual(
+            chain_status({"purchase_order_no": "PO/1", "po_status": "U"}),
+            "PO under variation",
+        )
+        self.assertEqual(
+            chain_status({"purchase_order_no": "PO/1", "po_status": "C"}),
+            "PO completed",
+        )
+        self.assertEqual(
+            chain_status({
+                "purchase_order_no": "PO/1",
+                "po_status": "O",
+                "shipment_voucher_no": "LG1",
+            }),
+            "Waiting for GRN",
+        )
         self.assertEqual(
             chain_status({"purchase_order_no": "PO/1", "grn_no": "GRN/1"}),
             "GRN",
@@ -57,6 +77,9 @@ class MaterialTrackingOverviewRouteTests(unittest.TestCase):
         self.assertIn("po_order_new_hdr", sql)
         self.assertIn("h.status IN ('O', 'U', 'C')", sql)
         self.assertIn("po.purchase_requisition_no = pr.purchase_requisition_no", sql)
+        self.assertIn("d.source_voucher_no", sql)
+        self.assertIn("d.source_voucher_line_item_no", sql)
+        self.assertIn("ib.po_line_no = po.line_item_no", sql)
         self.assertIn("public.lg_in_shm_ost_hdr", sql)
         self.assertIn("public.lg_in_shm_hst_hdr", sql)
         self.assertIn("h.source_voucher_no", sql)
@@ -80,6 +103,7 @@ class MaterialTrackingOverviewRouteTests(unittest.TestCase):
                 "line_item_no": "1",
                 "item_code": "ITEM",
                 "purchase_order_no": "PO/1",
+                "po_status": "O",
                 "grn_no": "",
                 "qi_voucher_no": "",
             }
@@ -87,7 +111,7 @@ class MaterialTrackingOverviewRouteTests(unittest.TestCase):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
             with patch(
                 "planning.material_tracking_overview_route._fetch_rows",
-                return_value=[{**sample_rows[0], "status": "PO"}],
+                return_value=[{**sample_rows[0], "status": "PO pushed"}],
             ) as fetch_rows:
                 with patch(
                     "planning.material_tracking_overview_route._fetch_sbus",
@@ -100,8 +124,8 @@ class MaterialTrackingOverviewRouteTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["sbu"], ["MFG"])
         self.assertEqual(payload["count"], 1)
-        self.assertEqual(payload["rows"][0]["status"], "PO")
-        self.assertEqual(payload["counts"]["PO"], 1)
+        self.assertEqual(payload["rows"][0]["status"], "PO pushed")
+        self.assertEqual(payload["counts"]["PO pushed"], 1)
         self.assertEqual(payload["sbus"], ["ENG", "MFG"])
         self.assertIn("pr_req_new", payload["source"])
         fetch_rows.assert_called_once_with(False, ["MFG"], refresh=False)

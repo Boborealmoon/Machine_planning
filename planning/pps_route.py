@@ -109,7 +109,7 @@ def _pps_shipped_completed(row: dict[str, Any]) -> bool:
 @pps_bp.get(PPS_PATH)
 def pps_page():
     logistics_url = url_for("sales_orders.sales_orders_logistics_page")
-    overview_embed = f"{logistics_url}?section=overview&embed=1"
+    overview_embed = f"{logistics_url}?section=overview&embed=1&segment=PPS"
     planner_lanes = "CNC%2020,CNC%2029,Wire%20cut"
     try:
         planner_path = url_for("planner")
@@ -122,7 +122,7 @@ def pps_page():
         pps_path=PPS_PATH,
         pps_asset_version=pps_asset_version(),
         pps_subtitle="Loading PPS tracking...",
-        pps_supply_chain_url=f"{logistics_url}?section=overview",
+        pps_supply_chain_url=f"{logistics_url}?section=overview&segment=PPS",
         pps_supply_chain_embed=overview_embed,
         pps_planner_embed=planner_embed,
         pps_planner_full=planner_full,

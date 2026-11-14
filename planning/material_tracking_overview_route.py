@@ -1,10 +1,15 @@
 """Supply Chain View overview: one row per PR line, with PO and receipt filled in.
 
 A line starts as a current purchase request (draft, or the latest posted revision).
-When a draft or open purchase order is raised against that PR, the PO columns
-fill in. Cancelled POs stay off; completed POs stay so a posted GRN remains.
-Inbound shipments, GRNs, and QI attach by PO number and item code. Several
+A purchase order attaches when its header names that PR, or when the PO line
+was raised against an existing PO (the PR sits on the line, not the header).
+Cancelled POs stay off; completed POs stay so a posted GRN remains.
+Inbound shipments, GRNs, and QI attach by PO number and PO line. Several
 receipts become several rows that repeat the same PR and PO.
+
+Status is the latest stage reached:
+  PR, PO draft, PO pushed, PO under variation, PO completed,
+  Waiting for GRN, GRN, QI.
 """
 from __future__ import annotations
 
@@ -148,10 +153,18 @@ pr_lines AS (
 ),
 po_union AS (
     SELECT
-        BTRIM(h.purchase_requisition_no) AS purchase_requisition_no,
+        COALESCE(
+            NULLIF(BTRIM(d.source_voucher_no), ''),
+            NULLIF(BTRIM(h.purchase_requisition_no), '')
+        ) AS purchase_requisition_no,
         BTRIM(h.purchase_order_no) AS purchase_order_no,
         h.order_date AS po_date,
+        h.status AS po_status,
         regexp_replace(COALESCE(d.line_item_no::text, ''), '\\.0+$', '') AS line_item_no,
+        NULLIF(
+            regexp_replace(COALESCE(d.source_voucher_line_item_no::text, ''), '\\.0+$', ''),
+            '0'
+        ) AS source_line_item_no,
         COALESCE(
             NULLIF(BTRIM(d.inventory_code), ''),
             NULLIF(BTRIM(d.service_code), ''),
@@ -167,16 +180,27 @@ po_union AS (
     LEFT JOIN mt_party p
       ON p.party_code = h.supplier_code
     WHERE h.status IN ('O', 'U', 'C')
-      AND NULLIF(BTRIM(h.purchase_requisition_no), '') IS NOT NULL
+      AND COALESCE(
+            NULLIF(BTRIM(d.source_voucher_no), ''),
+            NULLIF(BTRIM(h.purchase_requisition_no), '')
+          ) IS NOT NULL
       AND NULLIF(BTRIM(h.purchase_order_no), '') IS NOT NULL
 
     UNION ALL
 
     SELECT
-        BTRIM(h.purchase_requisition_no) AS purchase_requisition_no,
+        COALESCE(
+            NULLIF(BTRIM(d.source_voucher_no), ''),
+            NULLIF(BTRIM(h.purchase_requisition_no), '')
+        ) AS purchase_requisition_no,
         BTRIM(h.purchase_order_no) AS purchase_order_no,
         h.order_date AS po_date,
+        'DRAFT' AS po_status,
         regexp_replace(COALESCE(d.line_item_no::text, ''), '\\.0+$', '') AS line_item_no,
+        NULLIF(
+            regexp_replace(COALESCE(d.source_voucher_line_item_no::text, ''), '\\.0+$', ''),
+            '0'
+        ) AS source_line_item_no,
         COALESCE(
             NULLIF(BTRIM(d.inventory_code), ''),
             NULLIF(BTRIM(d.service_code), ''),
@@ -191,7 +215,10 @@ po_union AS (
       ON d.purchase_order_no = h.purchase_order_no
     LEFT JOIN mt_party p
       ON p.party_code = h.supplier_code
-    WHERE NULLIF(BTRIM(h.purchase_requisition_no), '') IS NOT NULL
+    WHERE COALESCE(
+            NULLIF(BTRIM(d.source_voucher_no), ''),
+            NULLIF(BTRIM(h.purchase_requisition_no), '')
+          ) IS NOT NULL
       AND NULLIF(BTRIM(h.purchase_order_no), '') IS NOT NULL
 ),
 po_lines AS (
@@ -199,7 +226,9 @@ po_lines AS (
         purchase_requisition_no,
         purchase_order_no,
         po_date,
+        po_status,
         line_item_no,
+        source_line_item_no,
         item_code,
         po_qty,
         supplier_code,
@@ -220,19 +249,32 @@ po_candidates AS (
         pr.item_key AS pr_item_key,
         po.purchase_order_no,
         po.po_date,
+        po.po_status,
+        po.line_item_no,
         po.po_qty,
         po.supplier_code,
         po.supplier_name,
         po.item_key,
         CASE
-            WHEN po.line_item_no = pr.line_item_no
+            WHEN COALESCE(po.source_line_item_no, '') <> ''
+             AND po.source_line_item_no = pr.line_item_no
+             AND (
+                po.item_key = pr.item_key
+                OR pr.item_key = ''
+                OR po.item_key = ''
+             )
+            THEN 0
+            WHEN COALESCE(po.source_line_item_no, '') = ''
+             AND po.line_item_no = pr.line_item_no
              AND (
                 po.item_key = pr.item_key
                 OR (pr.item_key = '' AND po.item_key = '')
              )
-            THEN 0
-            WHEN pr.item_key <> '' AND po.item_key = pr.item_key
             THEN 1
+            WHEN COALESCE(po.source_line_item_no, '') = ''
+             AND pr.item_key <> ''
+             AND po.item_key = pr.item_key
+            THEN 2
             ELSE NULL
         END AS match_rank
     FROM pr_lines pr
@@ -246,6 +288,8 @@ po_best AS (
         pr_item_key,
         purchase_order_no,
         po_date,
+        po_status,
+        line_item_no,
         po_qty,
         supplier_code,
         supplier_name,
@@ -291,6 +335,10 @@ inbound_union AS (
         h.grn_no,
         h.goods_receipt_date,
         regexp_replace(COALESCE(d.line_item_no::text, ''), '\\.0+$', '') AS ship_line_no,
+        NULLIF(
+            regexp_replace(COALESCE(d.source_voucher_line_item_no::text, ''), '\\.0+$', ''),
+            '0'
+        ) AS po_line_no,
         UPPER(BTRIM(COALESCE(
             NULLIF(BTRIM(d.inventory_code), ''),
             NULLIF(BTRIM(d.service_code), ''),
@@ -320,6 +368,10 @@ inbound_union AS (
         h.grn_no,
         h.goods_receipt_date,
         regexp_replace(COALESCE(d.line_item_no::text, ''), '\\.0+$', '') AS ship_line_no,
+        NULLIF(
+            regexp_replace(COALESCE(d.source_voucher_line_item_no::text, ''), '\\.0+$', ''),
+            '0'
+        ) AS po_line_no,
         UPPER(BTRIM(COALESCE(
             NULLIF(BTRIM(d.inventory_code), ''),
             NULLIF(BTRIM(d.service_code), ''),
@@ -347,6 +399,7 @@ inbound AS (
         supplier_do_no,
         grn_no,
         goods_receipt_date,
+        po_line_no,
         item_key,
         qty_received,
         qi_voucher_no,
@@ -369,6 +422,7 @@ SELECT
     pr.project_no,
     po.purchase_order_no,
     po.po_date,
+    po.po_status,
     po.po_qty,
     ib.shipment_voucher_no,
     ib.supplier_do_no,
@@ -384,8 +438,17 @@ LEFT JOIN po_best po
  AND po.pr_item_key = pr.item_key
 LEFT JOIN inbound ib
   ON ib.purchase_order_no = po.purchase_order_no
- AND po.item_key <> ''
- AND ib.item_key = po.item_key
+ AND (
+      (
+        NULLIF(ib.po_line_no, '') IS NOT NULL
+        AND ib.po_line_no = po.line_item_no
+      )
+      OR (
+        NULLIF(ib.po_line_no, '') IS NULL
+        AND po.item_key <> ''
+        AND ib.item_key = po.item_key
+      )
+ )
 ORDER BY
     pr.pr_date DESC NULLS LAST,
     pr.purchase_requisition_no,
@@ -431,13 +494,35 @@ def parse_sbus(raw: str | None) -> tuple[bool, list[str]]:
     return False, codes
 
 
+OVERVIEW_STAGES = (
+    "PR",
+    "PO draft",
+    "PO pushed",
+    "PO under variation",
+    "PO completed",
+    "Waiting for GRN",
+    "GRN",
+    "QI",
+)
+
+
 def chain_status(row: dict[str, Any]) -> str:
+    """Latest document on the line, in purchasing order."""
     if compact_text(row.get("qi_voucher_no")):
         return "QI"
     if compact_text(row.get("grn_no")):
         return "GRN"
+    if compact_text(row.get("shipment_voucher_no")):
+        return "Waiting for GRN"
     if compact_text(row.get("purchase_order_no")):
-        return "PO"
+        code = compact_text(row.get("po_status")).upper()
+        if code == "U":
+            return "PO under variation"
+        if code == "C":
+            return "PO completed"
+        if code == "O":
+            return "PO pushed"
+        return "PO draft"
     return "PR"
 
 
@@ -448,7 +533,7 @@ def _with_status(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"PR": 0, "PO": 0, "GRN": 0, "QI": 0}
+    counts = {stage: 0 for stage in OVERVIEW_STAGES}
     for row in rows:
         status = chain_status(row)
         counts[status] = counts.get(status, 0) + 1

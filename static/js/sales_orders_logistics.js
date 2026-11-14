@@ -967,10 +967,25 @@
     return `<span class="${cls}" title="${escapeHtml(executionLabel(c))}">${escapeHtml(c)}</span>`;
   }
 
+  const OVERVIEW_STAGES = [
+    { key: 'PR', tone: 'pr' },
+    { key: 'PO draft', tone: 'draft' },
+    { key: 'PO pushed', tone: 'po' },
+    { key: 'PO under variation', tone: 'var' },
+    { key: 'PO completed', tone: 'ok' },
+    { key: 'Waiting for GRN', tone: 'wait' },
+    { key: 'GRN', tone: 'grn' },
+    { key: 'QI', tone: 'qi' },
+  ];
+
+  function overviewStage(status) {
+    const text = String(status || 'PR').trim().toLowerCase();
+    return OVERVIEW_STAGES.find(stage => stage.key.toLowerCase() === text) || OVERVIEW_STAGES[0];
+  }
+
   function overviewStatusPill(status) {
-    const text = String(status || 'PR').trim().toUpperCase();
-    const known = text === 'PO' || text === 'GRN' || text === 'QI' ? text : 'PR';
-    return `<span class="sol-status-pill sol-status-pill--${known.toLowerCase()}">${known}</span>`;
+    const stage = overviewStage(status);
+    return `<span class="sol-status-pill sol-status-pill--${stage.tone}">${escapeHtml(stage.key)}</span>`;
   }
 
   function prPoStatusPill(status) {
@@ -3515,11 +3530,11 @@
   function updateOverviewStats(rows) {
     const subtitle = document.getElementById('sol-subtitle');
     const extra = prPoFilterSummary();
-    const note = 'blank PO or GRN means that document is not generated yet';
-    const counts = { PR: 0, PO: 0, GRN: 0, QI: 0 };
+    const note = 'PR → PO draft → PO pushed → waiting for GRN → GRN → QI';
+    const counts = {};
+    OVERVIEW_STAGES.forEach(stage => { counts[stage.key] = 0; });
     rows.forEach(row => {
-      const key = String(row.status || 'PR').toUpperCase();
-      if (Object.prototype.hasOwnProperty.call(counts, key)) counts[key] += 1;
+      counts[overviewStage(row.status).key] += 1;
     });
     if (subtitle) {
       subtitle.textContent = extra.length
@@ -3528,10 +3543,7 @@
     }
     setStatPills([
       { label: 'Shown', value: rows.length },
-      { label: 'PR', value: counts.PR },
-      { label: 'PO', value: counts.PO },
-      { label: 'GRN', value: counts.GRN },
-      { label: 'QI', value: counts.QI },
+      ...OVERVIEW_STAGES.map(stage => ({ label: stage.key, value: counts[stage.key] })),
     ]);
   }
 
@@ -5441,6 +5453,13 @@
     return '';
   }
 
+  function initialSegmentFromUrl() {
+    try {
+      return segmentCode(new URLSearchParams(window.location.search).get('segment'));
+    } catch (_) { /* ignore */ }
+    return '';
+  }
+
   function init() {
     document.querySelectorAll('[data-sol-section]').forEach(btn => {
       btn.addEventListener('click', () => setSection(btn.getAttribute('data-sol-section')));
@@ -5502,6 +5521,8 @@
     if (bootSection) {
       state.view = SECTION_DEFAULTS[bootSection];
     }
+    const bootSegment = initialSegmentFromUrl();
+    if (bootSegment) state.segment = bootSegment;
     syncNavUi();
     // Same live /api/sales-orders path as Sales Orders (COMAIN, not staging).
     load({ refresh: false });

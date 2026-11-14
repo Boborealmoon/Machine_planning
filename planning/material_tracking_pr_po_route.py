@@ -249,8 +249,26 @@ LEFT JOIN (
         MIN(purchase_order_no) AS purchase_order_no,
         MIN(order_date) AS po_date,
         MIN(supplier_code) AS supplier_code
-    FROM po_order_ost_hdr
-    WHERE NULLIF(TRIM(purchase_requisition_no), '') IS NOT NULL
+    FROM (
+        SELECT
+            BTRIM(purchase_requisition_no) AS purchase_requisition_no,
+            purchase_order_no,
+            order_date,
+            supplier_code
+        FROM po_order_ost_hdr
+        WHERE NULLIF(BTRIM(purchase_requisition_no), '') IS NOT NULL
+        UNION ALL
+        SELECT
+            BTRIM(d.source_voucher_no) AS purchase_requisition_no,
+            h.purchase_order_no,
+            h.order_date,
+            h.supplier_code
+        FROM po_order_ost_hdr h
+        JOIN po_order_ost_det d
+          ON d.purchase_order_no = h.purchase_order_no
+        WHERE h.status IN ('O', 'U', 'C')
+          AND NULLIF(BTRIM(d.source_voucher_no), '') IS NOT NULL
+    ) linked
     GROUP BY purchase_requisition_no
 ) po ON po.purchase_requisition_no = h.purchase_requisition_no
 LEFT JOIN mt_party p
