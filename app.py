@@ -81,6 +81,7 @@ from planning.monthly_delivery_plan_route import monthly_delivery_plan_bp
 from planning.so_outstanding_balance_route import so_outstanding_balance_bp
 from planning.sales_coordination_route import sales_coordination_bp
 from planning.first_article_route import first_article_bp
+from planning.ops_sheet_route import ops_sheet_bp
 from planning.rfq_checker_route import rfq_checker_bp
 from planning.aps_ps_match_route import aps_ps_match_bp
 from planning.queue_exit_history_route import queue_exit_history_bp
@@ -129,6 +130,7 @@ app.register_blueprint(sales_report_bp)
 app.register_blueprint(so_outstanding_balance_bp)
 app.register_blueprint(sales_coordination_bp)
 app.register_blueprint(first_article_bp)
+app.register_blueprint(ops_sheet_bp)
 app.register_blueprint(rfq_checker_bp)
 app.register_blueprint(aps_ps_match_bp)
 app.register_blueprint(job_ratio_bp)

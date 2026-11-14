@@ -1,0 +1,535 @@
+.ops-sheet-view .app-main--ops-sheet {
+  padding: 20px 22px 40px;
+}
+
+.ops-page {
+  color: #1c1917;
+}
+
+.ops-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.ops-kicker {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+
+.ops-header h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.ops-formula {
+  max-width: 760px;
+  margin: 8px 0 0;
+  color: #44403c;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ops-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ops-btn {
+  border: 1px solid #d6d3d1;
+  background: #fff;
+  color: #1c1917;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ops-btn:hover {
+  background: #fafaf9;
+}
+
+.ops-btn--primary {
+  background: #292524;
+  border-color: #292524;
+  color: #fff;
+}
+
+.ops-btn--primary:hover {
+  background: #1c1917;
+}
+
+.ops-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ops-help {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: #44403c;
+}
+
+.ops-help summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #57534e;
+}
+
+.ops-help p {
+  max-width: 820px;
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+.ops-stats {
+  display: flex;
+  gap: 28px;
+  margin-bottom: 14px;
+}
+
+.ops-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ops-stat b {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.ops-stat span {
+  font-size: 12px;
+  color: #78716c;
+}
+
+.ops-toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+
+.ops-search,
+.ops-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #78716c;
+}
+
+.ops-search input,
+.ops-status select,
+.ops-modal-card input,
+.ops-modal-card select {
+  border: 1px solid #d6d3d1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1c1917;
+  background: #fff;
+}
+
+.ops-search {
+  flex: 1;
+}
+
+.ops-search input {
+  width: 100%;
+}
+
+.ops-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.ops-meta {
+  margin: 0 0 14px;
+}
+
+.ops-results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ops-idle {
+  margin: 28px 0;
+  color: #57534e;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ops-idle p {
+  margin: 0 0 6px;
+}
+
+.ops-file {
+  border: 1px solid #e7e5e4;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 14px;
+}
+
+.ops-file-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+}
+
+.ops-show {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #44403c;
+}
+
+.ops-file-name {
+  min-width: 240px;
+  flex: 1;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1c1917;
+  background: transparent;
+}
+
+.ops-file-name:focus {
+  outline: none;
+  border-color: #a8a29e;
+  background: #fff;
+}
+
+.ops-file-meta {
+  font-size: 12px;
+  color: #78716c;
+}
+
+.ops-hit-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ops-hit-list li {
+  padding: 4px 0;
+  font-size: 13px;
+  border-top: 1px solid #f5f5f4;
+}
+
+.ops-hit-list b {
+  font-weight: 700;
+}
+
+.ops-file--open .ops-scroll {
+  margin-top: 12px;
+  max-height: 520px;
+}
+
+.ops-cell-text {
+  width: 140px;
+  text-align: left;
+}
+
+.ops-input-wide {
+  width: 220px;
+}
+
+.ops-remarks textarea {
+  width: 220px;
+  min-height: 48px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 4px;
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+  background: transparent;
+}
+
+.ops-remarks textarea:focus {
+  outline: none;
+  border-color: #a8a29e;
+  background: #fff;
+}
+
+
+.ops-meta {
+  margin: 0 0 8px auto;
+  font-size: 12px;
+  color: #78716c;
+}
+
+.ops-alert {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.ops-scroll {
+  overflow: auto;
+  max-height: calc(100vh - 250px);
+  border: 1px solid #e7e5e4;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.ops-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+  min-width: 100%;
+}
+
+.ops-table th,
+.ops-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #e7e5e4;
+  border-right: 1px solid #f5f5f4;
+  vertical-align: top;
+  white-space: nowrap;
+  background: #fff;
+}
+
+.ops-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #fafaf9;
+  font-size: 11px;
+  font-weight: 700;
+  color: #44403c;
+  text-align: left;
+}
+
+.ops-col-group {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+
+.ops-table th:first-child,
+.ops-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+
+.ops-table thead th:first-child {
+  z-index: 5;
+}
+
+.ops-table .ops-group td {
+  position: static;
+  left: auto;
+  z-index: 1;
+  background: #f5f5f4;
+  font-weight: 600;
+  white-space: normal;
+}
+
+.ops-group span {
+  margin-left: 12px;
+  font-weight: 500;
+  color: #57534e;
+}
+
+.ops-pill {
+  display: inline-block;
+  margin-left: 12px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e7e5e4;
+  font-size: 11px;
+  font-weight: 700;
+  color: #44403c;
+}
+
+.ops-pill--missing {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.ops-num,
+.ops-table td.ops-tat,
+.ops-table td.ops-cycle {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ops-table td.ops-tat,
+.ops-table th.ops-tat {
+  background: #f3f7f4;
+}
+
+.ops-table td.ops-extra,
+.ops-table th.ops-extra {
+  background: #fbf8f1;
+}
+
+.ops-part {
+  font-weight: 700;
+}
+
+.ops-remarks {
+  white-space: pre-line;
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.ops-empty {
+  padding: 28px 12px;
+  color: #78716c;
+  white-space: normal;
+}
+
+.ops-cell-input,
+.ops-ops input {
+  width: 64px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 4px;
+  font: inherit;
+  font-size: 12px;
+  text-align: right;
+  background: transparent;
+  color: inherit;
+}
+
+.ops-cell-input:focus,
+.ops-ops input:focus,
+.ops-extra-head select:focus {
+  outline: none;
+  border-color: #a8a29e;
+  background: #fff;
+}
+
+.ops-ops {
+  min-width: 88px;
+}
+
+.ops-ops-basis {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: #78716c;
+  font-weight: 500;
+}
+
+.ops-linkish {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-top: 2px;
+  color: #57534e;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.ops-extra-head {
+  min-width: 92px;
+}
+
+.ops-extra-head select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid #e7e5e4;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+}
+
+.ops-break + .ops-break {
+  margin-top: 3px;
+}
+
+.ops-modal[hidden] {
+  display: none;
+}
+
+.ops-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(28, 25, 23, 0.35);
+}
+
+.ops-modal-card {
+  width: min(440px, calc(100% - 32px));
+  background: #fff;
+  border: 1px solid #e7e5e4;
+  border-radius: 12px;
+  padding: 18px;
+}
+
+.ops-modal-card h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.ops-modal-card p {
+  margin: 0 0 14px;
+  color: #57534e;
+  font-size: 13px;
+}
+
+.ops-modal-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #57534e;
+}
+
+.ops-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 inventory_enquiry_bp = Blueprint("inventory_enquiry", __name__)
 
 _CACHE_TTL_SEC = 300
-_CACHE_VERSION = 5
+_CACHE_VERSION = 6
 _cache: tuple[float, int, list[dict[str, Any]]] | None = None
 _lot_cache: tuple[float, int, list[dict[str, Any]]] | None = None
 
@@ -39,6 +39,9 @@ ORDER BY
     inventory_code
 """
 
+# Keep fully issued batches. A lot reference such as M/04293/26 stays on
+# ic_inventory_ost_lot after remaining and allocation both hit 0, and enquiry
+# has to find that reference.
 _LOT_REF_SQL = """
 SELECT
     inventory_code,
@@ -54,7 +57,6 @@ WHERE inventory_code IS NOT NULL
   AND BTRIM(inventory_code) <> ''
   AND reference_no IS NOT NULL
   AND BTRIM(reference_no) <> ''
-  AND (COALESCE(remaining_qty, 0) > 0 OR COALESCE(allocation_qty, 0) > 0)
 GROUP BY inventory_code, reference_no
 ORDER BY inventory_code, reference_no
 """
@@ -83,7 +85,6 @@ WHERE o.inventory_code IS NOT NULL
   AND BTRIM(o.inventory_code) <> ''
   AND o.reference_no IS NOT NULL
   AND BTRIM(o.reference_no) <> ''
-  AND (COALESCE(o.remaining_qty, 0) > 0 OR COALESCE(o.allocation_qty, 0) > 0)
 ORDER BY
     o.inventory_code,
     o.reference_no,

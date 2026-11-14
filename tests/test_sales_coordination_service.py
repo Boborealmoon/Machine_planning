@@ -139,6 +139,59 @@ class SalesCoordinationTests(unittest.TestCase):
         self.assertEqual(lines[1]["pp_partial_no"], 2)
         self.assertEqual(lines[1]["proposed_edd"], "2026-08-19")
 
+    def test_merges_customer_code_and_name(self):
+        orders = [
+            {
+                "sales_order_no": "SO/9",
+                "customer_code": "CA30",
+                "customer_name": "Acme Pte Ltd",
+                "customer_short_name": "Acme",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "APS26-1",
+                        "process_sheet_no": "APS26-1",
+                        "customer_code": "PP-CODE",
+                        "shipped_completed": False,
+                        "partials": [
+                            {
+                                "pp_partial_no": 1,
+                                "customer_code": "PART-CODE",
+                                "party_name": "Partial Name",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        row = expand_sales_coordination_lines(orders)[0]
+        self.assertEqual(row["customer_code"], "CA30")
+        self.assertEqual(row["customer_name"], "Acme Pte Ltd")
+
+    def test_customer_falls_back_to_process_sheet_then_partial(self):
+        orders = [
+            {
+                "sales_order_no": "SO/10",
+                "pp_vouchers": [
+                    {
+                        "pp_voucher_no": "NPS26-2",
+                        "process_sheet_no": "NPS26-2",
+                        "customer_code": "PP1",
+                        "shipped_completed": False,
+                        "partials": [
+                            {
+                                "pp_partial_no": 1,
+                                "customer_code": "P1",
+                                "party_name": "Partial Co",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        row = expand_sales_coordination_lines(orders)[0]
+        self.assertEqual(row["customer_code"], "PP1")
+        self.assertEqual(row["customer_name"], "Partial Co")
+
     def test_build_payload(self):
         result = build_sales_coordination([])
         self.assertTrue(result["ok"])
@@ -338,8 +391,14 @@ class SalesCoordinationRouteTests(unittest.TestCase):
         self.assertIn("Customer remarks", html)
         self.assertIn("Coway remarks", html)
         self.assertIn("Committed schedule", html)
-        self.assertIn("sc-20261029-compact", html)
+        self.assertIn("sc-20261112-columns", html)
+        self.assertIn('id="sc-columns"', html)
+        self.assertIn('id="sc-col-filter"', html)
+        self.assertIn('data-sort="customer"', html)
         po_date = html.find('data-sort="po_date"')
+        customer_col = html.find('data-sort="customer"')
+        ps_no = html.find('data-sort="process_sheet_no"')
+        self.assertTrue(ps_no < customer_col < po_date)
         po_no = html.find('data-sort="customer_po_no"')
         line = html.find('data-sort="line_item_no"')
         due = html.find('data-sort="due_date"')

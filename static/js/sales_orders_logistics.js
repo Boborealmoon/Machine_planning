@@ -5,6 +5,18 @@
 
   const MATERIAL_ARRIVED = 'ARRIVED';
   const PS_TYPES = ['MPS', 'APS', 'NPS', 'PPS', 'CPS', 'SR'];
+  const SEGMENT_RANK = ['NPS', 'APS', 'PPS', 'MPS', 'CPS', 'PS', 'BS', 'GEXP', 'P&L'];
+  const SEGMENT_DESC = {
+    APS: 'Aerospace process sheet',
+    BS: 'Balance sheet',
+    CPS: 'Chemical process sheet',
+    GEXP: 'General office expenses',
+    MPS: 'MRO & NDT process sheet',
+    NPS: 'Non-aero MFG commercial',
+    'P&L': 'Profit & loss',
+    PPS: 'Piece part commercial',
+    PS: 'Commercial process sheet',
+  };
   const EM_DASH = '-';
   const PS_VIEWS = new Set(['active', 'no-wo', 'sr']);
   const SUBCON_VIEW = 'subcon';
@@ -22,11 +34,12 @@
   const SHIP_IN_VIEW = 'logistics-in';
   const SHIP_OUT_VIEW = 'logistics-out';
   const SHIP_VIEWS = new Set([SHIP_IN_VIEW, SHIP_OUT_VIEW]);
-  const IN_SHIP_BUCKETS = ['outstanding', 'grn', 'history', 'cancelled'];
+  const IN_SHIP_BUCKETS = ['outstanding', 'grn', 'week', 'history', 'cancelled'];
   const OUT_SHIP_BUCKETS = ['outstanding', 'history', 'cancelled'];
   const SHIP_BUCKET_LABELS = {
     outstanding: 'Outstanding',
     grn: 'GRN',
+    week: 'This week',
     history: 'History',
     cancelled: 'Cancelled',
   };
@@ -58,6 +71,7 @@
     { key: 'estimated_arrival_date', label: 'Est. arrival', type: 'date' },
     { key: 'supplier', label: 'Supplier', value: row => String(row.supplier_name || row.supplier_code || '').trim() },
     { key: 'project_no', label: 'Project' },
+    { key: 'segment_1_code', label: 'Segment', value: row => String(row.segment_1_code || '').trim() },
     { key: 'sbu_code', label: 'SBU' },
     { key: 'created_by', label: 'Created by' },
     { key: 'grn_no', label: 'GRN' },
@@ -77,6 +91,7 @@
     },
     { key: 'qty', label: 'Qty', type: 'num', cls: 'sol-col-qty' },
     { key: 'supplier', label: 'Supplier', value: row => String(row.supplier_name || row.supplier_code || '').trim() },
+    { key: 'segment_1_code', label: 'Segment', value: row => String(row.segment_1_code || '').trim() },
     { key: 'sbu_code', label: 'SBU' },
     { key: 'project_no', label: 'Project', mono: true },
     { key: 'purchase_order_no', label: 'PO No', mono: true },
@@ -202,12 +217,13 @@
     subconBucket: 'all',
     prPoBucket: 'ost',
     search: '',
-    selectedSbu: new Set(['MFG']),
+    selectedSbu: new Set(),
     selectedSuppliers: new Set(),
     prPoSorts: [{ key: 'pr_date', dir: 'desc' }],
     prPoFilters: {},
     materialFilter: 'all',
     ppTypes: new Set(['APS', 'NPS']),
+    segment: '',
     saveInFlight: new Set(),
     cachedAt: '',
     ppCount: 0,
@@ -231,6 +247,7 @@
     shipSource: '',
     shipTotal: 0,
     shipTruncated: false,
+    shipToday: '',
     shipCache: {},
     shipSorts: [],
     shipFilters: {},
@@ -320,6 +337,28 @@
     const fromPartial = leaf?.partial?.proposed_cnc;
     if (Array.isArray(fromPartial)) return fromPartial.filter(Boolean);
     return [];
+  }
+
+  function normalizeReturnDates(raw) {
+    const parts = Array.isArray(raw) ? raw : String(raw || '').split(/[,;\n]+/);
+    const seen = new Set();
+    const dates = [];
+    parts.forEach(part => {
+      const iso = isoDateValue(part);
+      if (!iso || seen.has(iso)) return;
+      seen.add(iso);
+      dates.push(iso);
+    });
+    dates.sort();
+    return dates;
+  }
+
+  function serializeReturnDates(dates) {
+    return normalizeReturnDates(dates).join(',');
+  }
+
+  function returnDatesLabel(raw) {
+    return normalizeReturnDates(raw).map(date => formatDate(date)).filter(text => text && text !== EM_DASH).join(', ');
   }
 
   function subconStatusOptionsHtml(selected) {
@@ -440,6 +479,17 @@
     { key: 'stage', label: 'Stage', cls: 'sol-col-stage', value: jobStageText },
     { key: 'cnc', label: 'Proposed CNC', value: leaf => (leaf.proposedMachines || proposedMachinesOf(leaf)).filter(Boolean).join(', ') },
     { key: 'status', label: 'Subcon status', cls: 'sol-col-status', value: leaf => subconStatusLabel(leaf.pp?.subcon_status) },
+    {
+      key: 'return',
+      label: 'Return',
+      cls: 'sol-col-return',
+      title: 'Coming back from supplier. Add another date for each batch.',
+      value: leaf => returnDatesLabel(leaf.pp?.subcon_return_dates),
+      sortValue: leaf => {
+        const dates = normalizeReturnDates(leaf.pp?.subcon_return_dates);
+        return dates.length ? dateSortValue(dates[0]) : null;
+      },
+    },
     { key: 'notes', label: 'Notes', cls: 'sol-col-notes', title: 'Same notes as S/O Management', value: leaf => String(leaf.pp?.mtl_part_order || '').trim() },
   ];
 
@@ -699,6 +749,9 @@
       subcon_status: Object.prototype.hasOwnProperty.call(child, 'subcon_status')
         ? String(child.subcon_status || '')
         : String(parentPp.subcon_status || ''),
+      subcon_return_dates: Object.prototype.hasOwnProperty.call(child, 'subcon_return_dates')
+        ? normalizeReturnDates(child.subcon_return_dates)
+        : normalizeReturnDates(parentPp.subcon_return_dates),
     });
   }
 
@@ -736,12 +789,16 @@
         material_delay: Boolean(childLeaf.pp?.material_delay),
         proposed_cnc: Array.isArray(childLeaf.pp?.proposed_cnc) ? childLeaf.pp.proposed_cnc.slice() : [],
         subcon_status: String(childLeaf.pp?.subcon_status || ''),
+        subcon_return_dates: normalizeReturnDates(childLeaf.pp?.subcon_return_dates),
       };
     if (!Array.isArray(assemblyChild.proposed_cnc) && Array.isArray(childLeaf.pp?.proposed_cnc)) {
       assemblyChild.proposed_cnc = childLeaf.pp.proposed_cnc.slice();
     }
     if (!Object.prototype.hasOwnProperty.call(assemblyChild, 'subcon_status')) {
       assemblyChild.subcon_status = String(childLeaf.pp?.subcon_status || '');
+    }
+    if (!Object.prototype.hasOwnProperty.call(assemblyChild, 'subcon_return_dates')) {
+      assemblyChild.subcon_return_dates = normalizeReturnDates(childLeaf.pp?.subcon_return_dates);
     }
     return {
       ...childLeaf,
@@ -992,6 +1049,7 @@
       pp.material_subcon,
       pp.assembly_material_subcon,
       pp.mtl_part_order,
+      pp.segment_1_code,
       pp.material_need_date,
       formatDate(pp.material_need_date),
       postedDateOf(order, pp),
@@ -1017,6 +1075,8 @@
       row.supplier_code,
       row.supplier_name,
       row.project_no,
+      row.segment_1_code,
+      row.segment_desc,
       row.sbu_code,
       row.created_by,
       row.grn_no,
@@ -1087,8 +1147,12 @@
     return partialNo(a.partial) - partialNo(b.partial);
   }
 
+  function jobRowsBeforeSegment() {
+    return applyStackedFilters(collectFilteredLeaves(), JOB_COLUMNS, state.jobFilters);
+  }
+
   function visibleLeaves() {
-    const rows = applyStackedFilters(collectFilteredLeaves(), JOB_COLUMNS, state.jobFilters);
+    const rows = jobRowsBeforeSegment().filter(leaf => passesSegment(segmentOfLeaf(leaf)));
     return sortRowsBySorts(rows, JOB_COLUMNS, state.jobSorts, compareJobLeaves);
   }
 
@@ -1106,6 +1170,151 @@
       out.push(text);
     });
     return out;
+  }
+
+  function segmentCode(value) {
+    return String(value || '').trim().toUpperCase();
+  }
+
+  function segmentRank(code) {
+    const rank = SEGMENT_RANK.indexOf(code);
+    return rank === -1 ? SEGMENT_RANK.length : rank;
+  }
+
+  function compareSegments(a, b) {
+    const left = segmentCode(a);
+    const right = segmentCode(b);
+    if (!left && right) return 1;
+    if (left && !right) return -1;
+    const rank = segmentRank(left) - segmentRank(right);
+    if (rank) return rank;
+    return left.localeCompare(right);
+  }
+
+  function segmentLabel(code) {
+    return code || 'No segment';
+  }
+
+  function segmentDescription(code, explicit) {
+    const text = String(explicit || '').trim();
+    if (text) return text;
+    return SEGMENT_DESC[code] || '';
+  }
+
+  function segmentPillClass(code) {
+    const key = segmentCode(code).toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const known = ['pps', 'nps', 'aps', 'mps', 'cps', 'ps'];
+    return known.includes(key) ? ` sol-segment-pill--${key}` : '';
+  }
+
+  function segmentOfLeaf(leaf) {
+    return segmentCode(leaf?.pp?.segment_1_code) || segmentCode(getPsType(leaf?.pp));
+  }
+
+  function passesSegment(code) {
+    if (!state.segment) return true;
+    return segmentCode(code) === state.segment;
+  }
+
+  function dateKey(value) {
+    const text = String(value || '').trim();
+    const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : '';
+  }
+
+  function localTodayKey() {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${now.getFullYear()}-${month}-${day}`;
+  }
+
+  function isTodayReceipt(row) {
+    const today = state.shipToday || localTodayKey();
+    return Boolean(today) && dateKey(row?.goods_receipt_date) === today;
+  }
+
+  function segmentHeaderRow(code, count, colspan, desc) {
+    const label = segmentLabel(code);
+    const detail = segmentDescription(code, desc);
+    const pill = code
+      ? `<span class="sol-segment-pill${segmentPillClass(code)}">${escapeHtml(code)}</span>`
+      : '';
+    const description = detail
+      ? `<span class="sol-segment-desc">${escapeHtml(detail)}</span>`
+      : '';
+    return `<tr class="sol-segment-group"><td colspan="${colspan}">${pill}<span class="sol-segment-group-label">${escapeHtml(label)}</span>${description}<span class="sol-segment-group-count">${count}</span></td></tr>`;
+  }
+
+  function groupedRowHtml(rows, codeOf, descOf, renderOne, colspan) {
+    if (state.segment) return rows.map(row => renderOne(row)).join('');
+    const groups = new Map();
+    rows.forEach(row => {
+      const code = segmentCode(codeOf(row));
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code).push(row);
+    });
+    return [...groups.keys()].sort(compareSegments).map(code => {
+      const items = groups.get(code) || [];
+      const desc = items.map(descOf).find(Boolean) || '';
+      return segmentHeaderRow(code, items.length, colspan, desc) + items.map(row => renderOne(row)).join('');
+    }).join('');
+  }
+
+  function usesSegmentBar() {
+    return isPsView() || isSubconView() || isOverviewView() || isPrPoView() || isShipView();
+  }
+
+  function segmentSourceRows() {
+    if (isShipView()) return shipRowsBeforeSegment().map(row => ({
+      code: segmentCode(row.segment_1_code),
+      desc: row.segment_desc,
+    }));
+    if (isOverviewView()) return overviewRowsBeforeSegment().map(row => ({
+      code: segmentCode(row.segment_1_code),
+      desc: row.segment_desc,
+    }));
+    if (isPrPoView()) return prPoRowsBeforeSegment().map(row => ({
+      code: segmentCode(row.segment_1_code),
+      desc: row.segment_desc,
+    }));
+    if (isSubconView()) return subconRowsBeforeSegment().map(leaf => ({
+      code: segmentOfLeaf(leaf),
+      desc: '',
+    }));
+    if (isPsView()) return jobRowsBeforeSegment().map(leaf => ({
+      code: segmentOfLeaf(leaf),
+      desc: '',
+    }));
+    return [];
+  }
+
+  function paintSegmentBar() {
+    const bar = document.getElementById('sol-segment-bar');
+    const host = document.getElementById('sol-segment-chips');
+    if (!bar || !host) return;
+    const show = usesSegmentBar();
+    bar.hidden = !show;
+    if (!show) return;
+    const counts = new Map();
+    const descriptions = new Map();
+    segmentSourceRows().forEach(item => {
+      counts.set(item.code, (counts.get(item.code) || 0) + 1);
+      if (item.desc && !descriptions.has(item.code)) descriptions.set(item.code, item.desc);
+    });
+    if (state.segment && !counts.has(state.segment)) counts.set(state.segment, 0);
+    const codes = [...counts.keys()].sort(compareSegments);
+    const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+    const chips = [`<button type="button" class="sol-chip sol-chip--segment${state.segment ? '' : ' is-active'}" data-sol-segment="" role="tab" aria-selected="${state.segment ? 'false' : 'true'}">All <span class="sol-chip-count">${total}</span></button>`];
+    codes.forEach(code => {
+      const active = state.segment === code;
+      const desc = segmentDescription(code, descriptions.get(code));
+      const title = desc ? ` title="${escapeHtml(desc)}"` : '';
+      chips.push(
+        `<button type="button" class="sol-chip sol-chip--segment${active ? ' is-active' : ''}" data-sol-segment="${escapeHtml(code)}" role="tab" aria-selected="${active ? 'true' : 'false'}"${title}>${escapeHtml(segmentLabel(code))} <span class="sol-chip-count">${counts.get(code) || 0}</span></button>`,
+      );
+    });
+    host.innerHTML = chips.join('');
   }
 
   function passesSbuFilter(row) {
@@ -1150,8 +1359,12 @@
     ));
   }
 
+  function prPoRowsBeforeSegment() {
+    return applyStackedFilters(prPoBaseRows(), PR_PO_COLUMNS, state.prPoFilters);
+  }
+
   function visiblePrPoRows() {
-    const rows = applyStackedFilters(prPoBaseRows(), PR_PO_COLUMNS, state.prPoFilters);
+    const rows = prPoRowsBeforeSegment().filter(row => passesSegment(row.segment_1_code));
     return sortRowsBySorts(rows, PR_PO_COLUMNS, state.prPoSorts);
   }
 
@@ -1165,6 +1378,8 @@
       row.line_item_description,
       row.supplier_code,
       row.supplier_name,
+      row.segment_1_code,
+      row.segment_desc,
       row.sbu_code,
       row.project_no,
       row.purchase_order_no,
@@ -1186,8 +1401,12 @@
     });
   }
 
+  function overviewRowsBeforeSegment() {
+    return applyStackedFilters(overviewBaseRows(), OVERVIEW_COLUMNS, state.overviewFilters);
+  }
+
   function visibleOverviewRows() {
-    const rows = applyStackedFilters(overviewBaseRows(), OVERVIEW_COLUMNS, state.overviewFilters);
+    const rows = overviewRowsBeforeSegment().filter(row => passesSegment(row.segment_1_code));
     return sortRowsBySorts(rows, OVERVIEW_COLUMNS, state.overviewSorts);
   }
 
@@ -1799,6 +2018,7 @@
       if (raw == null || raw === '') return `<td class="sol-col-qty">${EM_DASH}</td>`;
       return `<td class="sol-col-qty">${escapeHtml(formatQty(raw))}</td>`;
     }
+    if (col.key === 'segment_1_code') return segmentCell(row);
     if (col.key === 'description') return renderDescCell(raw);
     if (col.key === 'supplier') {
       const text = String(raw || '').trim();
@@ -1832,6 +2052,7 @@
         <td class="sol-date">${escapeHtml(formatDate(row.estimated_arrival_date))}</td>
         <td class="sol-col-supplier" title="${escapeHtml(supplier)}">${escapeHtml(supplier)}</td>
         <td class="sol-mono sol-col-code">${escapeHtml(cellText(row.project_no))}</td>
+        ${segmentCell(row)}
         <td class="sol-col-sbu">${escapeHtml(cellText(row.sbu_code))}</td>
         <td class="sol-col-user">${escapeHtml(cellText(row.created_by))}</td>
         <td class="sol-mono sol-col-code">${escapeHtml(cellText(row.grn_no))}</td>
@@ -1880,10 +2101,7 @@
     if (!code) return `<td>${EM_DASH}</td>`;
     const desc = String(row.segment_desc || '').trim();
     const title = desc && desc.toUpperCase() !== code.toUpperCase() ? `${code} — ${desc}` : code;
-    const known = ['PPS', 'NPS', 'APS'].includes(code.toUpperCase())
-      ? ` sol-segment-pill--${code.toLowerCase()}`
-      : '';
-    return `<td title="${escapeHtml(title)}"><span class="sol-segment-pill${known}">${escapeHtml(code)}</span></td>`;
+    return `<td title="${escapeHtml(title)}"><span class="sol-segment-pill${segmentPillClass(code)}">${escapeHtml(code)}</span></td>`;
   }
 
   function shipCellHtml(row, col) {
@@ -1903,8 +2121,9 @@
     return `<td${cls}>${escapeHtml(cellText(raw))}</td>`;
   }
 
-  function renderShipRow(row) {
-    return `<tr>${shipColumns().map(col => shipCellHtml(row, col)).join('')}</tr>`;
+  function renderShipRow(row, extraClass) {
+    const cls = extraClass ? ` class="${extraClass}"` : '';
+    return `<tr${cls}>${shipColumns().map(col => shipCellHtml(row, col)).join('')}</tr>`;
   }
 
   function shipSearchText(row) {
@@ -1928,12 +2147,16 @@
     ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
   }
 
-  function visibleShipRows() {
+  function shipRowsBeforeSegment() {
     const columns = shipColumns();
     const q = String(state.search || '').trim().toLowerCase();
     let rows = q ? state.shipRows.filter(row => shipSearchText(row).includes(q)) : state.shipRows.slice();
-    rows = applyStackedFilters(rows, columns, state.shipFilters);
-    return sortRowsBySorts(rows, columns, state.shipSorts);
+    return applyStackedFilters(rows, columns, state.shipFilters);
+  }
+
+  function visibleShipRows() {
+    const rows = shipRowsBeforeSegment().filter(row => passesSegment(row.segment_1_code));
+    return sortRowsBySorts(rows, shipColumns(), state.shipSorts);
   }
 
   function shipColumns() {
@@ -2256,7 +2479,7 @@
   }
 
   function setSaveStatus(control, status, message) {
-    const el = control?.closest('.so-editable-cell, .so-material-subcon-cell, .sol-need-date-cell, .sol-subcon-status-cell')?.querySelector('.so-editable-status');
+    const el = control?.closest('.so-editable-cell, .so-material-subcon-cell, .sol-need-date-cell, .sol-subcon-status-cell, .sol-return-dates-cell')?.querySelector('.so-editable-status');
     if (!el) return;
     el.className = `so-editable-status${status ? ` is-${status}` : ''}`;
     el.textContent = message || '';
@@ -2498,6 +2721,7 @@
     const outbound = state.shipCounts.out || {};
     setChipCount('sol-in-ost-count', inbound.outstanding);
     setChipCount('sol-in-grn-count', inbound.grn);
+    setChipCount('sol-in-week-count', inbound.week);
     setChipCount('sol-in-hst-count', inbound.history);
     setChipCount('sol-in-can-count', inbound.cancelled);
     setChipCount('sol-out-ost-count', outbound.outstanding);
@@ -2621,6 +2845,8 @@
     document.querySelectorAll('[data-sol-section-panel]').forEach(panel => {
       panel.hidden = panel.getAttribute('data-sol-section-panel') !== section;
     });
+    const segmentBar = document.getElementById('sol-segment-bar');
+    if (segmentBar) segmentBar.hidden = !usesSegmentBar();
 
     document.querySelectorAll('.sol-ps-only').forEach(el => {
       el.hidden = !isPsView();
@@ -2704,6 +2930,7 @@
           One row is one PR line. <strong>PO</strong>, <strong>Shipment</strong>, <strong>GRN</strong>, and <strong>QI</strong> fill in on that same line once ERP generates them.
           A blank PO or GRN means that document is not generated yet. Several receipts repeat the PR and PO so each GRN can be filtered.
           Status is <strong>PR</strong>, <strong>PO</strong>, <strong>GRN</strong>, or <strong>QI</strong>.
+          Rows are grouped by <strong>cost segment</strong> (NPS, APS, PPS, and the rest). SBU stays a filter.
           Click a heading to sort. Shift-click to stack sorts. Filter icons stack.
         `;
       } else if (isSubconView()) {
@@ -2717,7 +2944,7 @@
         const inbound = shipDirection() === 'in';
         const sortHint = ' Click a heading to sort. Shift-click to stack sorts. Filter icons stack.';
         legend.innerHTML = inbound
-          ? `Inbound shipments from ERP. <strong>Segment</strong> is PPS, NPS, APS, and the other ERP segments — filter that column to trace one. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Goods received</strong> is when the goods actually came in, and stays empty until then. Outstanding has no GRN yet, so that column is hidden there. <strong>GRN</strong> is still open with a receipt, <strong>History</strong> is posted, <strong>Cancelled</strong> is void.${sortHint}`
+          ? `Inbound shipments from ERP. <strong>Cost segment</strong> (NPS, APS, PPS, and the rest) groups the list — use the chips to keep one. <strong>This week</strong> lists goods received since Monday, with <strong>today</strong> at the top. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Goods received</strong> is when the goods actually came in. Outstanding has no GRN yet, so that column is hidden there. <strong>GRN</strong> is still open with a receipt, <strong>History</strong> is posted, <strong>Cancelled</strong> is void.${sortHint}`
           : `Outbound shipments from ERP. <strong>Segment</strong> is PPS, NPS, APS, and the other ERP segments. <strong>Expected ship</strong> and <strong>Expected arrival</strong> are the planned dates. <strong>Shipped</strong> is the actual ship date. <strong>Outstanding</strong> is still open, <strong>History</strong> is posted, <strong>Cancelled</strong> is void. History shows the latest 500 vouchers.${sortHint}`;
       } else if (qc) {
         legend.innerHTML = `
@@ -2744,6 +2971,7 @@
           Click <strong>BOM</strong> for materials + inventory enquiry &middot;
           <span class="sol-legend-item sol-legend-item--sr">[SR]</span> special process sheets &middot;
           Assembly sub-assembly finished goods appear as separate lines &middot;
+          Rows are grouped by <strong>cost segment</strong> (NPS, APS, PPS, and the rest).
           Click a heading to sort. Shift-click to stack sorts. Filter icons stack.
         `;
       }
@@ -2851,6 +3079,8 @@
       pp.description,
       assemblyChild?.description,
       subconStatusLabel(pp.subcon_status),
+      returnDatesLabel(pp.subcon_return_dates),
+      ...normalizeReturnDates(pp.subcon_return_dates),
       ...(proposedMachines || []),
       pp.mtl_part_order,
     ].map(value => String(value == null ? '' : value).toLowerCase()).join(' ');
@@ -2862,8 +3092,12 @@
     return psDisplayForPartial(a.pp, a.partial).localeCompare(psDisplayForPartial(b.pp, b.partial));
   }
 
+  function subconRowsBeforeSegment() {
+    return applyStackedFilters(subconBaseRows(), SUBCON_COLUMNS, state.subconFilters);
+  }
+
   function visibleSubconRows() {
-    const rows = applyStackedFilters(subconBaseRows(), SUBCON_COLUMNS, state.subconFilters);
+    const rows = subconRowsBeforeSegment().filter(leaf => passesSegment(segmentOfLeaf(leaf)));
     return sortRowsBySorts(rows, SUBCON_COLUMNS, state.subconSorts, compareSubconLeaves);
   }
 
@@ -2908,6 +3142,57 @@
       </td>`;
   }
 
+  function renderReturnDatesCell(pp) {
+    const ppNo = String(pp?.pp_voucher_no || '').trim();
+    const dates = normalizeReturnDates(pp?.subcon_return_dates);
+    const saved = serializeReturnDates(dates);
+    const chips = dates.map(date => {
+      const label = formatDate(date);
+      return `
+        <span class="sol-return-chip">
+          <span class="sol-return-chip-date">${escapeHtml(label)}</span>
+          <button type="button"
+            class="sol-return-chip-remove"
+            data-action="remove-return-date"
+            data-date="${escapeHtml(date)}"
+            aria-label="Remove return date ${escapeHtml(label)}"
+            title="Remove ${escapeHtml(label)}">×</button>
+        </span>`;
+    }).join('');
+    return `
+      <td class="sol-return-dates-cell${dates.length ? ' has-return-dates' : ''}"
+        data-pp-voucher-no="${escapeHtml(ppNo)}"
+        data-last-saved="${escapeHtml(saved)}"
+        data-pending-dates="${escapeHtml(saved)}">
+        <div class="sol-return-dates">${chips}</div>
+        <input type="date"
+          class="sol-return-date-input"
+          aria-label="Add date coming back from supplier"
+          title="Add a date this is coming back from the supplier">
+        <span class="so-editable-status" aria-live="polite"></span>
+      </td>`;
+  }
+
+  function paintReturnDateChips(cell, dates) {
+    const list = cell?.querySelector('.sol-return-dates');
+    if (!list) return;
+    const items = normalizeReturnDates(dates);
+    cell.classList.toggle('has-return-dates', items.length > 0);
+    list.innerHTML = items.map(date => {
+      const label = formatDate(date);
+      return `
+        <span class="sol-return-chip">
+          <span class="sol-return-chip-date">${escapeHtml(label)}</span>
+          <button type="button"
+            class="sol-return-chip-remove"
+            data-action="remove-return-date"
+            data-date="${escapeHtml(date)}"
+            aria-label="Remove return date ${escapeHtml(label)}"
+            title="Remove ${escapeHtml(label)}">×</button>
+        </span>`;
+    }).join('');
+  }
+
   function renderSubconRow(leaf) {
     const { order, pp, partial, assemblyChild } = leaf;
     return `
@@ -2923,6 +3208,7 @@
         ${renderStageCell(pp, partial)}
         ${renderProposedCncCell(leaf.proposedMachines)}
         ${renderSubconStatusCell(pp)}
+        ${renderReturnDatesCell(pp)}
         ${renderNotesCell(pp)}
       </tr>`;
   }
@@ -2941,6 +3227,102 @@
       });
     });
     patchAssemblyChildNotes(ppNo, { subcon_status: status });
+  }
+
+  function writeSubconReturnDates(ppNo, dates) {
+    const key = psBaseKey(ppNo);
+    const list = normalizeReturnDates(dates);
+    if (!key) return;
+    state.active.forEach(order => {
+      (order.pp_vouchers || []).forEach(pp => {
+        if (psBaseKey(pp.pp_voucher_no) === key || psBaseKey(pp.process_sheet_no) === key) {
+          pp.subcon_return_dates = list.slice();
+        }
+        (pp.assembly_line_items || []).forEach(child => {
+          if (psBaseKey(child.process_sheet_no) === key) child.subcon_return_dates = list.slice();
+        });
+      });
+    });
+    patchAssemblyChildNotes(ppNo, { subcon_return_dates: list.slice() });
+  }
+
+  function queueReturnDates(cell, dates) {
+    const ppNo = String(cell?.dataset?.ppVoucherNo || '').trim();
+    if (!ppNo) return;
+    const next = serializeReturnDates(dates);
+    cell.dataset.pendingDates = next;
+    paintReturnDateChips(cell, next);
+    const input = cell.querySelector('.sol-return-date-input');
+    if (input) input.value = '';
+    flushReturnDates(cell);
+  }
+
+  async function flushReturnDates(cell) {
+    const ppNo = String(cell?.dataset?.ppVoucherNo || '').trim();
+    if (!ppNo || !cell) return;
+    const key = `${ppNo}::subcon_return_dates`;
+    if (state.saveInFlight.has(key)) return;
+    state.saveInFlight.add(key);
+    setSaveStatus(cell, 'saving', 'Saving...');
+    try {
+      while ((cell.dataset.pendingDates || '') !== (cell.dataset.lastSaved || '')) {
+        const sending = cell.dataset.pendingDates || '';
+        const data = await postJson(`/api/sales-orders/notes/${encodeURIComponent(ppNo)}`, {
+          subcon_return_dates: normalizeReturnDates(sending),
+        });
+        const saved = serializeReturnDates(
+          data.subcon_return_dates != null ? data.subcon_return_dates : sending,
+        );
+        writeSubconReturnDates(ppNo, saved);
+        cell.dataset.lastSaved = saved;
+        if ((cell.dataset.pendingDates || '') === sending) {
+          cell.dataset.pendingDates = saved;
+          paintReturnDateChips(cell, saved);
+        }
+      }
+      setSaveStatus(cell, 'saved', 'Saved');
+      window.setTimeout(() => {
+        if ((cell.dataset.pendingDates || '') === (cell.dataset.lastSaved || '')) {
+          setSaveStatus(cell, '', '');
+        }
+      }, 1500);
+    } catch (err) {
+      const saved = cell.dataset.lastSaved || '';
+      cell.dataset.pendingDates = saved;
+      paintReturnDateChips(cell, saved);
+      setSaveStatus(cell, 'error', err.message || 'Save failed');
+    } finally {
+      state.saveInFlight.delete(key);
+      if ((cell.dataset.pendingDates || '') !== (cell.dataset.lastSaved || '')) {
+        flushReturnDates(cell);
+      }
+    }
+  }
+
+  function addReturnDate(input) {
+    const cell = input?.closest('.sol-return-dates-cell');
+    if (!cell) return;
+    const date = isoDateValue(input.value);
+    input.value = '';
+    if (!date) return;
+    const current = normalizeReturnDates(cell.dataset.pendingDates || cell.dataset.lastSaved || '');
+    if (current.includes(date)) {
+      setSaveStatus(cell, 'saved', 'Already added');
+      window.setTimeout(() => {
+        const status = cell.querySelector('.so-editable-status');
+        if (status && status.textContent === 'Already added') setSaveStatus(cell, '', '');
+      }, 1200);
+      return;
+    }
+    queueReturnDates(cell, current.concat(date));
+  }
+
+  function removeReturnDate(button) {
+    const cell = button?.closest('.sol-return-dates-cell');
+    if (!cell) return;
+    const date = isoDateValue(button.dataset.date);
+    const current = normalizeReturnDates(cell.dataset.pendingDates || cell.dataset.lastSaved || '');
+    queueReturnDates(cell, current.filter(item => item !== date));
   }
 
   async function saveSubconStatus(select) {
@@ -3022,14 +3404,20 @@
       if (host) host.hidden = false;
       if (empty) empty.hidden = true;
       if (body) {
-        body.innerHTML = rows.map(renderSubconRow).join('');
+        body.innerHTML = groupedRowHtml(
+          rows,
+          segmentOfLeaf,
+          () => '',
+          renderSubconRow,
+          SUBCON_COLUMNS.length,
+        );
         bindInputs();
       }
     }
 
     if (meta) {
       meta.hidden = !state.salesOrdersLoaded;
-      meta.textContent = `Status saves on change | ${allRows.length} tagged Subcon | cached ${state.cachedAt || EM_DASH}`;
+      meta.textContent = `Status and return dates save on change | ${allRows.length} tagged Subcon | cached ${state.cachedAt || EM_DASH}`;
     }
   }
 
@@ -3061,7 +3449,13 @@
       if (host) host.hidden = false;
       if (empty) empty.hidden = true;
       if (body) {
-        body.innerHTML = rows.map(renderRow).join('');
+        body.innerHTML = groupedRowHtml(
+          rows,
+          segmentOfLeaf,
+          () => '',
+          renderRow,
+          JOB_COLUMNS.length,
+        );
         bindInputs();
         applyRowFocus();
       }
@@ -3101,7 +3495,13 @@
       if (host) host.hidden = false;
       if (empty) empty.hidden = true;
       if (body) {
-        body.innerHTML = rows.map(renderPrPoRow).join('');
+        body.innerHTML = groupedRowHtml(
+          rows,
+          row => row.segment_1_code,
+          row => row.segment_desc,
+          renderPrPoRow,
+          PR_PO_COLUMNS.length,
+        );
         bindInputs();
       }
     }
@@ -3162,7 +3562,13 @@
       if (host) host.hidden = false;
       if (empty) empty.hidden = true;
       if (body) {
-        body.innerHTML = rows.map(renderOverviewRow).join('');
+        body.innerHTML = groupedRowHtml(
+          rows,
+          row => row.segment_1_code,
+          row => row.segment_desc,
+          renderOverviewRow,
+          OVERVIEW_COLUMNS.length,
+        );
         bindInputs();
       }
     }
@@ -3284,6 +3690,20 @@
         subtitle.textContent = `${rows.length} ${bucketLabel} ${flow} shipments shown`;
       }
     }
+    if (direction === 'in' && state.shipBucket === 'week') {
+      const todayCount = rows.filter(isTodayReceipt).length;
+      if (subtitle) {
+        subtitle.textContent = matched
+          ? `${todayCount} arrived today · ${rows.length - todayCount} earlier this week · filtered`
+          : `${todayCount} arrived today · ${Math.max(rows.length - todayCount, 0)} earlier this week`;
+      }
+      setStatPills([
+        { label: 'Today', value: todayCount },
+        { label: 'This week', value: rows.length },
+        { label: 'Received', value: Number(counts.week) || rows.length },
+      ]);
+      return;
+    }
     const pills = direction === 'out'
       ? [
           { label: 'Shown', value: rows.length },
@@ -3299,6 +3719,34 @@
           { label: 'Cancelled', value: Number(counts.cancelled) || 0 },
         ];
     setStatPills(pills);
+  }
+
+  function arrivalBannerRow(kind, title, detail, colspan) {
+    return `<tr class="sol-arrival-banner sol-arrival-banner--${kind}"><td colspan="${colspan}"><span class="sol-arrival-kicker">${escapeHtml(title)}</span><span class="sol-arrival-detail">${escapeHtml(detail)}</span></td></tr>`;
+  }
+
+  function weekArrivalHtml(rows) {
+    const colspan = shipColumns().length;
+    const todayRows = rows.filter(isTodayReceipt);
+    const earlierRows = rows.filter(row => !isTodayReceipt(row));
+    const todayDetail = todayRows.length
+      ? `${todayRows.length} shipment${todayRows.length === 1 ? '' : 's'} received today`
+      : 'Nothing received today';
+    const earlierDetail = earlierRows.length
+      ? `${earlierRows.length} earlier this week`
+      : 'Nothing else received this week';
+    const todayBody = todayRows.length
+      ? groupedRowHtml(todayRows, row => row.segment_1_code, row => row.segment_desc, row => renderShipRow(row, 'is-arrived-today'), colspan)
+      : '';
+    const earlierBody = earlierRows.length
+      ? groupedRowHtml(earlierRows, row => row.segment_1_code, row => row.segment_desc, renderShipRow, colspan)
+      : '';
+    return [
+      arrivalBannerRow('today', 'Arrived today', todayDetail, colspan),
+      todayBody,
+      arrivalBannerRow('week', 'Earlier this week', earlierDetail, colspan),
+      earlierBody,
+    ].join('');
   }
 
   function renderShip() {
@@ -3317,7 +3765,9 @@
     if (!rows.length) {
       const msg = state.shipRows.length
         ? 'No rows match your filters.'
-        : `No ${bucketLabel.toLowerCase()} shipments in ERP.`;
+        : state.shipBucket === 'week'
+          ? 'Nothing has been received this week.'
+          : `No ${bucketLabel.toLowerCase()} shipments in ERP.`;
       if (body) body.innerHTML = '';
       if (host) host.hidden = true;
       if (empty) {
@@ -3328,7 +3778,15 @@
       if (host) host.hidden = false;
       if (empty) empty.hidden = true;
       if (body) {
-        body.innerHTML = rows.map(renderShipRow).join('');
+        body.innerHTML = state.shipBucket === 'week' && shipDirection() === 'in'
+          ? weekArrivalHtml(rows)
+          : groupedRowHtml(
+            rows,
+            row => row.segment_1_code,
+            row => row.segment_desc,
+            renderShipRow,
+            shipColumns().length,
+          );
         bindInputs();
       }
     }
@@ -3363,6 +3821,7 @@
     else if (isShipView()) renderShip();
     else if (isSubconView()) renderSubcon();
     else renderPs();
+    paintSegmentBar();
   }
 
   function normalizeBucketForView(view, bucket) {
@@ -3528,11 +3987,9 @@
   function currentSbuOptions() {
     const rows = isOverviewView() ? state.overviewRows : state.prPoRows;
     const codes = uniqueTrimmed(rows.map(row => row.sbu_code));
-    if (isOverviewView()) {
-      state.overviewSbus.forEach(code => {
-        if (code && !codes.includes(code)) codes.push(code);
-      });
-    }
+    state.overviewSbus.forEach(code => {
+      if (code && !codes.includes(code)) codes.push(code);
+    });
     state.selectedSbu.forEach(code => {
       if (code && !codes.includes(code)) codes.push(code);
     });
@@ -3882,6 +4339,13 @@
         deleteRequestRow(deleteBtn);
         return;
       }
+      const removeReturnBtn = e.target.closest('[data-action="remove-return-date"]');
+      if (removeReturnBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        removeReturnDate(removeReturnBtn);
+        return;
+      }
       const historyBtn = e.target.closest('[data-action="open-date-history"]');
       if (historyBtn) {
         e.stopPropagation();
@@ -3909,6 +4373,12 @@
     });
 
     body.addEventListener('change', e => {
+      const returnInput = e.target.closest('.sol-return-date-input');
+      if (returnInput) {
+        e.stopPropagation();
+        addReturnDate(returnInput);
+        return;
+      }
       const statusSelect = e.target.closest('.sol-subcon-status');
       if (statusSelect) {
         e.stopPropagation();
@@ -4114,6 +4584,9 @@
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
       state.prPoRows = Array.isArray(payload.rows) ? payload.rows : [];
+      if (Array.isArray(payload.sbus) && payload.sbus.length) {
+        state.overviewSbus = payload.sbus;
+      }
       state.prPoCounts = payload.counts || { pr: {}, po: {} };
       state.prPoSource = payload.source || '';
       state.cachedAt = payload.cached_at || '';
@@ -4266,6 +4739,7 @@
     state.shipSource = payload.source || '';
     state.shipTotal = Number(payload.total) || state.shipRows.length;
     state.shipTruncated = Boolean(payload.truncated);
+    state.shipToday = payload.today || state.shipToday;
     state.cachedAt = payload.cached_at || state.cachedAt;
     state.shipCache[shipCacheKey()] = {
       rows: state.shipRows,
@@ -4273,6 +4747,7 @@
       source: state.shipSource,
       total: state.shipTotal,
       truncated: state.shipTruncated,
+      today: state.shipToday,
       cachedAt: state.cachedAt,
     };
   }
@@ -4287,6 +4762,7 @@
       state.shipSource = cached.source || '';
       state.shipTotal = cached.total || 0;
       state.shipTruncated = Boolean(cached.truncated);
+      state.shipToday = cached.today || state.shipToday;
       state.cachedAt = cached.cachedAt || state.cachedAt;
       if (state.pendingLoad === 'ship') state.pendingLoad = '';
       render();
@@ -4324,8 +4800,10 @@
           source: payload.source || '',
           total: Number(payload.total) || 0,
           truncated: Boolean(payload.truncated),
+          today: payload.today || '',
           cachedAt: payload.cached_at || '',
         };
+        if (payload.today) state.shipToday = payload.today;
         if (payload.direction) state.shipCounts[payload.direction] = payload.counts || {};
         updateShipChipCounts();
         return;
@@ -4989,6 +5467,13 @@
         if (state.view !== SUBCON_VIEW) setView(SUBCON_VIEW);
         else render();
       });
+    });
+
+    document.getElementById('sol-segment-chips')?.addEventListener('click', e => {
+      const btn = e.target.closest('[data-sol-segment]');
+      if (!btn) return;
+      state.segment = btn.getAttribute('data-sol-segment') || '';
+      render();
     });
 
     document.getElementById('sol-search')?.addEventListener('input', e => {

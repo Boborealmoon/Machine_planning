@@ -817,7 +817,11 @@ def test_assembly_line_items_keep_own_queue_and_proposed_cnc(monkeypatch):
     monkeypatch.setattr(
         "planning.sales_orders_route._load_notes_map",
         lambda ids: {
-            "NPS26-0321-1": {"proposed_cnc_saved": ["CNC 40"], "subcon_status": "sent"},
+            "NPS26-0321-1": {
+                "proposed_cnc_saved": ["CNC 40"],
+                "subcon_status": "sent",
+                "subcon_return_dates": ["2026-12-01", "2026-11-20"],
+            },
             "NPS26-0321-2": {"proposed_cnc_saved": [], "subcon_status": ""},
         },
     )
@@ -849,7 +853,9 @@ def test_assembly_line_items_keep_own_queue_and_proposed_cnc(monkeypatch):
     assert lines[0]["queued_machines"] == ["CNC 39"]
     assert lines[0]["proposed_cnc"] == ["CNC 40"]
     assert lines[0]["subcon_status"] == "sent"
+    assert lines[0]["subcon_return_dates"] == ["2026-11-20", "2026-12-01"]
     assert lines[1]["subcon_status"] == ""
+    assert lines[1]["subcon_return_dates"] == []
     assert lines[1]["queued_machines"] == []
     assert lines[1]["proposed_cnc"] == []
     assert lines[2]["queued_machines"] == ["CNC 15"]
@@ -864,6 +870,7 @@ def test_notes_from_row_parses_proposed_cnc():
     empty = _empty_notes()
     assert empty["proposed_cnc_saved"] is None
     assert empty["subcon_status"] == ""
+    assert empty["subcon_return_dates"] == []
     assert _parse_proposed_cnc("CNC 10, 22") == ["CNC 10", "22"]
     assert _format_proposed_cnc(["CNC 10", "CNC 22"]) == "CNC 10, CNC 22"
     assert _format_proposed_cnc(None) is None
@@ -947,6 +954,63 @@ def test_notes_api_accepts_subcon_status(monkeypatch):
     assert ok.status_code == 200
     assert captured[0]["patch"]["subcon_status"] == "sent"
     assert ok.get_json()["subcon_status"] == "sent"
+    assert bad.status_code == 400
+
+
+def test_notes_api_accepts_subcon_return_dates(monkeypatch):
+    import os
+    from unittest.mock import patch
+
+    from app import app
+    from planning.sales_orders_route import (
+        _empty_notes,
+        _format_subcon_return_dates,
+        _normalize_subcon_return_dates,
+        _notes_from_row,
+    )
+
+    assert _normalize_subcon_return_dates(["2026-12-01", "20/11/2026", "2026-12-01"]) == [
+        "2026-11-20",
+        "2026-12-01",
+    ]
+    assert _normalize_subcon_return_dates("") == []
+    assert _normalize_subcon_return_dates(None) == []
+    assert _format_subcon_return_dates(["2026-11-20", "2026-12-01"]) == "2026-11-20,2026-12-01"
+    parsed = _notes_from_row({"subcon_return_dates": "2026-12-01,2026-11-20"})
+    assert parsed["subcon_return_dates"] == ["2026-11-20", "2026-12-01"]
+    assert _empty_notes()["subcon_return_dates"] == []
+
+    captured = []
+
+    def fake_upsert(pp_voucher_no, patch):
+        captured.append({"pp": pp_voucher_no, "patch": dict(patch)})
+        notes = _empty_notes()
+        notes["subcon_return_dates"] = list(patch.get("subcon_return_dates") or [])
+        return {"pp_voucher_no": pp_voucher_no, **notes}
+
+    monkeypatch.setattr("planning.sales_orders_route._upsert_notes", fake_upsert)
+    monkeypatch.setattr("planning.sales_orders_route._patch_sales_orders_pp_notes", lambda *_args, **_kwargs: None)
+
+    client = app.test_client()
+    with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
+        ok = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"subcon_return_dates": ["01/12/2026", "2026-11-20"]},
+        )
+        cleared = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"subcon_return_dates": []},
+        )
+        bad = client.patch(
+            "/api/sales-orders/notes/PP/1",
+            json={"subcon_return_dates": ["soon"]},
+        )
+
+    assert ok.status_code == 200
+    assert captured[0]["patch"]["subcon_return_dates"] == ["2026-11-20", "2026-12-01"]
+    assert ok.get_json()["subcon_return_dates"] == ["2026-11-20", "2026-12-01"]
+    assert cleared.status_code == 200
+    assert cleared.get_json()["subcon_return_dates"] == []
     assert bad.status_code == 400
 
 

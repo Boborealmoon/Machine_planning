@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Quoted parts{% endblock %}
+{% block body_class %}ops-sheet-view{% endblock %}
+{% block main_class %}app-main--ops-sheet{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/ops_sheet.css') }}?v=ops-sheet-20261112d">
+{% endblock %}
+{% block content %}
+<div class="ops-page">
+  <header class="ops-header">
+    <div>
+      <p class="ops-kicker">Ops</p>
+      <h1>Quoted parts</h1>
+      <p class="ops-formula">Search the quote database. Each part stays tagged to its RFQ file, and edits are saved in Supabase.</p>
+    </div>
+  </header>
+
+  <div class="ops-toolbar">
+    <label class="ops-search">
+      <span class="ops-sr">Search</span>
+      <input id="ops-search" type="search" placeholder="Search part, material, remark, qty, or RFQ file" autocomplete="off">
+    </label>
+    <label class="ops-status">
+      <span>Library</span>
+      <select id="ops-status">
+        <option value="all">All</option>
+        <option value="current">Current</option>
+        <option value="completed">Completed</option>
+        <option value="archive">Archive</option>
+      </select>
+    </label>
+  </div>
+  <p class="ops-meta" id="ops-meta">Loading the quote database…</p>
+  <div id="ops-alert" class="ops-alert" hidden></div>
+  <div id="ops-results" class="ops-results">
+    <p class="ops-idle">Loading quoted parts…</p>
+  </div>
+
+  <details class="ops-help">
+    <summary>Import and turnaround</summary>
+    <p>
+      The folder import only onboards workbooks into Supabase. After that, search and edit the lines here.
+      Tick Show line items on a file to open its columns.
+      TAT minutes = (cycle minutes + per-piece extras) × RFQ qty + (setup + per-operation extras) × operations + flat extras.
+      Hours = minutes / 60.
+      Operations come from remark tags such as 2 TN or 2 ML, or from how many cycle cells have a time.
+    </p>
+    <div class="ops-actions">
+      <button type="button" class="ops-btn" id="ops-add-col">Add TAT column</button>
+      <button type="button" class="ops-btn ops-btn--primary" id="ops-scan">Import from RFQ folder</button>
+    </div>
+  </details>
+</div>
+
+<div class="ops-modal" id="ops-modal" hidden>
+  <form class="ops-modal-card" id="ops-col-form">
+    <h2>Add a TAT column</h2>
+    <p>The minutes you enter on each part are added into that part’s turnaround.</p>
+    <label>
+      Column name
+      <input name="name" maxlength="48" required placeholder="CMM, packing, allowance">
+    </label>
+    <label>
+      How it is added
+      <select name="apply_mode">
+        <option value="per_piece">Per piece — added to the cycle, then × RFQ qty</option>
+        <option value="per_operation">Per operation — added to setup, then × operations</option>
+        <option value="flat">Flat minutes — added once</option>
+      </select>
+    </label>
+    <div class="ops-modal-actions">
+      <button type="button" class="ops-btn" id="ops-col-cancel">Cancel</button>
+      <button type="submit" class="ops-btn ops-btn--primary">Add column</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/ops_sheet.js') }}?v=ops-sheet-20261112e"></script>
+{% endblock %}

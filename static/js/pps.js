@@ -14,7 +14,7 @@ const PPS_TAB_COPY = {
   },
   planner: {
     title: 'Planner',
-    hint: 'CNC 20 and Wire cut lanes for this PPS site only.',
+    hint: 'CNC 20 and Wire cut lanes. Operation cards start on PPS.',
   },
 };
 

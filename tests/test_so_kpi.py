@@ -136,6 +136,58 @@ class SoKpiBuilderTests(unittest.TestCase):
         self.assertEqual(row["sales_notes"], "customer aware")
         self.assertEqual(report["exception_summary"]["count"], 1)
 
+    def test_exception_values_use_partial_qty_and_full_qty(self):
+        report = build_so_kpi([
+            _order(
+                pp_qty=10,
+                unit_selling_price=25.5,
+                highlighted_partials=[1, 2],
+                exception_issues={"1": ["sales"], "2": ["qlty"]},
+                partials=[
+                    {"pp_partial_no": 1, "partial_qty": 4, "coway_proposed_edd": "2026-04-20"},
+                    {"pp_partial_no": 2, "partial_qty": 6, "coway_proposed_edd": "2026-05-01"},
+                ],
+            )
+        ])
+        rows = report["exception_rows"]
+        self.assertEqual(rows[0]["partial_qty"], 4)
+        self.assertEqual(rows[0]["full_qty"], 10)
+        self.assertEqual(rows[0]["unit_selling_price"], 25.5)
+        self.assertEqual(rows[0]["partial_value"], 102.0)
+        self.assertEqual(rows[0]["full_value"], 255.0)
+        self.assertEqual(rows[1]["partial_qty"], 6)
+        self.assertEqual(rows[1]["partial_value"], 153.0)
+        self.assertEqual(rows[1]["full_value"], 255.0)
+
+    def test_exception_partial_qty_falls_back_to_full_qty(self):
+        report = build_so_kpi([
+            _order(
+                pp_qty=8,
+                unit_selling_price=10,
+                highlighted_partials=[1],
+                partials=[{"pp_partial_no": 1, "coway_proposed_edd": "2026-04-20"}],
+            )
+        ])
+        row = report["exception_rows"][0]
+        self.assertEqual(row["partial_qty"], 8)
+        self.assertEqual(row["partial_value"], 80)
+        self.assertEqual(row["full_value"], 80)
+
+    def test_exception_value_is_blank_without_a_unit_price(self):
+        report = build_so_kpi([
+            _order(
+                pp_qty=5,
+                highlighted_partials=[1],
+                partials=[{"pp_partial_no": 1, "partial_qty": 2}],
+            )
+        ])
+        row = report["exception_rows"][0]
+        self.assertEqual(row["partial_qty"], 2)
+        self.assertEqual(row["full_qty"], 5)
+        self.assertIsNone(row["unit_selling_price"])
+        self.assertIsNone(row["partial_value"])
+        self.assertIsNone(row["full_value"])
+
     def test_flagged_partial_without_issue_list_is_others(self):
         report = build_so_kpi([_order(highlighted_partials=[1], exception_issues={})])
         self.assertEqual(report["exception_rows"][0]["exception_tags"], ["others"])

@@ -72,9 +72,13 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
                     "planning.material_tracking_pr_po_route._fetch_counts",
                     return_value=sample_counts,
                 ) as fetch_counts:
-                    response = self.client.get(
-                        "/api/material-tracking/pr-po?scope=po&bucket=ost"
-                    )
+                    with patch(
+                        "planning.material_tracking_pr_po_route._fetch_sbus",
+                        return_value=["MFG", "MRO"],
+                    ):
+                        response = self.client.get(
+                            "/api/material-tracking/pr-po?scope=po&bucket=ost"
+                        )
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
@@ -84,6 +88,7 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["rows"], sample_rows)
         self.assertEqual(payload["counts"], sample_counts)
+        self.assertEqual(payload["sbus"], ["MFG", "MRO"])
         self.assertIn("po_order_ost (open)", payload["source"])
         fetch_rows.assert_called_once()
         fetch_counts.assert_called_once_with("po", "ost", 1, refresh=False)
@@ -109,6 +114,10 @@ class MaterialTrackingPrPoRouteTests(unittest.TestCase):
         self.assertIn("pr_req_hst_hdr", pr_ost)
         self.assertIn("h.remarks", pr_ost)
         self.assertIn("pr_req_new_hdr", pr_ost)
+        self.assertIn("h.segment_1_code", po_ost)
+        self.assertIn("h.segment_1_code", pr_ost)
+        self.assertIn("mt_segment1", po_ost)
+        self.assertIn("mt_segment1", pr_ost)
 
     def test_logistics_page_includes_new_tabs(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):

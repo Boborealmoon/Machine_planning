@@ -1,4 +1,6 @@
 from planning.inventory_enquiry_route import (
+    _LOT_DETAIL_SQL,
+    _LOT_REF_SQL,
     _attach_lot_references,
     _filter_lots_by_codes,
     _lot_summary_from_row,
@@ -75,6 +77,14 @@ def test_attach_lot_references_matches_codes_case_insensitively():
     out = _attach_lot_references(rows, refs_by_code)
     assert out[0]["lot_reference_nos"] == ["AM/0388/20"]
     assert out[0]["lot_summaries"][0]["remaining_qty"] == 100
+
+
+def test_lot_queries_keep_fully_issued_batches():
+    """A batch with remaining and allocation both at 0 is still a real lot reference."""
+    for sql in (_LOT_REF_SQL, _LOT_DETAIL_SQL):
+        assert "remaining_qty, 0) > 0" not in sql
+        assert "allocation_qty, 0) > 0" not in sql
+        assert "BTRIM(reference_no)" in sql or "BTRIM(o.reference_no)" in sql
 
 
 def test_filter_lots_by_codes_is_case_insensitive():

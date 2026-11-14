@@ -4,6 +4,7 @@ Mirrors the COMAIN Incoming / Outgoing Shipment tabs:
 
   outstanding  open headers that do not yet have a GRN (inbound stage B)
   grn          open inbound headers that already have a GRN (stage G)
+  week         inbound goods received this week (Singapore), open GRN plus posted
   history      posted headers that were not cancelled
   cancelled    posted headers with status X
 """
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, jsonify, request
@@ -25,7 +26,9 @@ logistics_shipment_bp = Blueprint("logistics_shipment", __name__)
 
 _CACHE_TTL_SEC = 300
 _HISTORY_LIMIT = 500
-_IN_BUCKETS = ("outstanding", "grn", "history", "cancelled")
+_IN_BUCKETS = ("outstanding", "grn", "week", "history", "cancelled")
+# Singapore has no daylight saving. UTC+8 keeps the week window local without tzdata.
+_SINGAPORE = timezone(timedelta(hours=8))
 _OUT_BUCKETS = ("outstanding", "history", "cancelled")
 _cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
@@ -97,6 +100,61 @@ def invalidate_logistics_shipment_cache() -> None:
     _cache.clear()
 
 
+def week_bounds(today: date | None = None) -> tuple[date, date, date]:
+    """Return (today, week_start, week_end) in Asia/Singapore. End is exclusive."""
+    current = today or datetime.now(_SINGAPORE).date()
+    start = current - timedelta(days=current.weekday())
+    return current, start, start + timedelta(days=7)
+
+
+def _week_predicate() -> str:
+    _today, start, end = week_bounds()
+    return (
+        f"h.goods_receipt_date::date >= DATE '{start.isoformat()}' "
+        f"AND h.goods_receipt_date::date < DATE '{end.isoformat()}'"
+    )
+
+
+def arrived_week_sql() -> str:
+    """Open GRNs and posted inbound headers received during the current week."""
+    where = _week_predicate()
+    ost = (
+        f"{_IN_SELECT}\nFROM public.lg_in_shm_ost_hdr h\n{_JOINS}{_location_join('in')}\n"
+        f"WHERE h.shipment_stage = 'G' AND {where}"
+    )
+    hst = (
+        f"{_IN_SELECT}\nFROM public.lg_in_shm_hst_hdr h\n{_JOINS}{_location_join('in')}\n"
+        f"WHERE COALESCE(BTRIM(h.status), '') <> 'X' AND {where}"
+    )
+    return (
+        "SELECT * FROM (\n"
+        f"{ost}\nUNION ALL\n{hst}\n"
+        ") arrived\n"
+        "ORDER BY goods_receipt_date DESC NULLS LAST, shipment_voucher_no"
+    )
+
+
+def _week_count() -> int:
+    where = _week_predicate()
+    sql = f"""
+    SELECT
+        (SELECT COUNT(*) FROM public.lg_in_shm_ost_hdr h
+          WHERE h.shipment_stage = 'G' AND {where})
+      + (SELECT COUNT(*) FROM public.lg_in_shm_hst_hdr h
+          WHERE COALESCE(BTRIM(h.status), '') <> 'X' AND {where})
+      AS n
+    """
+    row = live_query(sql, timeout_ms=30000)
+    return int((row[0] if row else {}).get("n") or 0)
+
+
+def _cache_key(direction: str, bucket: str) -> tuple[str, ...]:
+    if bucket == "week":
+        _today, start, _end = week_bounds()
+        return (direction, bucket, start.isoformat())
+    return (direction, bucket)
+
+
 def buckets_for(direction: str) -> tuple[str, ...]:
     return _IN_BUCKETS if direction == "in" else _OUT_BUCKETS
 
@@ -129,6 +187,8 @@ def _location_join(direction: str) -> str:
 
 
 def rows_sql(direction: str, bucket: str) -> str:
+    if direction == "in" and bucket == "week":
+        return arrived_week_sql()
     select = _IN_SELECT if direction == "in" else _OUT_SELECT
     table = header_table(direction, bucket)
     where = bucket_where(direction, bucket)
@@ -175,6 +235,7 @@ def fetch_counts(direction: str) -> dict[str, int]:
         return {
             "outstanding": ost["open"],
             "grn": ost["closed"],
+            "week": _week_count(),
             "history": hst["open"],
             "cancelled": hst["closed"],
         }
@@ -195,7 +256,7 @@ def fetch_counts(direction: str) -> dict[str, int]:
 
 
 def fetch_bucket(direction: str, bucket: str, *, refresh: bool = False) -> dict[str, Any]:
-    key = (direction, bucket)
+    key = _cache_key(direction, bucket)
     now = time.time()
     cached = _cache.get(key)
     if not refresh and cached and (now - cached[0]) < _CACHE_TTL_SEC:
@@ -212,7 +273,11 @@ def fetch_bucket(direction: str, bucket: str, *, refresh: bool = False) -> dict[
         "total": total,
         "truncated": bucket == "history" and total > len(rows),
         "counts": counts,
-        "source": header_table(direction, bucket),
+        "source": (
+            "lg_in_shm_ost_hdr + lg_in_shm_hst_hdr (received this week)"
+            if bucket == "week"
+            else header_table(direction, bucket)
+        ),
         "cached_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
     }
     _cache[key] = (now, payload)
@@ -236,11 +301,14 @@ def api_logistics_shipments():
         logger.exception("logistics shipment ERP query failed (%s/%s)", direction, bucket)
         return jsonify({"error": f"ERP query failed: {exc}"}), 502
 
+    today, week_start, _week_end = week_bounds()
     return jsonify(
         {
             "ok": True,
             "direction": direction,
             "bucket": bucket,
+            "today": today.isoformat(),
+            "week_start": week_start.isoformat(),
             "source": payload["source"],
             "count": payload["count"],
             "total": payload["total"],

@@ -6,7 +6,7 @@
 {% block body_class %}sc-view{% endblock %}
 {% block main_class %}app-main--sc{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20261029-compact">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_coordination.css') }}?v=sc-20261112-columns">
 {% endblock %}
 {% block content %}
 <div class="sc-page">
@@ -18,9 +18,15 @@
         APS and NPS as separate segments.
         Drag Committed schedule cells, then paste dates as dd/mm/yyyy.
         Customer remarks and Coway remarks save when you leave the cell.
+        Click a heading to sort, shift-click to stack sorts, and use the filter icon to filter inside a column.
+        Drag a column edge to widen it. Remarks stay wide.
       </p>
     </div>
     <div class="sc-header-actions">
+      <div class="sc-columns-wrap">
+        <button type="button" class="sc-btn sc-btn--ghost" id="sc-columns" aria-haspopup="true" aria-expanded="false" title="Show or hide columns">Columns</button>
+        <div id="sc-columns-menu" class="sc-columns-menu" hidden></div>
+      </div>
       <button type="button" class="sc-btn sc-btn--ghost" id="sc-clear-filters" hidden>Clear filters</button>
       <button type="button" class="sc-btn sc-btn--ghost" id="sc-export" disabled title="Export selected process sheets to Excel">Export Excel</button>
       <button type="button" class="sc-btn sc-btn--primary" id="sc-refresh">Refresh</button>
@@ -34,7 +40,7 @@
           <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
         </svg>
-        <input id="sc-search" class="sc-search-input" type="search" placeholder="Search PS, PO, line, inventory, remarks..." autocomplete="off">
+        <input id="sc-search" class="sc-search-input" type="search" placeholder="Search PS, customer, PO, line, inventory, remarks..." autocomplete="off">
       </label>
       <div class="sc-nav-group" id="sc-type-chips" role="group" aria-label="Process sheet type filter"></div>
       <div class="sc-meta-wrap">
@@ -56,6 +62,7 @@
         <colgroup>
           <col class="sc-col-check">
           <col class="sc-col-ps">
+          <col class="sc-col-customer">
           <col class="sc-col-date">
           <col class="sc-col-po">
           <col class="sc-col-line">
@@ -72,8 +79,9 @@
             <th class="sc-check-col" title="Select all visible">
               <input type="checkbox" id="sc-select-all" aria-label="Select all visible process sheets">
             </th>
-            <th data-sort="process_sheet_no" title="Click to sort">PS no</th>
-            <th data-sort="po_date" title="Customer PO date. Click to sort">PO date</th>
+            <th data-sort="process_sheet_no" title="Click to sort. Shift-click to stack sorts.">PS no</th>
+            <th data-sort="customer" title="Customer code and customer name. Click to sort. Shift-click to stack sorts.">Customer</th>
+            <th data-sort="po_date" title="Customer PO date. Click to sort. Shift-click to stack sorts.">PO date</th>
             <th data-sort="customer_po_no" title="Click to sort">PO number</th>
             <th data-sort="line_item_no" title="Click to sort">Line item</th>
             <th data-sort="part_no" title="Click to sort">Inventory code</th>
@@ -90,11 +98,26 @@
     </div>
     <p id="sc-empty" class="sc-empty" hidden>
       <span class="sc-empty-title">No process sheets matched</span>
-      <span class="sc-empty-copy">Try another PS type, clear search, or refresh from ERP.</span>
+      <span class="sc-empty-copy">Try another PS type, clear search, or clear a column filter.</span>
     </p>
+  </div>
+
+  <div id="sc-col-filter" class="sc-col-filter" hidden>
+    <div class="sc-col-filter-actions">
+      <button type="button" data-sc-sort-dir="asc">Sort A → Z</button>
+      <button type="button" data-sc-sort-dir="desc">Sort Z → A</button>
+      <button type="button" data-sc-sort-clear hidden>Clear sort</button>
+      <button type="button" data-sc-col-hide>Hide column</button>
+    </div>
+    <div class="sc-col-filter-head">
+      <span id="sc-col-filter-title">Filter</span>
+      <button type="button" id="sc-col-filter-clear">Clear filter</button>
+    </div>
+    <input id="sc-col-filter-search" class="sc-col-filter-search" type="search" placeholder="Search values" autocomplete="off">
+    <div id="sc-col-filter-list" class="sc-col-filter-list"></div>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20261029-compact"></script>
+<script src="{{ url_for('static', filename='js/sales_coordination.js') }}?v=sc-20261112-columns"></script>
 {% endblock %}

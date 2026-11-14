@@ -55,6 +55,8 @@ WITH pr_union AS (
         NULLIF(BTRIM(h.default_supplier_code), '') AS supplier_code,
         p.party_name AS supplier_name,
         NULLIF(BTRIM(h.sbu_code), '') AS sbu_code,
+        NULLIF(BTRIM(h.segment_1_code), '') AS segment_1_code,
+        NULLIF(BTRIM(seg.segment_desc), '') AS segment_desc,
         COALESCE(
             NULLIF(BTRIM(h.project_no), ''),
             NULLIF(BTRIM(h.source_project_no), ''),
@@ -70,6 +72,8 @@ WITH pr_union AS (
       ON srv.service_code = d.service_code
     LEFT JOIN mt_party p
       ON p.party_code = h.default_supplier_code
+    LEFT JOIN public.mt_segment1 seg
+      ON seg.segment_code = h.segment_1_code
     WHERE NULLIF(BTRIM(h.purchase_requisition_no), '') IS NOT NULL
 
     UNION ALL
@@ -93,6 +97,8 @@ WITH pr_union AS (
         NULLIF(BTRIM(h.default_supplier_code), '') AS supplier_code,
         p.party_name AS supplier_name,
         NULLIF(BTRIM(h.sbu_code), '') AS sbu_code,
+        NULLIF(BTRIM(h.segment_1_code), '') AS segment_1_code,
+        NULLIF(BTRIM(seg.segment_desc), '') AS segment_desc,
         COALESCE(
             NULLIF(BTRIM(h.project_no), ''),
             NULLIF(BTRIM(h.source_project_no), ''),
@@ -112,6 +118,8 @@ WITH pr_union AS (
       ON srv.service_code = d.service_code
     LEFT JOIN mt_party p
       ON p.party_code = h.default_supplier_code
+    LEFT JOIN public.mt_segment1 seg
+      ON seg.segment_code = h.segment_1_code
     WHERE NULLIF(BTRIM(h.purchase_requisition_no), '') IS NOT NULL
 ),
 pr_lines AS (
@@ -125,6 +133,8 @@ pr_lines AS (
         supplier_code,
         supplier_name,
         sbu_code,
+        segment_1_code,
+        segment_desc,
         project_no,
         item_key
     FROM (
@@ -354,6 +364,8 @@ SELECT
     COALESCE(po.supplier_code, pr.supplier_code) AS supplier_code,
     COALESCE(po.supplier_name, pr.supplier_name) AS supplier_name,
     pr.sbu_code,
+    pr.segment_1_code,
+    pr.segment_desc,
     pr.project_no,
     po.purchase_order_no,
     po.po_date,
@@ -384,12 +396,9 @@ ORDER BY
 
 _SBU_SQL = """
 SELECT DISTINCT NULLIF(BTRIM(sbu_code), '') AS sbu_code
-FROM (
-    SELECT sbu_code FROM pr_req_new_hdr
-    UNION
-    SELECT sbu_code FROM pr_req_hst_hdr
-) s
+FROM mt_sbu
 WHERE NULLIF(BTRIM(sbu_code), '') IS NOT NULL
+  AND COALESCE(NULLIF(BTRIM(status), ''), 'A') = 'A'
 ORDER BY 1
 """
 

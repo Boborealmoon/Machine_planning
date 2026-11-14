@@ -178,6 +178,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (params.get('embed') === '1' || params.get('embed') === 'true') {
       document.body.classList.add('trial-embed');
     }
+    if (String(params.get('site') || '').toLowerCase() === 'pps') {
+      document.body.classList.add('trial-pps-site');
+    }
   } catch (_) {}
   if (typeof renderTrialPsTypeFilter === 'function') renderTrialPsTypeFilter();
   if (typeof trialInitBoardZoom === 'function') trialInitBoardZoom();

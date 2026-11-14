@@ -1545,7 +1545,12 @@ body.pps-modal-open {
 }
 
 .pps-embed-frame--planner {
-  min-height: min(78vh, 920px);
+  height: calc(100dvh - 148px);
+  min-height: 640px;
+  border: 0;
+  border-radius: 12px;
+  box-shadow: none;
+  background: transparent;
 }
 
 .pps-shell[data-pps-tab="supply-chain"] .pps-title::after,

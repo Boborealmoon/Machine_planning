@@ -61,7 +61,7 @@
       </a>
 
       {# Ops — shop-floor tracking and operations #}
-      <div class="nav-dropdown {% if nav_path in ('/ops/first-article', '/archive/first-article', '/process-sheets', '/temp-process-sheets', '/assembly-parts', '/erp-scanned-output') or nav_path.startswith('/Shift-management') or active in ('first_article', 'process_sheets', 'temp_process_sheets', 'assembly_parts', 'shift_management', 'erp_scanned_output') %}nav-dropdown--active{% endif %}">
+      <div class="nav-dropdown {% if nav_path in ('/ops/first-article', '/archive/first-article', '/process-sheets', '/temp-process-sheets', '/assembly-parts', '/erp-scanned-output', '/ops-sheets') or nav_path.startswith('/Shift-management') or active in ('first_article', 'process_sheets', 'temp_process_sheets', 'assembly_parts', 'shift_management', 'erp_scanned_output', 'ops_sheets') %}nav-dropdown--active{% endif %}">
         <button type="button" class="nav-dropdown-trigger" data-dropdown="ops" aria-expanded="false" aria-controls="dd-ops">
           OPS <span class="nav-caret">▾</span>
         </button>
@@ -69,6 +69,10 @@
           <a href="/process-sheets"
              class="nav-dropdown-item {% if nav_path in ('/process-sheets', '/temp-process-sheets') or active in ('process_sheets', 'temp_process_sheets') %}nav-dropdown-item--active{% endif %}">
             Process sheets
+          </a>
+          <a href="/ops-sheets"
+             class="nav-dropdown-item {% if nav_path == '/ops-sheets' or active == 'ops_sheets' %}nav-dropdown-item--active{% endif %}">
+            Quoted parts
           </a>
           <a href="/ops/first-article"
              class="nav-dropdown-item {% if nav_path in ('/ops/first-article', '/archive/first-article') or active == 'first_article' %}nav-dropdown-item--active{% endif %}">

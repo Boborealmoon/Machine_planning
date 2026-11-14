@@ -112,16 +112,10 @@ def pps_page():
     overview_embed = f"{logistics_url}?section=overview&embed=1"
     planner_lanes = "CNC%2020,Wire%20cut"
     try:
-        machinist_path = url_for("machinist_board")
-    except Exception:
-        machinist_path = "/machine-queue"
-    try:
         planner_path = url_for("planner")
     except Exception:
         planner_path = "/planner"
-    planner_embed = (
-        f"{machinist_path}?lanes={planner_lanes}&site=pps&embed=1&focus=1"
-    )
+    planner_embed = f"{planner_path}?lanes={planner_lanes}&site=pps&embed=1"
     planner_full = f"{planner_path}?lanes={planner_lanes}&site=pps"
     return render_template(
         "pps.html",

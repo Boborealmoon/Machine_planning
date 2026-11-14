@@ -21,6 +21,7 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from .material_tracking_overview_route import _fetch_sbus
 from .staged_erp import live_query
 from .utils import compact_text
 
@@ -86,6 +87,8 @@ SELECT
     shm.estimated_arrival_date,
     h.supplier_code,
     p.party_name AS supplier_name,
+    NULLIF(BTRIM(h.segment_1_code), '') AS segment_1_code,
+    NULLIF(BTRIM(seg.segment_desc), '') AS segment_desc,
     h.sbu_code,
     h.created_by,
     h.sales_order_no,
@@ -123,6 +126,8 @@ LEFT JOIN mt_service srv
   ON srv.service_code = d.service_code
 LEFT JOIN mt_party p
   ON p.party_code = h.supplier_code
+LEFT JOIN mt_segment1 seg
+  ON seg.segment_code = h.segment_1_code
 LEFT JOIN (
     SELECT
         purchase_order_no,
@@ -147,6 +152,8 @@ LEFT JOIN mt_service srv
   ON srv.service_code = d.service_code
 LEFT JOIN mt_party p
   ON p.party_code = h.supplier_code
+LEFT JOIN mt_segment1 seg
+  ON seg.segment_code = h.segment_1_code
 LEFT JOIN (
     SELECT
         purchase_order_no,
@@ -171,6 +178,8 @@ LEFT JOIN mt_service srv
   ON srv.service_code = d.service_code
 LEFT JOIN mt_party p
   ON p.party_code = h.supplier_code
+LEFT JOIN mt_segment1 seg
+  ON seg.segment_code = h.segment_1_code
 LEFT JOIN (
     SELECT
         purchase_order_no,
@@ -215,6 +224,8 @@ SELECT
     NULL::timestamp without time zone AS estimated_arrival_date,
     COALESCE(po.supplier_code, h.default_supplier_code) AS supplier_code,
     p.party_name AS supplier_name,
+    NULLIF(BTRIM(h.segment_1_code), '') AS segment_1_code,
+    NULLIF(BTRIM(seg.segment_desc), '') AS segment_desc,
     h.sbu_code,
     h.created_by,
     NULL::character varying AS sales_order_no,
@@ -244,6 +255,8 @@ LEFT JOIN (
 ) po ON po.purchase_requisition_no = h.purchase_requisition_no
 LEFT JOIN mt_party p
   ON p.party_code = COALESCE(po.supplier_code, h.default_supplier_code)
+LEFT JOIN mt_segment1 seg
+  ON seg.segment_code = h.segment_1_code
 LEFT JOIN (
     SELECT
         purchase_requisition_no,
@@ -289,6 +302,8 @@ SELECT
     NULL::timestamp without time zone AS estimated_arrival_date,
     h.default_supplier_code AS supplier_code,
     p.party_name AS supplier_name,
+    NULLIF(BTRIM(h.segment_1_code), '') AS segment_1_code,
+    NULLIF(BTRIM(seg.segment_desc), '') AS segment_desc,
     h.sbu_code,
     h.created_by,
     NULL::character varying AS sales_order_no,
@@ -304,6 +319,8 @@ LEFT JOIN mt_service srv
   ON srv.service_code = d.service_code
 LEFT JOIN mt_party p
   ON p.party_code = h.default_supplier_code
+LEFT JOIN mt_segment1 seg
+  ON seg.segment_code = h.segment_1_code
 """
 
 _SQL_PR_OST = f"""
@@ -428,6 +445,7 @@ def api_material_tracking_pr_po():
             "source": f"{view} (live COMAIN)",
             "count": len(rows),
             "counts": counts,
+            "sbus": _fetch_sbus(refresh=refresh),
             "cached_at": datetime.fromtimestamp(cached_at).isoformat(sep=" ", timespec="seconds"),
             "cache_ttl_sec": _CACHE_TTL_SEC,
             "rows": rows,

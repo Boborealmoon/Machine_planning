@@ -13990,3 +13990,30 @@ body.trial-embed .app-main--planner {
   margin: 0;
   padding: 8px 10px 12px;
 }
+
+body.trial-pps-site {
+  background: #eef2f4;
+}
+
+body.trial-pps-site .navbar,
+body.trial-pps-site .navbar-backdrop,
+body.trial-pps-site #trial-machine-filter-shell,
+body.trial-pps-site .trial-legend-group:not(.trial-board-zoom-controls),
+body.trial-pps-site .trial-legend-note,
+body.trial-pps-site .trial-grid-scroll-hint,
+body.trial-pps-site .trial-catalog-mobile-btn {
+  display: none !important;
+}
+
+body.trial-pps-site .app-main--planner {
+  min-height: 100dvh;
+  height: 100dvh;
+  padding: 8px;
+}
+
+body.trial-pps-site .trial-shell,
+body.trial-pps-site .trial-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}

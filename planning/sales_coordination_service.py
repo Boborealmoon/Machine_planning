@@ -118,6 +118,26 @@ def _customer_po(
     )
 
 
+def _customer_code(
+    order: dict[str, Any],
+    pp: dict[str, Any],
+    partial: dict[str, Any] | None,
+) -> str:
+    return (
+        _compact(order.get("customer_code"))
+        or _compact(pp.get("customer_code"))
+        or _compact((partial or {}).get("customer_code"))
+    )
+
+
+def _customer_name(order: dict[str, Any], partial: dict[str, Any] | None) -> str:
+    return (
+        _compact(order.get("customer_name"))
+        or _compact(order.get("customer_short_name"))
+        or _compact((partial or {}).get("party_name"))
+    )
+
+
 def _qty_number(value: Any) -> float | int | None:
     if value is None or value == "":
         return None
@@ -223,7 +243,6 @@ def expand_sales_coordination_lines(orders: list[dict[str, Any]]) -> list[dict[s
 
     for order in orders:
         so_no = _compact(order.get("sales_order_no"))
-        customer = _compact(order.get("customer_name") or order.get("customer_short_name"))
         for pp in order.get("pp_vouchers") or []:
             if pp.get("shipped_completed"):
                 continue
@@ -256,12 +275,15 @@ def expand_sales_coordination_lines(orders: list[dict[str, Any]]) -> list[dict[s
                 typed = ps_type(process_sheet_no)
                 erp_customer_remarks = _compact(order.get("external_remarks"))
                 erp_coway_remarks = _compact(pp.get("remarks"))
+                customer_code = _customer_code(order, pp, partial)
+                customer_name = _customer_name(order, partial)
 
                 lines.append(
                     {
                         "row_id": row_id,
                         "sales_order_no": so_no,
-                        "customer_name": customer,
+                        "customer_code": customer_code,
+                        "customer_name": customer_name,
                         "pp_voucher_no": pp_voucher,
                         "process_sheet_no": process_sheet_no,
                         "pp_partial_no": p_no or 1,

@@ -7,7 +7,7 @@
 {% block main_class %}app-main--sales-logistics{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/planner.css') }}?v=so-remarks-columns-wider-20260709">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-overview-embed-20261110">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sales_orders_logistics.css') }}?v=sol-segment-arrivals-20261111">
 <script>
 (function () {
   try {
@@ -130,6 +130,10 @@
         </button>
       </div>
       <div class="sol-nav-group" data-sol-section-panel="logistics-in" role="tablist" aria-label="Logistics in" hidden>
+        <button type="button" class="sol-chip" data-sol-view="logistics-in" data-sol-ship-bucket="week" role="tab" aria-selected="false"
+                title="Goods received this week. Today is listed first.">
+          This week <span class="sol-chip-count" id="sol-in-week-count" hidden>0</span>
+        </button>
         <button type="button" class="sol-chip" data-sol-view="logistics-in" data-sol-ship-bucket="outstanding" role="tab" aria-selected="false"
                 title="Open inbound shipments without a GRN">
           Outstanding <span class="sol-chip-count" id="sol-in-ost-count" hidden>0</span>
@@ -197,6 +201,11 @@
     </div>
   </nav>
 
+  <div class="sol-segment-bar" id="sol-segment-bar" hidden>
+    <span class="sol-filter-label">Cost segment</span>
+    <div class="sol-segment-chips" id="sol-segment-chips" role="tablist" aria-label="Cost segment"></div>
+  </div>
+
   <div class="sol-prpo-toolbar" id="sol-prpo-toolbar" hidden>
     <div class="sol-prpo-status" id="sol-bucket-group" role="tablist" aria-label="PR / PO status">
       <button type="button" class="sol-chip sol-chip--bucket is-active" data-sol-bucket="ost" role="tab" aria-selected="true">
@@ -212,7 +221,7 @@
     <div class="sol-filter-field" id="sol-sbu-field">
       <span class="sol-filter-label">SBU</span>
       <div class="filter-dropdown" id="sol-sbu-dropdown">
-        <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-sbu-btn" aria-haspopup="true" aria-expanded="false">MFG</button>
+        <button class="filter-dropdown-btn sol-prefix-btn" type="button" id="sol-sbu-btn" aria-haspopup="true" aria-expanded="false">All SBUs</button>
         <div class="filter-dropdown-panel" id="sol-sbu-panel" hidden></div>
       </div>
     </div>
@@ -343,5 +352,5 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/scheduler/utils.js') }}?v=sol-20260720"></script>
 <script src="{{ url_for('static', filename='js/material_modal.js') }}?v=sol-20260720"></script>
-<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-overview-embed-20261110"></script>
+<script src="{{ url_for('static', filename='js/sales_orders_logistics.js') }}?v=sol-sbu-all-20261110"></script>
 {% endblock %}

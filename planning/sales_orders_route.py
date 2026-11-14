@@ -418,6 +418,7 @@ def _empty_notes() -> dict[str, Any]:
     out["exception_issues"] = {}
     out["proposed_cnc_saved"] = None
     out["subcon_status"] = ""
+    out["subcon_return_dates"] = []
     out["material_delay"] = False
     out["material_need_date"] = ""
     out["material_need_date_history_count"] = 0
@@ -518,6 +519,58 @@ def _subcon_status_from_row(raw: Any) -> str:
         return _normalize_subcon_status(raw)
     except ValueError:
         return ""
+
+
+_SUBCON_RETURN_DATE_LIMIT = 24
+
+
+def _normalize_subcon_return_dates(raw: Any) -> list[str]:
+    """ISO dates a Subcon sheet is expected back from the supplier.
+
+    One sheet can come back in more than one batch, so several dates are kept.
+    Blank clears the list. Unknown text raises so a bad save is rejected.
+    """
+    if raw is None or raw is False:
+        return []
+    if isinstance(raw, str):
+        text = compact_text(raw)
+        if not text:
+            return []
+        parts: list[Any] = [part.strip() for part in text.replace(";", ",").split(",")]
+    elif isinstance(raw, (list, tuple, set)):
+        parts = list(raw)
+    else:
+        parts = [raw]
+    seen: list[str] = []
+    invalid = False
+    for part in parts:
+        if part in (None, ""):
+            continue
+        iso = _parse_material_need_date(part)
+        if not iso:
+            invalid = True
+            continue
+        if iso not in seen:
+            seen.append(iso)
+    if invalid:
+        raise ValueError("subcon_return_dates must be YYYY-MM-DD dates")
+    if len(seen) > _SUBCON_RETURN_DATE_LIMIT:
+        raise ValueError(
+            f"subcon_return_dates accepts at most {_SUBCON_RETURN_DATE_LIMIT} dates"
+        )
+    seen.sort()
+    return seen
+
+
+def _format_subcon_return_dates(dates: list[str] | None) -> str:
+    return ",".join(dates or [])
+
+
+def _subcon_return_dates_from_row(raw: Any) -> list[str]:
+    try:
+        return _normalize_subcon_return_dates(raw)
+    except ValueError:
+        return []
 
 
 def _normalize_exception_issue(raw: Any) -> str:
@@ -633,6 +686,7 @@ def _notes_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
     else:
         out["proposed_cnc_saved"] = _parse_proposed_cnc(row.get("proposed_cnc"))
     out["subcon_status"] = _subcon_status_from_row(row.get("subcon_status"))
+    out["subcon_return_dates"] = _subcon_return_dates_from_row(row.get("subcon_return_dates"))
     return out
 
 
@@ -699,6 +753,12 @@ def _ensure_notes_table(con) -> None:
         """
         ALTER TABLE planner_so_pp_notes
         ADD COLUMN IF NOT EXISTS subcon_status TEXT NOT NULL DEFAULT ''
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE planner_so_pp_notes
+        ADD COLUMN IF NOT EXISTS subcon_return_dates TEXT NOT NULL DEFAULT ''
         """
     )
     _ensure_date_history_table(con)
@@ -2054,6 +2114,9 @@ def _apply_assembly_line_machine_visibility(
         else:
             child["proposed_cnc"] = list(part_map.get(_part_key(child.get("part_no")), []))
         child["subcon_status"] = "" if not note else _subcon_status_from_row(note.get("subcon_status"))
+        child["subcon_return_dates"] = (
+            [] if not note else _subcon_return_dates_from_row(note.get("subcon_return_dates"))
+        )
 
 
 def _apply_new_part_overlay(orders: list[dict[str, Any]]) -> None:
@@ -2161,7 +2224,7 @@ def _load_notes_map(pp_voucher_nos: list[str]) -> dict[str, dict[str, str]] | No
                     SELECT pp_voucher_no, material_subcon, mtl_part_order,
                            quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                            highlighted_partials, exception_issues, proposed_cnc,
-                           subcon_status, material_delay, material_need_date
+                           subcon_status, subcon_return_dates, material_delay, material_need_date
                     FROM planner_so_pp_notes
                     WHERE pp_voucher_no = ANY(%s)
                     """,
@@ -2545,7 +2608,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 SELECT pp_voucher_no, material_subcon, mtl_part_order,
                        quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                        highlighted_partials, exception_issues, proposed_cnc,
-                       subcon_status, material_delay, material_need_date
+                       subcon_status, subcon_return_dates, material_delay, material_need_date
                 FROM planner_so_pp_notes
                 WHERE pp_voucher_no = %s
                 """,
@@ -2589,6 +2652,10 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
             current["proposed_cnc_saved"] = _resolve_proposed_cnc(patch.pop("proposed_cnc"))
         if "subcon_status" in patch:
             current["subcon_status"] = _normalize_subcon_status(patch.pop("subcon_status"))
+        if "subcon_return_dates" in patch:
+            current["subcon_return_dates"] = _normalize_subcon_return_dates(
+                patch.pop("subcon_return_dates")
+            )
         for key, value in patch.items():
             if key in _NOTE_FIELDS:
                 current[key] = compact_text(value)
@@ -2604,8 +2671,8 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 pp_voucher_no, material_subcon, mtl_part_order,
                 quality_doc, ops_notes, sales_notes, buyer, ps_highlighted,
                 highlighted_partials, exception_issues, proposed_cnc,
-                subcon_status, material_delay, material_need_date, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                subcon_status, subcon_return_dates, material_delay, material_need_date, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (pp_voucher_no) DO UPDATE SET
                 material_subcon = EXCLUDED.material_subcon,
                 mtl_part_order = EXCLUDED.mtl_part_order,
@@ -2618,6 +2685,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 exception_issues = EXCLUDED.exception_issues,
                 proposed_cnc = EXCLUDED.proposed_cnc,
                 subcon_status = EXCLUDED.subcon_status,
+                subcon_return_dates = EXCLUDED.subcon_return_dates,
                 material_delay = EXCLUDED.material_delay,
                 material_need_date = EXCLUDED.material_need_date,
                 updated_at = NOW()
@@ -2635,6 +2703,7 @@ def _upsert_notes(pp_voucher_no: str, patch: dict[str, Any]) -> dict[str, Any]:
                 issues_text,
                 proposed_cnc_text,
                 current.get("subcon_status") or "",
+                _format_subcon_return_dates(current.get("subcon_return_dates") or []),
                 current["material_delay"],
                 current["material_need_date"] or None,
             ),
@@ -2794,6 +2863,13 @@ def api_sales_order_notes(pp_voucher_no):
     if "subcon_status" in data:
         try:
             patch["subcon_status"] = _normalize_subcon_status(data.get("subcon_status"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    if "subcon_return_dates" in data:
+        try:
+            patch["subcon_return_dates"] = _normalize_subcon_return_dates(
+                data.get("subcon_return_dates")
+            )
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 

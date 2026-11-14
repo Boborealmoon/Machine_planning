@@ -7,6 +7,7 @@ Exception rows are partials flagged on S/O management.
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from planning.process_sheets import material_in_card_date
@@ -95,11 +96,19 @@ def _exception_rows(order: dict[str, Any], pp: dict[str, Any]) -> list[dict[str,
     rows: list[dict[str, Any]] = []
     for partial_no in _flagged_partials(pp):
         partial = _partial(pp, partial_no)
+        partial_qty = _partial_qty(pp, partial)
+        full_qty = _qty(pp.get("pp_qty"))
+        unit = _qty(pp.get("unit_selling_price"))
         rows.append(
             {
                 **_identity(order, pp),
                 "partial_no": partial_no,
                 "partial_label": _partial_label(pp, partial_no),
+                "partial_qty": partial_qty,
+                "full_qty": full_qty,
+                "unit_selling_price": unit,
+                "partial_value": _line_value(unit, partial_qty),
+                "full_value": _line_value(unit, full_qty),
                 "posted_date": _as_iso(order.get("first_posted_datetime") or order.get("order_date")),
                 "due_date": _as_iso(pp.get("due_date")),
                 "edd_date": _edd_date(pp, partial),
@@ -175,6 +184,34 @@ def _partial(pp: dict[str, Any], partial_no: int) -> dict[str, Any] | None:
         if _partial_number(partial.get("pp_partial_no") or 1) == partial_no:
             return partial
     return None
+
+
+def _qty(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _partial_qty(pp: dict[str, Any], partial: dict[str, Any] | None) -> float | None:
+    if partial:
+        qty = _qty(partial.get("partial_qty"))
+        if qty is not None:
+            return qty
+    return _qty(pp.get("pp_qty"))
+
+
+def _line_value(unit: float | None, qty: float | None) -> float | None:
+    """Selling value of a quantity. None when the unit price or qty is missing."""
+    if unit is None or qty is None:
+        return None
+    amount = (Decimal(str(unit)) * Decimal(str(qty))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(amount)
 
 
 def _partial_label(pp: dict[str, Any], partial_no: int) -> str:

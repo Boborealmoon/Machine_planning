@@ -26,7 +26,7 @@ class LogisticsShipmentRouteTests(unittest.TestCase):
         invalidate_logistics_shipment_cache()
 
     def test_buckets_match_erp_tabs(self):
-        self.assertEqual(buckets_for("in"), ("outstanding", "grn", "history", "cancelled"))
+        self.assertEqual(buckets_for("in"), ("outstanding", "grn", "week", "history", "cancelled"))
         self.assertEqual(buckets_for("out"), ("outstanding", "history", "cancelled"))
         self.assertIn("shipment_stage = 'G'", bucket_where("in", "grn"))
         self.assertIn("<> 'G'", bucket_where("in", "outstanding"))
@@ -41,6 +41,12 @@ class LogisticsShipmentRouteTests(unittest.TestCase):
         self.assertIn("h.segment_1_code", rows_sql("in", "outstanding"))
         self.assertIn("h.segment_1_code", rows_sql("out", "outstanding"))
         self.assertIn("mt_segment1", rows_sql("in", "outstanding"))
+        week = rows_sql("in", "week")
+        self.assertIn("lg_in_shm_ost_hdr", week)
+        self.assertIn("lg_in_shm_hst_hdr", week)
+        self.assertIn("goods_receipt_date", week)
+        self.assertIn("shipment_stage = 'G'", week)
+        self.assertNotIn("LIMIT", week)
 
     def test_invalid_bucket_rejected(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):
@@ -98,6 +104,9 @@ class LogisticsShipmentRouteTests(unittest.TestCase):
         self.assertIn('data-sol-qc-bucket="ready_qc"', html)
         self.assertIn('data-sol-qc-bucket="awaiting_grn"', html)
         self.assertIn(">Logistics In<", html)
+        self.assertIn('data-sol-ship-bucket="week"', html)
+        self.assertIn('id="sol-segment-bar"', html)
+        self.assertIn("This week", html)
         self.assertIn(">Logistics Out<", html)
 
 

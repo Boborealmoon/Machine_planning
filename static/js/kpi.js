@@ -2,7 +2,7 @@
   const SUBTITLES = {
     qc: "Time in QC, from the Final Inspection scan to the packing scan. Jobs still at QC stay at the top, and their TAT clock keeps running.",
     material: "Active S/O lines where the material arrived after the need date. Need is the material need date. Arrival is the Material in date. Gap is how many days late. PO due is the customer due date. Proposed EDD is the planner date from S/O management.",
-    exceptions: "Active S/O exceptions, one partial per row. All shows every department. Pick one or more departments to keep those partials and only the remark columns they own. Each column header sorts and filters.",
+    exceptions: "Active S/O exceptions, one partial per row. Partial value is the exception partial qty times the unit selling price. Full value is the process sheet qty times that price, counted once per sheet. Both follow the filters on screen. All shows every department. Pick one or more departments to keep those partials and only the remark columns they own. Each column header sorts and filters.",
   };
 
   const state = {
@@ -976,6 +976,11 @@
           ["due_date", "Due date"],
           ["edd_date", "EDD"],
           ["exception_label", "Exception"],
+          ["partial_qty", "Partial qty"],
+          ["full_qty", "Full qty"],
+          ["unit_selling_price", "Unit price"],
+          ["partial_value", "Partial value"],
+          ["full_value", "Full value"],
         ].concat(
           [["delivery_date", "Delivered"]].concat(
             DEPT_COLUMNS
@@ -1239,6 +1244,38 @@
       }).join("");
   }
 
+  function moneyText(value, known) {
+    if (!known) return "—";
+    return Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function exceptionValueTotals(rows) {
+    let partial = 0;
+    let partialKnown = 0;
+    let full = 0;
+    let fullKnown = 0;
+    let missingPrice = 0;
+    const seen = new Set();
+    rows.forEach((row) => {
+      const partialValue = Number(row.partial_value);
+      if (Number.isFinite(partialValue)) {
+        partial += partialValue;
+        partialKnown += 1;
+      } else {
+        missingPrice += 1;
+      }
+      const sheet = String(row.sales_order_no || "") + "|" + String(row.process_sheet_no || "");
+      if (seen.has(sheet)) return;
+      seen.add(sheet);
+      const fullValue = Number(row.full_value);
+      if (Number.isFinite(fullValue)) {
+        full += fullValue;
+        fullKnown += 1;
+      }
+    });
+    return { partial, partialKnown, full, fullKnown, missingPrice };
+  }
+
   function renderExceptions() {
     const summaryNode = $("kpi-exception-summary");
     const card = $("kpi-exception-card");
@@ -1246,26 +1283,35 @@
     const empty = $("kpi-exception-empty");
     const rows = exceptionRows();
     const jobs = new Set(rows.map((row) => row.process_sheet_no)).size;
+    const values = exceptionValueTotals(rows);
     renderDeptbar();
     paintSort($("kpi-panel-exceptions"), state.soSort.exceptions.key, state.soSort.exceptions.dir);
     if (summaryNode) {
       summaryNode.hidden = false;
-      const cards = [["Flagged partials", rows.length], ["Process sheets", jobs]];
+      const cards = [
+        ["Flagged partials", rows.length, ""],
+        ["Process sheets", jobs, ""],
+        ["Partial value", moneyText(values.partial, values.partialKnown), "Exception partial qty × unit selling price", true],
+        ["Full value", moneyText(values.full, values.fullKnown), "Process sheet qty × unit selling price, once per sheet", true],
+      ];
       if (state.deptMode === "custom") {
         DEPTS.filter((dept) => state.deptTags.has(dept.id)).forEach((dept) => {
-          cards.push([dept.label, rows.filter((row) => rowDepts(row).includes(dept.id)).length]);
+          cards.push([dept.label, rows.filter((row) => rowDepts(row).includes(dept.id)).length, "", false]);
         });
       }
-      summaryNode.innerHTML = cards.map(([label, value]) => (
-        '<article class="kpi-stat">' +
-          '<div class="kpi-stat-value">' + esc(value) + '</div>' +
-          '<div class="kpi-stat-label">' + esc(label) + '</div>' +
-        '</article>'
+      summaryNode.innerHTML = cards.map(([label, value, title, money]) => (
+        '<article class="kpi-stat"' + (title ? ' title="' + esc(title) + '"' : "") + ">" +
+          '<div class="kpi-stat-value' + (money ? " kpi-stat-value--money" : "") + '">' + esc(value) + "</div>" +
+          '<div class="kpi-stat-label">' + esc(label) + "</div>" +
+        "</article>"
       )).join("");
     }
     if ($("kpi-exception-meta")) {
       const noun = rows.length === 1 ? "partial" : "partials";
-      $("kpi-exception-meta").textContent = rows.length + " " + noun + " · " + deptColumnNote();
+      const missing = values.missingPrice
+        ? " · " + values.missingPrice + (values.missingPrice === 1 ? " line has" : " lines have") + " no unit price"
+        : "";
+      $("kpi-exception-meta").textContent = rows.length + " " + noun + " · " + deptColumnNote() + missing;
     }
     if (body) {
       body.innerHTML = rows.map((row) => `<tr class="${isResolved("exceptions", row) ? "kpi-row--resolved" : ""}">

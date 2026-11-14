@@ -532,6 +532,77 @@ body.sol-view .app-main--sales-logistics {
   font-weight: 700;
 }
 
+.sol-col-return,
+.sol-return-dates-cell {
+  width: 10.5rem;
+  min-width: 10.5rem;
+  vertical-align: top;
+}
+
+.sol-return-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sol-return-dates:not(:empty) {
+  margin-bottom: 6px;
+}
+
+.sol-return-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  max-width: 100%;
+  padding: 1px 2px 1px 7px;
+  border-radius: 999px;
+  border: 1px solid #86efac;
+  background: #ecfdf3;
+  color: #166534;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+
+.sol-return-chip-remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+}
+
+.sol-return-chip-remove:hover {
+  background: rgba(22, 101, 52, 0.12);
+}
+
+.sol-return-date-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 4px;
+  border: 1px solid var(--sol-line);
+  border-radius: 6px;
+  background: var(--sol-paper);
+  color: var(--sol-ink);
+  font: inherit;
+  font-size: 0.75rem;
+}
+
+.sol-return-dates-cell .so-editable-status {
+  display: block;
+  min-height: 12px;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .sol-nav {
   display: flex;
   flex-wrap: wrap;
@@ -2121,6 +2192,142 @@ body.sol-view .so-editable-status:empty {
 .sol-segment-pill--aps {
   background: #d1fae5;
   color: #065f46;
+}
+
+.sol-segment-pill--mps {
+  background: #ffedd5;
+  color: #9a3412;
+}
+
+.sol-segment-pill--cps {
+  background: #fce7f3;
+  color: #9d174d;
+}
+
+.sol-segment-pill--ps {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+.sol-segment-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: var(--sol-paper);
+  border: 1px solid var(--sol-line);
+  border-radius: 12px;
+}
+
+.sol-segment-bar[hidden] {
+  display: none;
+}
+
+.sol-segment-bar .sol-filter-label {
+  flex: 0 0 auto;
+  margin-top: 6px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sol-faint);
+}
+
+.sol-segment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sol-chip--segment {
+  padding: 5px 10px;
+  font-size: 0.75rem;
+}
+
+.sol-table tbody tr.sol-segment-group td {
+  position: sticky;
+  top: 38px;
+  z-index: 1;
+  padding: 8px 12px;
+  background: #f4f7fb;
+  border-bottom: 1px solid #dbe3ee;
+  color: #1e293b;
+  font-weight: 700;
+}
+
+.sol-table tbody tr.sol-segment-group:hover td {
+  background: #f4f7fb;
+}
+
+.sol-segment-group-label {
+  margin-left: 8px;
+  font-size: 0.82rem;
+}
+
+.sol-segment-desc {
+  margin-left: 8px;
+  color: #64748b;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.sol-segment-group-count {
+  margin-left: 8px;
+  color: #475569;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.sol-table tbody tr.sol-arrival-banner td {
+  padding: 14px 16px;
+  border-bottom: 0;
+}
+
+.sol-table tbody tr.sol-arrival-banner--today td {
+  background: #047857;
+  color: #ecfdf5;
+}
+
+.sol-table tbody tr.sol-arrival-banner--week td {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.sol-table tbody tr.sol-arrival-banner:hover td {
+  background: inherit;
+}
+
+.sol-table tbody tr.sol-arrival-banner--today:hover td {
+  background: #047857;
+}
+
+.sol-arrival-kicker {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.sol-arrival-detail {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.sol-table tbody tr.is-arrived-today td {
+  background: #ecfdf5;
+}
+
+.sol-table tbody tr.is-arrived-today td:first-child {
+  box-shadow: inset 4px 0 0 #059669;
+}
+
+.sol-table tbody tr.is-arrived-today:hover td {
+  background: #d1fae5;
 }
 
 .sol-meta {

@@ -292,6 +292,12 @@
   letter-spacing: -0.03em;
 }
 
+.kpi-stat-value--money {
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
 .kpi-stat-label {
   margin-top: 0.05rem;
   font-size: 0.66rem;

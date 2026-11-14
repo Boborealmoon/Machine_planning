@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from app import app
 from planning.material_tracking_overview_route import (
+    _SBU_SQL,
     chain_status,
     invalidate_material_tracking_overview_cache,
     overview_sql,
@@ -61,6 +62,9 @@ class MaterialTrackingOverviewRouteTests(unittest.TestCase):
         self.assertIn("h.source_voucher_no", sql)
         self.assertIn("ib.purchase_order_no = po.purchase_order_no", sql)
         self.assertIn("<> 'X'", sql)
+        self.assertIn("mt_sbu", _SBU_SQL)
+        self.assertIn("h.segment_1_code", sql)
+        self.assertIn("mt_segment1", sql)
 
     def test_invalid_sbu_rejected(self):
         with patch.dict(os.environ, {"PLANNER_PASSCODE": "", "ADMIN_PASSCODE": ""}):

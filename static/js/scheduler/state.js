@@ -25,6 +25,11 @@ let trialCatalogSortByDueDate = false;
 let trialCatalogQueueFilter = '';
 let trialShowCompleted = false;
 let trialPsTypeFilter = new Set(['A', 'N', 'P', 'T']);
+try {
+  if (new URLSearchParams(window.location.search).get('site') === 'pps') {
+    trialPsTypeFilter = new Set(['P']);
+  }
+} catch (_) { /* keep the main-board defaults */ }
 let trialShowSrOrders = false;
 let trialMachineCategoryFilter = 'ALL';
 let trialMachineHiddenSet = new Set();
